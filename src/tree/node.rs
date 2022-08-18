@@ -196,6 +196,7 @@ pub(super) mod borrow {
     /// Marker for borrow types that can be mutably borrowed
     pub trait AsMut {}
     impl AsMut for Owned {}
+    impl AsMut for Dropping {}
     impl<'a> AsMut for Mut<'a> {}
 
     /// Helper trait that allows us to take actions requring `SupportsInsert` only for mutable
@@ -1434,7 +1435,6 @@ where
 
 // ty::Unknown, borrow::Dropping
 //  * do_drop
-//  * into_typed_box
 //  * drop_vals
 impl<I, S, P, const M: usize> NodeHandle<ty::Unknown, borrow::Dropping, I, S, P, M>
 where
@@ -1447,60 +1447,76 @@ where
     ///
     /// Construction of a "dropping" handle already implies uniqueness; they are only returned by
     /// [`try_drop`](Self::try_drop).
-    pub fn do_drop(self) {
+    pub fn do_drop(mut self) {
         // One of the particularly wonderful things about the destructor here is that there just
         // isn't THAT much to do -- the only field in the embedded `Leaf` that needs dropping is
         // `vals`. The other suspects (i.e., things containing `I` or `RefId`) don't need to be
         // dropped because either they implement Copy (as in `I`) or are now nonsense because the
         // slice ref store has been dropped (as in `RefId`)
 
-        let mut child_ptrs = None;
-        let this_height = self.height;
+        let with_leaf_mut = |leaf: &mut Leaf<I, S, P, M>| {
+            // Drop `(*leaf_ptr).vals`
+            let vals = leaf.vals.as_mut_slice();
+            // SAFETY: This is guaranteed already; we have this assertion so that the compiler
+            // optimizes away the checks on indexing.
+            unsafe { weak_assert!(leaf.len as usize <= vals.len()) };
+            let vals = &mut vals[..leaf.len as usize];
+            // SAFETY: We're guaranteed that everything that's *not* marked as a hole, within
+            // `leaf.len`, is initialized.
+            unsafe {
+                match leaf.holes {
+                    [None, None] => Self::drop_vals(vals),
+                    [None, Some(h_nz)] => {
+                        let h = h_nz.get() - 1;
+                        weak_assert!(h < leaf.len);
+                        Self::drop_vals(&mut vals[..h as usize]);
+                        // skip vals[h]
+                        Self::drop_vals(&mut vals[(h + 1) as usize..]);
+                    }
+                    [Some(_), None] => weak_unreachable!("invalid state for Leaf holes"),
+                    [Some(hx_nz), Some(hy_nz)] => {
+                        let (hx, hy) = (hx_nz.get() - 1, hy_nz.get() - 1);
+                        weak_assert!(hx < hy);
+                        weak_assert!(hy < leaf.len);
+                        Self::drop_vals(&mut vals[..hx as usize]);
+                        // skip vals[hx]
+                        Self::drop_vals(&mut vals[(hx + 1) as usize..hy as usize]);
+                        // skip vals[hy]
+                        Self::drop_vals(&mut vals[(hy + 1) as usize..]);
+                    }
+                }
+            }
 
-        let mut node = self.into_typed_box();
-        let leaf = match node.as_mut() {
-            Ok(leaf) => leaf,
-            Err(internal) => {
-                child_ptrs = Some(mem::replace(&mut internal.child_ptrs, ChildArray::new()));
-                &mut internal.leaf
+            // Deallocate the node, then handle the children.
+            let child_len = leaf.len as usize + 1; // cast before add because len can == u8::MAX
+            child_len
+        };
+
+        // SAFETY: `borrow_mut` is sound because we have unique access during the destructor. The
+        // calls to `with_internal` and `with_mut` rely only on the fact that `with_leaf_mut` does
+        // not call any user-defined code, which is simple enough to verify by looking at it.
+        let (child_len, child_ptrs) = unsafe {
+            match self.borrow_mut().into_typed() {
+                Type::Internal(mut node) => node.with_internal(|internal| {
+                    let cps = mem::replace(&mut internal.child_ptrs, ChildArray::new());
+                    (with_leaf_mut(&mut internal.leaf), Some(cps))
+                }),
+                Type::Leaf(mut node) => node.with_mut(|leaf| (with_leaf_mut(leaf), None)),
             }
         };
 
-        // Drop `(*leaf_ptr).vals`
-        let vals = leaf.vals.as_mut_slice();
-        // SAFETY: This is guaranteed already; we have this assertion so that the compiler
-        // optimizes away the checks on indexing.
-        unsafe { weak_assert!(leaf.len as usize <= vals.len()) };
-        let vals = &mut vals[..leaf.len as usize];
-        // SAFETY: We're guaranteed that everything that's *not* marked as a hole, within
-        // `leaf.len`, is initialized.
-        unsafe {
-            match leaf.holes {
-                [None, None] => Self::drop_vals(vals),
-                [None, Some(h_nz)] => {
-                    let h = h_nz.get() - 1;
-                    weak_assert!(h < leaf.len);
-                    Self::drop_vals(&mut vals[..h as usize]);
-                    // skip vals[h]
-                    Self::drop_vals(&mut vals[(h + 1) as usize..]);
-                }
-                [Some(_), None] => weak_unreachable!("invalid state for Leaf holes"),
-                [Some(hx_nz), Some(hy_nz)] => {
-                    let (hx, hy) = (hx_nz.get() - 1, hy_nz.get() - 1);
-                    weak_assert!(hx < hy);
-                    weak_assert!(hy < leaf.len);
-                    Self::drop_vals(&mut vals[..hx as usize]);
-                    // skip vals[hx]
-                    Self::drop_vals(&mut vals[(hx + 1) as usize..hy as usize]);
-                    // skip vals[hy]
-                    Self::drop_vals(&mut vals[(hy + 1) as usize..]);
-                }
-            }
-        }
+        let this_height = self.height;
 
-        // Deallocate the node, then handle the children.
-        let child_len = leaf.len as usize + 1; // cast before add because len can == u8::MAX
-        drop(node);
+        // SAFETY: `dealloc_aligned` requires that the node was allocated with `alloc_aligned`,
+        // which must be the case because `node` originated from `self`, and allocated
+        // `NodeHandle`s are only produced by `alloc_aligned`. The pointer casts are guaranteed to
+        // be valid by the correctness of `into_typed`.
+        unsafe {
+            match self.into_typed() {
+                Type::Leaf(n) => dealloc_aligned(n.ptr.cast::<Leaf<I, S, P, M>>()),
+                Type::Internal(n) => dealloc_aligned(n.ptr.cast::<Internal<I, S, P, M>>()),
+            }
+        };
 
         if let Some(ps) = child_ptrs {
             let child_height = this_height.checked_sub(1).unwrap_or_else(|| unsafe {
@@ -1520,28 +1536,6 @@ where
                 if let Some(drop_handle) = child.try_drop() {
                     drop_handle.do_drop();
                 }
-            }
-        }
-    }
-
-    /// Converts the dropping handle into either an owned `Leaf` or `Internal` node
-    ///
-    /// ## Soundness
-    ///
-    /// This method is *only* sound because it's a `Dropping` borrow. The argument isn't as trivial
-    /// as we might hope - particularly because we want to abide by the stacked borrows model.
-    ///
-    /// The soundness argument basically goes: Normally we can't access the inner `Leaf` or
-    /// `Internal` in this way because we need to support interleaving raw pointer accesses (which
-    /// is the only interleaving allowed by stacked borrows). However, because a `Dropping` borrow
-    /// guarantees no other pointers to the node exist, we can now construct whatever references we
-    /// like, meaning that providing a `Box<{original type}>` is now ok.
-    fn into_typed_box(self) -> Result<Box<Leaf<I, S, P, M>>, Box<Internal<I, S, P, M>>> {
-        // SAFETY: Refer to the soundness note above
-        unsafe {
-            match self.height {
-                0 => Ok(Box::from_raw(self.ptr.as_ptr() as *mut _)),
-                _ => Err(Box::from_raw(self.ptr.as_ptr() as *mut _)),
             }
         }
     }
@@ -2170,6 +2164,25 @@ fn alloc_aligned<T>(val: T) -> NonNull<T> {
         }
         None => alloc::handle_alloc_error(layout),
     }
+}
+
+/// Deallocation counterpart to `alloc_aligned`
+///
+/// ## Safety
+///
+/// `ptr` must correspond to the result of a prior successfull allocation of a value with the same
+/// type, from `alloc_aligned`. `ptr` cannot have been deallocated yet.
+unsafe fn dealloc_aligned<T>(ptr: NonNull<T>) {
+    let layout = Layout::new::<T>()
+        .align_to(CACHE_LINE_SIZE)
+        // SAFETY: the layout was successfully created above in a corresponding call to
+        // `alloc_aligned`, so we *should* be able to recreate it here.
+        .unwrap_or_else(|_| unsafe { weak_unreachable!() });
+
+    // SAFETY: `dealloc` requires that the pointer refer to a current allocation (guaranteed by
+    // caller) and that the layout is the same as what was originally used (which we can see is the
+    // case by comparing with `alloc_aligned`.
+    unsafe { alloc::dealloc(ptr.as_ptr() as *mut u8, layout) };
 }
 
 /// Shifts the elements `start..end` forward by one in the slice, leaving the value at `start`
