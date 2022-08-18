@@ -36,6 +36,7 @@ macro_rules! weak_assert {
 pub(crate) static DEBUG: AtomicBool = AtomicBool::new(false);
 
 #[cfg(test)]
+#[allow(unused_macros)]
 macro_rules! enable_debug {
     () => {{
         $crate::macros::DEBUG.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -43,12 +44,14 @@ macro_rules! enable_debug {
 }
 
 #[cfg(test)]
+#[allow(unused_macros)]
 macro_rules! disable_debug {
     () => {{
         $crate::macros::DEBUG.store(false, std::sync::atomic::Ordering::SeqCst);
     }};
 }
 
+#[allow(unused_macros)]
 macro_rules! debug_println {
     ($($args:tt)*) => {
         #[cfg(test)]

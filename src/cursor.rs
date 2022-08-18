@@ -28,7 +28,7 @@ pub trait Cursor: Sized {
 ///
 /// This type does not implement `Debug` because there is no sensible representation of this type
 /// to provide to users of this crate.
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PathComponent {
     pub(crate) child_idx: u8,
 }

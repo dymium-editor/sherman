@@ -944,17 +944,22 @@ fn find_insertion_point<'t, I: Index, S, P: RleTreeConfig<I, S>, const M: usize>
         Err(0) => return (ChildOrKey::Child((I::ZERO, 0)), BAD_HINT),
         // target > key_pos(i - 1); either key_pos(i) doesn't exist, or key_pos(i) > target.
         Err(i) => (i - 1) as u8,
-        // target == key_pos(i)
-        Ok(i) => i as u8,
+        // target == key_pos(i) -- return the child immediately to the left of the key
+        Ok(i) => {
+            let k_idx = i as u8;
+            // SAFETY: `Ok(i)` means that it's an index within `keys_pos_slice`
+            let k_pos = unsafe { node.leaf().key_pos(k_idx) };
+
+            // SAFETY: any valid key index is a valid child index
+            match unsafe { node.try_child_size(k_idx) } {
+                None => return (ChildOrKey::Child((k_pos, k_idx)), BAD_HINT),
+                Some(size) => {
+                    let child_start = k_pos.sub_right(size);
+                    return (ChildOrKey::Child((child_start, k_idx)), BAD_HINT);
+                }
+            }
+        }
     };
-
-    // SAFETY: we're guaranteed by the the binary search `k_idx` is within `keys_pos_slice`, which
-    // is limited to initialized keys in the node; `key_pos` can't return `None`.
-    let key_pos = unsafe { node.leaf().key_pos(k_idx) };
-
-    if key_pos == target {
-        return (ChildOrKey::Child((key_pos, k_idx)), BAD_HINT);
-    }
 
     // At this point, we're either looking at a key `k_idx` or child `k_idx + 1` -- we have to look
     // at the startpoint of child `k_idx + 1` to determine where the target is.

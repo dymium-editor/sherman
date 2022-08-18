@@ -13,6 +13,5 @@ fn basic_insert() {
     tree.insert(6, Constant('d'), 3);
     tree.insert(6, Constant('e'), 3);
     tree.insert(6, Constant('f'), 3);
-    enable_debug!();
-    tree.insert(6, Constant('g'), 3); // panics
+    tree.insert(6, Constant('g'), 3);
 }

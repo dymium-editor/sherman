@@ -1045,10 +1045,6 @@ where
         // SAFETY: guaranteed by caller
         unsafe { weak_assert!(range.start <= self.leaf().len) };
 
-        if range.start == self.leaf().len {
-            return;
-        }
-
         // We can't construct a `&mut Leaf` here because the implementation of dirctional
         // arithmetic *could* possibly drop a `SliceRef`, which would mutate out from underneath
         // the mutable reference (which, even though it's through an `UnsafeCell`, would still be

@@ -1,4 +1,4 @@
-//! # Sherman -- a truly monstrous tree type
+//! # Sherman — a truly monstrous tree type
 //!
 //! It turns out that in the production of an editor, sometimes specialized data structures are
 //! used.  Sometimes data structures are similar enough that they can be united into a single
