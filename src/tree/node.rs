@@ -2314,7 +2314,7 @@ where
 
     /// If this node has a parent, return a [`Parent`] with information about it, in relation to
     /// this node
-    fn parent(&self) -> Option<Parent<I, S, P, M>> {
+    pub fn parent(&self) -> Option<Parent<I, S, P, M>> {
         Some(Parent {
             ptr: self.parent?,
             // SAFETY: As described in the "safety" section of the docs for `idx_in_parent`, the
@@ -2326,7 +2326,7 @@ where
 }
 
 /// The pointer to a parent node, alongside the child's index in it
-struct Parent<I, S, P: RleTreeConfig<I, S>, const M: usize> {
+pub struct Parent<I, S, P: RleTreeConfig<I, S>, const M: usize> {
     ptr: NodePtr<I, S, P, M>,
     idx_in_parent: u8,
 }

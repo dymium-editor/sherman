@@ -2057,3 +2057,110 @@ unsafe fn shift_keys<'t, Ty, I, S, P, const M: usize, const IS_INCREASE: bool>(
     // (just like this function). This is already guaranteed by the caller.
     unsafe { node.set_key_poss_with(recalculate, from..) };
 }
+
+#[cfg(test)]
+macro_rules! valid_assert {
+    ($path:ident: $cond:expr) => {
+        if !$cond {
+            panic!(
+                concat!("assertion failed: `", stringify!($cond), "` for path {:?}",),
+                $path
+            );
+        }
+    };
+}
+
+#[cfg(test)]
+impl<I, S, P, const M: usize> RleTree<I, S, P, M>
+where
+    I: Index,
+    P: RleTreeConfig<I, S>,
+{
+    /// Validates the tree, panicking if the indexes don't add up.
+    ///
+    /// This method basically exists for tests so that we can quickly narrow down exactly when a
+    /// failure is introduced in a particular test case.
+    fn validate(&self) {
+        let root = match self.root.as_ref() {
+            Some(r) => r,
+            None => return,
+        };
+
+        Self::validate_node(root.handle.borrow(), &mut Vec::new())
+    }
+
+    /// Called by `validate` to check a node
+    fn validate_node(
+        node: NodeHandle<ty::Unknown, borrow::Immut, I, S, P, M>,
+        path: &mut Vec<ChildOrKey<u8, u8>>,
+    ) {
+        match node.into_typed() {
+            Type::Leaf(node) => Self::validate_leaf(node, path),
+            Type::Internal(node) => Self::validate_internal(node, &mut Vec::new()),
+        }
+    }
+
+    /// Called by `validate_node` to check a leaf node
+    fn validate_leaf(
+        node: NodeHandle<ty::Leaf, borrow::Immut, I, S, P, M>,
+        path: &mut Vec<ChildOrKey<u8, u8>>,
+    ) {
+        valid_assert!(path: path.is_empty() != node.leaf().parent().is_some());
+        valid_assert!(path: node.leaf().len() >= 1);
+        valid_assert!(path: path.is_empty() || node.leaf().len() >= M as u8);
+
+        let poss = node.leaf().keys_pos_slice();
+        valid_assert!(path: poss[0] == I::ZERO);
+
+        for i in 1..node.leaf().len() {
+            path.push(ChildOrKey::Key(i));
+            valid_assert!(path: poss[i as usize] > poss[(i - 1) as usize]);
+            path.pop();
+        }
+
+        valid_assert!(path: poss[poss.len() - 1] < node.leaf().subtree_size());
+    }
+
+    /// Called by `validate_internal` to check an internal node
+    fn validate_internal(
+        node: NodeHandle<ty::Internal, borrow::Immut, I, S, P, M>,
+        path: &mut Vec<ChildOrKey<u8, u8>>,
+    ) {
+        valid_assert!(path: path.is_empty() != node.leaf().parent().is_some());
+        valid_assert!(path: node.leaf().len() >= 1);
+        valid_assert!(path: path.is_empty() || node.leaf().len() >= M as u8);
+
+        let poss = node.leaf().keys_pos_slice();
+
+        path.push(ChildOrKey::Child(0));
+        // SAFETY: internal nodes are guaranteed to have at least one child
+        Self::validate_node(unsafe { node.borrow().into_child(0) }, path);
+        path.pop();
+
+        for i in 0..node.leaf().len() {
+            path.push(ChildOrKey::Key(i));
+            // SAFETY: `i` is a valid key index, so it's also a valid child index.
+            let previous_child_size = unsafe { node.child_size(i) };
+            if i == 0 {
+                valid_assert!(path: poss[i as usize] == previous_child_size);
+            } else {
+                valid_assert!(path: previous_child_size < poss[i as usize]);
+                let previous_child_start = poss[i as usize].sub_right(previous_child_size);
+                valid_assert!(path: poss[i as usize - 1] < previous_child_start);
+            }
+            path.pop();
+
+            let ci = i + 1;
+            path.push(ChildOrKey::Child(ci));
+            // SAFETY: `i` is a valid key index and there's always one more child than key
+            Self::validate_node(unsafe { node.borrow().into_child(ci) }, path);
+            path.pop();
+        }
+
+        // SAFETY: `leaf.len` is the last valid child index.
+        let last_child_size = unsafe { node.child_size(node.leaf().len()) };
+        valid_assert!(path: last_child_size < node.leaf().subtree_size());
+        let last_child_start = node.leaf().subtree_size().sub_right(last_child_size);
+        valid_assert!(path: poss[poss.len() - 1] < last_child_start);
+    }
+}
