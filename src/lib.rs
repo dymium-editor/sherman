@@ -46,7 +46,11 @@
 
 #![deny(unsafe_op_in_unsafe_fn)]
 #![cfg_attr(feature = "nightly", feature(dropck_eyepatch))]
-#![cfg_attr(all(feature = "nightly", test), feature(specialization))]
+#![cfg_attr(
+    all(feature = "nightly", test),
+    allow(incomplete_features),
+    feature(specialization)
+)]
 
 use std::fmt::{self, Debug, Formatter};
 
