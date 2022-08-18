@@ -1,0 +1,14 @@
+[package]
+name = "sherman"
+version = "0.1.0"
+authors = ["sharnoff <github@max.sharnoff.org>"]
+edition = "2021"
+repository = "https://github.com/dymium-editor/sherman"
+license = "MIT OR Apache-2.0"
+description = "Run-length encoded, highly-parameterizable B-Tree"
+
+[dependencies]
+
+[features]
+default = []
+nightly = []
