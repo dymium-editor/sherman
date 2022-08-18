@@ -1,4 +1,4 @@
-# (General) Sherman -- a truly monstrous tree type
+# Sherman — a truly monstrous tree type
 
 It turns out that in the production of an editor, sometimes specialized data structures are
 used.  Sometimes data structures are similar enough that they can be united into a single
@@ -28,7 +28,7 @@ crate.
 
 ### Naming
 
-This library is named after [General Sherman] a tree in Sequoia National Park that is the
+This library is named after [General Sherman], a tree in Sequoia National Park that is the
 current largest tree Earth by volume.
 
 [General Sherman]: https://en.wikipedia.org/wiki/General_Sherman_(tree)
