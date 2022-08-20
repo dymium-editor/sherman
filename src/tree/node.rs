@@ -102,26 +102,6 @@ where
     borrow: PhantomData<B>,
 }
 
-// In order to safely implement Send/Sync for the main RleTree, it's easiest to just implement it
-// for the root *pointer* and have all of the other abstractions in `Root` restrict it as needed
-#[rustfmt::skip]
-unsafe impl<T: TypeHint, B, I, S, P, const M: usize> Send for NodeHandle<T, B, I, S, P, M>
-where
-    I: Send,
-    S: Send,
-    P: Send + RleTreeConfig<I, S>,
-    P::SliceRefStore: Send,
-    resolve![P::SliceRefStore::OptionRefId]: Send {}
-
-#[rustfmt::skip]
-unsafe impl<T: TypeHint, B, I, S, P, const M: usize> Sync for NodeHandle<T, B, I, S, P, M>
-where
-    I: Sync,
-    S: Sync,
-    P: Sync + RleTreeConfig<I, S>,
-    P::SliceRefStore: Sync,
-    resolve![P::SliceRefStore::OptionRefId]: Sync {}
-
 /// Handle on a *particular* slice in a node
 pub(super) struct SliceHandle<T: TypeHint, B, I, S, P, const M: usize>
 where
@@ -136,6 +116,111 @@ where
     /// checking.
     pub(super) idx: u8,
 }
+
+// In order to safely implement Send/Sync for the main RleTree (and other related items), it's
+// easiest to just implement it for the root *pointer* and have all of the other abstractions in
+// `Root` restrict it as needed
+#[rustfmt::skip]
+unsafe impl<T: TypeHint, B, I, S, P, const M: usize> Send for NodeHandle<T, B, I, S, P, M>
+where
+    I: Send,
+    S: Send,
+    P: RleTreeConfig<I, S>,
+    P::SliceRefStore: Send,
+    resolve![P::SliceRefStore::OptionRefId]: Send {}
+
+#[rustfmt::skip]
+unsafe impl<T: TypeHint, B, I, S, P, const M: usize> Sync for NodeHandle<T, B, I, S, P, M>
+where
+    I: Sync,
+    S: Sync,
+    P: RleTreeConfig<I, S>,
+    P::SliceRefStore: Sync,
+    resolve![P::SliceRefStore::OptionRefId]: Sync {}
+
+#[rustfmt::skip]
+unsafe impl<T: TypeHint, B, I, S, P, const M: usize> Send for SliceHandle<T, B, I, S, P, M>
+where
+    I: Send,
+    S: Send,
+    P: RleTreeConfig<I, S>,
+    P::SliceRefStore: Send,
+    resolve![P::SliceRefStore::OptionRefId]: Send {}
+
+#[rustfmt::skip]
+unsafe impl<T: TypeHint, B, I, S, P, const M: usize> Sync for SliceHandle<T, B, I, S, P, M>
+where
+    I: Sync,
+    S: Sync,
+    P: RleTreeConfig<I, S>,
+    P::SliceRefStore: Sync,
+    resolve![P::SliceRefStore::OptionRefId]: Sync {}
+
+/////////////////////////////////////////////////////
+// impl Copy for suitable NodeHandles/SliceHandles //
+/////////////////////////////////////////////////////
+
+#[rustfmt::skip]
+impl<'t, T: TypeHint, I, S, P, const M: usize> Copy for NodeHandle<T, borrow::Immut<'t>, I, S, P, M>
+where
+    P: RleTreeConfig<I, S> {}
+
+#[rustfmt::skip]
+impl<'t, T: TypeHint, I, S, P, const M: usize> Clone for NodeHandle<T, borrow::Immut<'t>, I, S, P, M>
+where
+    P: RleTreeConfig<I, S>,
+{
+    fn clone(&self) -> Self { *self }
+}
+
+#[rustfmt::skip]
+impl<'t, T: TypeHint, I, S, P, const M: usize> Copy for SliceHandle<T, borrow::Immut<'t>, I, S, P, M>
+where
+    P: RleTreeConfig<I, S> {}
+
+#[rustfmt::skip]
+impl<'t, T: TypeHint, I, S, P, const M: usize> Clone for SliceHandle<T, borrow::Immut<'t>, I, S, P, M>
+where
+    P: RleTreeConfig<I, S>,
+{
+    fn clone(&self) -> Self { *self }
+}
+
+//////////////////////////////////////////////////////////
+// impl PartialEq for suitable NodeHandles/SliceHandles //
+//////////////////////////////////////////////////////////
+
+impl<Ty, B, I, S, P, const M: usize> PartialEq for NodeHandle<Ty, B, I, S, P, M>
+where
+    Ty: TypeHint,
+    P: RleTreeConfig<I, S>,
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.ptr == other.ptr
+    }
+}
+
+#[rustfmt::skip]
+impl<Ty, B, I, S, P, const M: usize> Eq for NodeHandle<Ty, B, I, S, P, M>
+where
+    Ty: TypeHint,
+    P: RleTreeConfig<I, S> {}
+
+impl<Ty, B, I, S, P, const M: usize> PartialEq for SliceHandle<Ty, B, I, S, P, M>
+where
+    Ty: TypeHint,
+    P: RleTreeConfig<I, S>,
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.node == other.node && self.idx == other.idx
+    }
+}
+
+#[rustfmt::skip]
+impl<Ty, B, I, S, P, const M: usize> Eq for SliceHandle<Ty, B, I, S, P, M>
+where
+    Ty: TypeHint,
+    P: RleTreeConfig<I, S> {}
 
 /// Abstraction over known/unknown types of a [`NodeHandle`] or [`SliceHandle`], so that we can
 /// provide certain guarantees via the type system
