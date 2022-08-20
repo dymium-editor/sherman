@@ -1,7 +1,7 @@
 //! # Sherman — a truly monstrous tree type
 //!
 //! It turns out that in the production of an editor, sometimes specialized data structures are
-//! used.  Sometimes data structures are similar enough that they can be united into a single
+//! used. Sometimes data structures are similar enough that they can be united into a single
 //! abstract type, with parameterizations to suit the original needs. This crate primarily exports
 //! a single type -- [`RleTree`] -- which represents the collection of all the features we needed.
 //!

@@ -1753,7 +1753,7 @@ where
     ///
     /// If COW-functionality is enabled AND the child has multiple strong references, then a
     /// shallow clone will be made, the parent's link set, and the strong count to the original
-    /// cildd decremented.
+    /// child decremented.
     ///
     /// ## Safety
     ///
