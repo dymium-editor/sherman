@@ -4,6 +4,7 @@ use crate::param::{self, AllowSliceRefs, BorrowState, RleTreeConfig, StrongCount
 use crate::public_traits::{Index, Slice};
 use crate::range::RangeBounds;
 use crate::{Cursor, NoCursor, PathComponent};
+use std::fmt::Debug;
 use std::mem::{self, ManuallyDrop};
 use std::ops::Range;
 
@@ -242,7 +243,7 @@ where
     /// [`iter_with_cursor`]: Self::iter_with_cursor
     pub fn iter<R>(&self, range: R) -> Iter<'_, NoCursor, I, S, P, M>
     where
-        R: RangeBounds<I>,
+        R: Debug + RangeBounds<I>,
     {
         self.iter_with_cursor(NoCursor, range)
     }
@@ -253,14 +254,24 @@ where
     /// The hint is used exactly once, on the initial call to either `next` or `next_back`,
     /// whichever is used first.
     ///
+    /// ## Panics
+    ///
+    /// This method panics either if (a) the range starts after it ends
+    ///
     /// [`iter`]: Self::iter
     pub fn iter_with_cursor<C, R>(&self, cursor: C, range: R) -> Iter<'_, C, I, S, P, M>
     where
         C: Cursor,
-        R: RangeBounds<I>,
+        R: Debug + RangeBounds<I>,
     {
-        let root_handle = self.root.as_ref().map(|r| r.handle.as_immut());
-        Iter::new(range, self.size(), cursor, root_handle)
+        let root = self
+            .root
+            .as_ref()
+            .map(|r| (r.handle.borrow(), &r.refs_store));
+
+        let size = self.size();
+
+        Iter::new(range, size, cursor, root)
     }
 
     /// Removes the range of values from the tree, returning an iterator over those slices
@@ -508,7 +519,7 @@ where
                 } => {
                     // we need to get rid of `lhs` first, so that we've released the borrow when we
                     // access the root.
-                    let lhs_ptr = lhs.as_ptr();
+                    let lhs_ptr = lhs.ptr();
                     let root = match shallow_copy_store.as_mut() {
                         Some(r) => r,
                         // Remember: far above in the function, we set `Some(root) = &mut self.root`
@@ -516,7 +527,7 @@ where
                         None => root,
                     };
 
-                    debug_assert!(root.handle.as_ptr() == lhs_ptr);
+                    debug_assert!(root.handle.ptr() == lhs_ptr);
 
                     // SAFETY: `make_new_parent` requires that `root.handle` and `rhs` not have any
                     // parent already, which is guaranteed by `NewRoot`. It also requires that we
@@ -842,26 +853,21 @@ where
     },
 }
 
-/// (*Internal*) Finds the location in this node, or a child, where a slice at the target index
-/// should be inserted
+/// (*Internal*) Performs a single step of searching for the location of the target index within
+/// the tree
 ///
-/// Returns (result, "was hint right?"). The result represents either
-/// `Child(child pos, child index)` or `Key(key index)`.
+/// The hint is typically produced by a [`Cursor`], and if present, serves as a first guess to
+/// avoid a possibly-expensive binary search.
 ///
-/// Result indexes are guaranteed to be in-bounds, but the node itself might not have children,
-/// even if `ChildOrKey::Child` is returned. A key index (i.e. `ChildOrKey::Key`) is only ever
-/// returned if the key's range *contains* the target -- `target == key start` and
-/// `target == key end` will use the appropriate child index.
-fn find_insertion_point<'t, I: Index, S, P: RleTreeConfig<I, S>, const M: usize>(
+/// Either item in the [`ChildOrKey`] returned contains the index of the child or key containing
+/// `target`, and the start position of that child or key, relative to the base of `node`.
+fn search_step<'t, I: Index, S, P: RleTreeConfig<I, S>, const M: usize>(
     node: NodeHandle<ty::Unknown, borrow::Immut<'t>, I, S, P, M>,
     hint: Option<PathComponent>,
     target: I,
-) -> (ChildOrKey<(I, u8), u8>, bool) {
-    let node_subtree_size = node.leaf().subtree_size();
-    debug_assert!(target <= node_subtree_size);
-
-    const GOOD_HINT: bool = true;
-    const BAD_HINT: bool = false;
+) -> ChildOrKey<(u8, I), (u8, I)> {
+    let subtree_size = node.leaf().subtree_size();
+    debug_assert!(target <= subtree_size);
 
     if let Some(PathComponent { child_idx }) = hint {
         'bad_hint: loop {
@@ -876,105 +882,60 @@ fn find_insertion_point<'t, I: Index, S, P: RleTreeConfig<I, S>, const M: usize>
             //   |- left-hand key -|                  |- right-hand key -|
             //                     |--- this child ---|
             //                        (c = child_idx)
-            //
-            // We only have access to the *positions* of the keys and the *size* of the child,
-            // so we have to use this child's neighbors to determine *its* position.
 
             // num children is num keys + 1, max child index is equal to `node.len_keys()`.
             if child_idx > node.leaf().len() {
                 break 'bad_hint;
             }
 
-            let rhs_key_pos = node
-                .leaf()
-                .try_key_pos(child_idx)
-                .unwrap_or(node_subtree_size);
+            // SAFETY: we just guaranteed that `child_idx <= node.leaf().len()`, which is all
+            // that's required by `child_size`.
+            let child_size = unsafe { node.child_size(child_idx) };
+            let next_key_pos = node.leaf().try_key_pos(child_idx).unwrap_or(subtree_size);
+            let child_pos = next_key_pos.sub_right(child_size);
 
-            match child_idx {
-                0 => match target <= rhs_key_pos {
-                    true => return (ChildOrKey::Child((I::ZERO, 0)), GOOD_HINT),
-                    false => break 'bad_hint,
-                },
-                _ => {
-                    // SAFETY: we know `child_idx <= node.len_keys()`, and `child_idx != 0`, so
-                    // `child_idx - 1 < node.len_keys()`
-                    let lhs_key_pos = unsafe { node.leaf().key_pos(child_idx - 1) };
-
-                    if !(lhs_key_pos <= target && rhs_key_pos >= target) {
-                        debug_assert!(I::ZERO <= target && target <= node.leaf().subtree_size());
-                        break 'bad_hint;
-                    }
-
-                    // SAFETY: We previously checked that `child_idx` is within the bounds of where
-                    // children are.
-                    let child_size = unsafe { node.try_child_size(child_idx) }.unwrap_or(I::ZERO);
-                    // |- ... ---------- rhs_key_pos ----------|- rhs key size -|
-                    //                        |-- child_size --|
-                    // |- ... - child_start --|
-                    let child_start = rhs_key_pos.sub_right(child_size);
-
-                    // |- ... --------- child_start ---------|-- child_size --|
-                    // |- ... --- lhs_key_pos ---|- lhs key -|
-                    // |- ... ---- target (in key) ----|
-                    // |- ... ---- target (in child) ------------|
-                    //
-                    // We're have to allow `child_start == target` because we don't return
-                    // `ChildOrKey::Key` if the target merely at the edge of a key; it has to be
-                    // fully contained within it. This is also why we allow
-                    // `child_start == rhs_key_pos` above.
-                    match child_start <= target {
-                        true => return (ChildOrKey::Child((child_start, child_idx)), GOOD_HINT),
-                        // It's not worth going to 'bad_hint because we already know it's in the
-                        // left-hand key. But this *is* a bad hint.
-                        false => return (ChildOrKey::Key(child_idx - 1), BAD_HINT),
-                    }
-                }
+            if child_pos <= target && target < next_key_pos {
+                return ChildOrKey::Child((child_idx, child_pos));
             }
+
+            break 'bad_hint;
         }
     }
 
-    // Either there was no hint, or the hint was bad. We have to search the node.
+    // Either there was no hint, or the hint was bad. We have to fully search the node
     //
     // TODO: At what point does it become faster to use a linear search? This should be determined
-    // with heuristics based on `M` and `size_of::<I>()`, after benchmarking.
+    // with heuristics based on `M` and `size_of::<I>()`, after benchmarking. Possibly we have a
+    // separate parameter in `Index` that provides an alternate cost factor.
     let k_idx = match node.leaf().keys_pos_slice().binary_search(&target) {
         // Err(0) means that there's no key with position >= target, so the insertion point is
         // somewhere in that child. Because it's the first child in the node, its relative
         // position is I::ZERO
-        Err(0) => return (ChildOrKey::Child((I::ZERO, 0)), BAD_HINT),
+        Err(0) => return ChildOrKey::Child((0, I::ZERO)),
         // target > key_pos(i - 1); either key_pos(i) doesn't exist, or key_pos(i) > target.
         Err(i) => (i - 1) as u8,
-        // target == key_pos(i) -- return the child immediately to the left of the key
+        // target == key_pos(i) -- return the key
         Ok(i) => {
             let k_idx = i as u8;
             // SAFETY: `Ok(i)` means that it's an index within `keys_pos_slice`
             let k_pos = unsafe { node.leaf().key_pos(k_idx) };
-
-            // SAFETY: any valid key index is a valid child index
-            match unsafe { node.try_child_size(k_idx) } {
-                None => return (ChildOrKey::Child((k_pos, k_idx)), BAD_HINT),
-                Some(size) => {
-                    let child_start = k_pos.sub_right(size);
-                    return (ChildOrKey::Child((child_start, k_idx)), BAD_HINT);
-                }
-            }
+            return ChildOrKey::Key((k_idx, k_pos));
         }
     };
 
     // At this point, we're either looking at a key `k_idx` or child `k_idx + 1` -- we have to look
     // at the startpoint of child `k_idx + 1` to determine where the target is.
-    let next_key_pos = node
-        .leaf()
-        .try_key_pos(k_idx + 1)
-        .unwrap_or(node_subtree_size);
-    // SAFETY: we know from above that `k_idx `is a valid key, so `k_idx + 1` is a valid child.
+    let next_key_pos = node.leaf().try_key_pos(k_idx + 1).unwrap_or(subtree_size);
+    // SAFETY: `k_idx + 1` is a valid child index because `k_idx` is a valid key index, as
+    // guaranteed by the binary search.
     let next_child_size = unsafe { node.try_child_size(k_idx + 1).unwrap_or(I::ZERO) };
     debug_assert!(target <= next_key_pos);
 
     let next_child_start = next_key_pos.sub_right(next_child_size);
     match target < next_child_start {
-        true => (ChildOrKey::Key(k_idx), BAD_HINT),
-        false => (ChildOrKey::Child((next_child_start, k_idx + 1)), BAD_HINT),
+        // SAFETY: `k_idx` is known to be a valid key index from the binary search.
+        true => ChildOrKey::Key((k_idx, unsafe { node.leaf().key_pos(k_idx) })),
+        false => ChildOrKey::Child((k_idx + 1, next_child_start)),
     }
 }
 
@@ -989,8 +950,24 @@ where
     fn do_search_step(mut self) -> Result<InsertSearchResult<'t, I, S, P, M>, Self> {
         let cursor_hint = self.cursor_iter.as_mut().and_then(|iter| iter.next());
 
-        let (search_result, hint_was_good) =
-            find_insertion_point(self.node.borrow(), cursor_hint, self.target);
+        let mut search_result = search_step(self.node.borrow(), cursor_hint, self.target);
+        // If the result was the start of a key, we actually want to insert in the child
+        // immediately before it.
+        if let ChildOrKey::Key((k_idx, k_pos)) = search_result {
+            if k_pos == self.target {
+                // SAFETY: `k_idx` is guaranteed to be a valid key index, so it's therefore a valid
+                // child index as well.
+                let child_size = unsafe { self.node.try_child_size(k_idx).unwrap_or(I::ZERO) };
+                let child_pos = k_pos.sub_right(child_size);
+                search_result = ChildOrKey::Child((k_idx, child_pos));
+            }
+        }
+
+        let hint_was_good = matches!(
+            (search_result, cursor_hint),
+            (ChildOrKey::Child((c_idx, _)), Some(h)) if c_idx == h.child_idx
+        );
+
         if !hint_was_good {
             self.cursor_iter = None;
         }
@@ -998,19 +975,18 @@ where
         match search_result {
             // A successful result. We don't need the adjacent keys anymore because the insertion
             // will split `key_idx`
-            ChildOrKey::Key(k_idx) => {
+            ChildOrKey::Key((k_idx, k_pos)) => {
                 // SAFETY: The call to `find_insertion_point` guarantees that return values of
                 // `ChildOrKey::Key` contains an index within the bounds of the node's keys.
                 let handle = unsafe { self.node.into_slice_handle(k_idx) };
-                let key_pos = handle.key_pos();
 
                 Ok(ChildOrKey::Key(SplitKeyInsert {
                     handle,
-                    pos_in_key: self.target.sub_left(key_pos),
+                    pos_in_key: self.target.sub_left(k_pos),
                 }))
             }
             // An index between keys -- we don't yet know if it's an internal or leaf node.
-            ChildOrKey::Child((child_pos, child_idx)) => {
+            ChildOrKey::Child((child_idx, child_pos)) => {
                 // Later on, we'll distinguish the type of node, but either way we need to update
                 // the adjacent keys:
                 if S::MAY_JOIN {

@@ -729,6 +729,8 @@ where
 }
 
 // Any params
+//  * ptr
+//  * height
 //  * leaf
 //  * borrow (where B: borrow::AsImmut)
 //  * as_immut (where B: borrow::AsImmut)
@@ -738,6 +740,7 @@ where
 //  * typed_ref
 //  * typed_mut
 //  * erase_type
+//  * into_parent
 //  * into_slice_handle (where B: borrow::Ref)
 //  * try_child_size (where I: Copy)
 //  * shallow_clone (where I: Copy, P: SupportsInsert)
@@ -749,8 +752,13 @@ where
     /// Returns the inner pointer this `NodeHandle` uses
     ///
     /// This method exists (and should be used) only for `NodeHandle` comparison.
-    pub fn as_ptr(&self) -> NonNull<AbstractNode<I, S, P, M>> {
+    pub fn ptr(&self) -> NonNull<AbstractNode<I, S, P, M>> {
         self.ptr
+    }
+
+    /// Returns the height of the node
+    pub fn height(&self) -> u8 {
+        self.height.as_u8()
     }
 
     /// Returns a reference to the inner `Leaf`
@@ -898,6 +906,25 @@ where
             node: self,
             idx: key_idx,
         }
+    }
+
+    /// Returns this node's parent, alongside the child index that `self` was. If this node has no
+    /// parent, this method returns `Err(self)`.
+    pub fn into_parent(self) -> Result<(NodeHandle<ty::Internal, B, I, S, P, M>, u8), Self> {
+        let Parent { ptr, idx_in_parent } = match self.leaf().parent() {
+            Some(p) => p,
+            None => return Err(self),
+        };
+        // SAFETY: This node has a parent, so h + 1 is valid (i.e. h + 1 <= u8::MAX). It's then
+        // trivially true that `h + 1 != 0` (otherwise we'd worry about wrapping overflow).
+        let height = unsafe { NonZeroU8::new_unchecked(self.height.as_u8() + 1) };
+
+        let parent_handle = NodeHandle {
+            ptr,
+            height,
+            borrow: PhantomData,
+        };
+        Ok((parent_handle, idx_in_parent))
     }
 
     /// Returns the size of the child at `child_idx`, if this node has children. Otherwise returns
@@ -1775,35 +1802,12 @@ where
 }
 
 // ty::Unknown, borrow::Mut
-//  * into_parent
-//  * into_slice_handle
 //  * split_slice_handle
 impl<'t, Ty, I, S, P, const M: usize> NodeHandle<Ty, borrow::Mut<'t>, I, S, P, M>
 where
     Ty: TypeHint,
     P: RleTreeConfig<I, S>,
 {
-    /// Returns this node's parent, alongside the child index that `self` was. If this node has no
-    /// parent, this method returns `Err(self)`.
-    pub fn into_parent(
-        self,
-    ) -> Result<(NodeHandle<ty::Internal, borrow::Mut<'t>, I, S, P, M>, u8), Self> {
-        let Parent { ptr, idx_in_parent } = match self.leaf().parent() {
-            Some(p) => p,
-            None => return Err(self),
-        };
-        // SAFETY: This node has a parent, so h + 1 is valid (i.e. h + 1 <= u8::MAX). It's then
-        // trivially true that `h + 1 != 0` (otherwise we'd worry about wrapping overflow).
-        let height = unsafe { NonZeroU8::new_unchecked(self.height.as_u8() + 1) };
-
-        let parent_handle = NodeHandle {
-            ptr,
-            height,
-            borrow: PhantomData,
-        };
-        Ok((parent_handle, idx_in_parent))
-    }
-
     pub unsafe fn split_slice_handle(
         &self,
         key_idx: u8,
@@ -2421,8 +2425,8 @@ where
 
 /// The pointer to a parent node, alongside the child's index in it
 pub struct Parent<I, S, P: RleTreeConfig<I, S>, const M: usize> {
-    ptr: NodePtr<I, S, P, M>,
-    idx_in_parent: u8,
+    pub ptr: NodePtr<I, S, P, M>,
+    pub idx_in_parent: u8,
 }
 
 // Internal (node)
@@ -2497,7 +2501,7 @@ where
 
         // SAFETY: `try_child_size` requires the same condition as `key_pos` returning `None`,
         // which we've already guaranteed.
-        if let Some(s) = unsafe { self.node.try_child_size(self.idx) } {
+        if let Some(s) = unsafe { self.node.try_child_size(self.idx + 1) } {
             next_pos = next_pos.sub_right(s);
         }
 
@@ -2525,6 +2529,31 @@ where
                 borrow: PhantomData as PhantomData<borrow::SliceRef>,
             },
             idx: self.idx,
+        }
+    }
+}
+
+// any type, borrow::Immut
+//  * into_ref
+impl<'t, Ty, I, S, P, const M: usize> SliceHandle<Ty, borrow::Immut<'t>, I, S, P, M>
+where
+    Ty: TypeHint,
+    P: RleTreeConfig<I, S>,
+{
+    /// Produces a reference to the inner slice, lasting for the duration of the original borrow
+    pub fn into_ref(self) -> &'t S {
+        // SAFETY: `self.idx` is always in bounds in `self.node` (so the calls to `get_unchecked`
+        // and `assume_init_ref`) are fine, and it's ok to hold onto the reference for 't because
+        // the original borrow to create the `Immut` requires a reference with lifetime 't.
+        unsafe {
+            let r: &S = self
+                .node
+                .leaf()
+                .vals
+                .get_unchecked(self.idx as usize)
+                .assume_init_ref();
+            // Extend the lifetime beyond borrowing `self`.
+            &*(r as *const S)
         }
     }
 }
