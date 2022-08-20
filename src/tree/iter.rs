@@ -5,6 +5,7 @@ use crate::param::{AllowSliceRefs, RleTreeConfig};
 use crate::public_traits::{Index, Slice};
 use crate::range::{EndBound, RangeBounds, StartBound};
 use crate::{Cursor, SliceRef};
+use std::any::TypeId;
 use std::fmt::Debug;
 use std::ops::Range;
 
@@ -78,6 +79,15 @@ where
     range: Range<I>,
     slice: SliceHandle<ty::Unknown, borrow::Immut<'t>, I, S, P, M>,
     store: &'t P::SliceRefStore,
+}
+
+#[track_caller]
+fn panic_internal_error_or_bad_index<I: Index>() -> ! {
+    if crate::public_traits::perfect_index_impls().contains(&TypeId::of::<I>()) {
+        panic!("internal error")
+    } else {
+        panic!("internal error or bad `Index` implementation")
+    }
 }
 
 impl<'t, I, S, P, const M: usize> SliceEntry<'t, I, S, P, M>
@@ -200,7 +210,7 @@ where
                     match head_node.into_typed() {
                         Type::Leaf(_) => {
                             if k_idx == 0 {
-                                panic!("internal error or bad `Index` implementation");
+                                panic_internal_error_or_bad_index::<I>();
                             }
 
                             let i = k_idx - 1;
@@ -233,7 +243,7 @@ where
                 ChildOrKey::Child((c_idx, c_pos)) => {
                     let node = match head_node.into_typed() {
                         // Error resulting from our failure or a bad `Index` impl
-                        Type::Leaf(_) => panic!("internal error or bad `Index` implementation"),
+                        Type::Leaf(_) => panic_internal_error_or_bad_index::<I>(),
                         Type::Internal(n) => n,
                     };
 
@@ -331,7 +341,7 @@ where
                             Ok((p, c_idx)) => (p.erase_type(), c_idx),
                             // If this node has no parent, then we're at the end of the root node,
                             // so no more iteration possible. This should have already been caught.
-                            Err(_) => panic!("internal error or bad `Index` implementation"),
+                            Err(_) => panic_internal_error_or_bad_index::<I>(),
                         },
                     };
 
@@ -421,7 +431,7 @@ where
                             Ok((p, c_idx)) => (p.erase_type(), c_idx),
                             // If this node has no parent, then we're at the end of the root node,
                             // so no more iteration possible. This should have already been caught.
-                            Err(_) => panic!("internal error or bad `Index` implementation"),
+                            Err(_) => panic_internal_error_or_bad_index::<I>(),
                         },
                     };
 

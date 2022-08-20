@@ -1,5 +1,6 @@
 //! Public-facing traits for implementing [`RleTree`](crate::RleTree)
 
+use std::any::{Any, TypeId};
 use std::fmt::Debug;
 use std::ops::{Add, Sub};
 
@@ -13,9 +14,9 @@ use std::ops::{Add, Sub};
 /// supertraits.
 ///
 /// [`RleTree`]: crate::RleTree
-pub trait Index: Debug + Copy + Ord + Zero + DirectionalAdd + DirectionalSub {}
+pub trait Index: Debug + Copy + Ord + Zero + DirectionalAdd + DirectionalSub + Any {}
 
-impl<I: Debug + Copy + Ord + Zero + DirectionalAdd + DirectionalSub> Index for I {}
+impl<I: Debug + Copy + Ord + Zero + DirectionalAdd + DirectionalSub + Any> Index for I {}
 
 /// Trait for values that can be stored in an [`RleTree`]
 ///
@@ -309,3 +310,18 @@ impl_for_unsigned_primitive!(u32);
 impl_for_unsigned_primitive!(u64);
 impl_for_unsigned_primitive!(u128);
 impl_for_unsigned_primitive!(usize);
+
+/// List of [`Index`] implementations that are *definitely* correct
+///
+/// We use this in order to provide better error messages when an internal iterator error happens
+/// and it's definitely our fault.
+pub(crate) fn perfect_index_impls() -> [TypeId; 6] {
+    [
+        TypeId::of::<u8>(),
+        TypeId::of::<u16>(),
+        TypeId::of::<u32>(),
+        TypeId::of::<u64>(),
+        TypeId::of::<u128>(),
+        TypeId::of::<usize>(),
+    ]
+}
