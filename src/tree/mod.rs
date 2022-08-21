@@ -86,6 +86,10 @@ pub const DEFAULT_MIN_KEYS: usize = 5;
 /// singularly determines the various sizes of each node: the maximum number of keys is `2 * M`,
 /// and therefore there's a maximum of `2 * M + 1` children for an internal node. We also require
 /// that `M` is between 1 and 127, inclusive.
+///
+/// [`NoFeatures`]: param::NoFeatures
+/// [`AllowCow`]: param::AllowCow
+/// [`AllowSliceRefs`]: param::AllowSliceRefs
 pub struct RleTree<I, S, P = param::NoFeatures, const M: usize = DEFAULT_MIN_KEYS>
 where
     P: RleTreeConfig<I, S>,
