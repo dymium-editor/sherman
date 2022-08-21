@@ -871,6 +871,21 @@ where
         }
     }
 
+    /// Converts a reference to the `NodeHandle` into one where the type is now unknown
+    ///
+    /// This method is essentially the opposite of [`typed_ref`](Self::typed_ref).
+    pub fn untyped_ref(&self) -> &<Self as Typed>::Unknown {
+        // SAFETY: `TypeHint::Height` always has a size of 1 (so it's valid to reinterpret as u8),
+        // and we ensure elsewhere that the bit value of `self.height` is always equal to
+        // `self.height.as_u8()`.
+        unsafe { weak_assert!(self.height.as_u8() == *(&self.height as *const _ as *const u8)) };
+
+        // SAFETY: This is *mostly* the same as in `typed_ref`. The extra piece here is that we're
+        // only guaranteed that the height stays valid because of conditions guaranteeing the
+        // assertion above.
+        unsafe { &*(self as *const _ as *const _) }
+    }
+
     /// Converts a mutable reference to the `NodeHandle` into one where the type has been resolved
     pub fn typed_mut(
         &mut self,
@@ -882,6 +897,17 @@ where
                 _ => Type::Internal(&mut *(self as *mut _ as *mut _)),
             }
         }
+    }
+
+    /// Converts a mutable reference to the `NodeHandle` into one where the type is now unknown
+    ///
+    /// This method is essentially the opposite of [`typed_mut`](Self::typed_mut).
+    pub fn untyped_mut(&mut self) -> &mut <Self as Typed>::Unknown {
+        // SAFETY: See `untyped_ref`.
+        unsafe { weak_assert!(self.height.as_u8() == *(&self.height as *const _ as *const u8)) };
+
+        // SAFETY: This is the same as in `untyped_ref`; refer there for more info.
+        unsafe { &mut *(self as *mut _ as *mut _) }
     }
 
     /// Converts this `NodeHandle` into one with `ty::Unknown` instead of the current type tag
