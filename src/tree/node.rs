@@ -2128,6 +2128,8 @@ where
     /// Inserts the key and child into this internal node, shifting the later keys *without*
     /// adjusting their positions
     ///
+    /// The child's parent pointer is set to point to `self`.
+    ///
     /// The position of the inserted slice is set to the previous position of the slice at
     /// `key_idx`, and returned. If `key_idx == self.leaf().len()`, then the returned value is
     /// equal to `self.leaf().subtree_size()`.
@@ -2138,11 +2140,12 @@ where
     ///
     /// ## Safety
     ///
-    /// This method assumes three things:
+    /// This method assumes four things:
     ///
     ///  1. That `key_idx` is less than or equal to `self.leaf().len()`,
-    ///  2. That the node is not full -- i.e., `self.leaf().len() < self.leaf().max_len()`, and
-    ///  3. That the child has the correct height for a child of this node
+    ///  2. That the node is not full -- i.e., `self.leaf().len() < self.leaf().max_len()`,
+    ///  3. That the child has the correct height for a child of this node, and
+    ///  4. That the handle for the child has unique access
     ///
     /// Failing to satisfy any of these conditions will trigger immediate UB.
     ///
@@ -2153,14 +2156,14 @@ where
         store: &mut resolve![P::SliceRefStore],
         key_idx: u8,
         key: Key<I, S, P>,
-        child: NodeHandle<ty::Unknown, borrow::Owned, I, S, P, M>,
+        mut child: NodeHandle<ty::Unknown, borrow::Owned, I, S, P, M>,
     ) -> I
     where
         I: Copy,
     {
         // SAFETY: guaranteed by caller
         unsafe {
-            weak_assert!(key_idx < self.leaf().len);
+            weak_assert!(key_idx <= self.leaf().len);
             weak_assert!(self.leaf().len < self.leaf().max_len());
             weak_assert!(self.height.as_u8() - 1 == child.height);
         }
@@ -2173,6 +2176,18 @@ where
             let ci = ki + 1;
             let k_len = internal.leaf.len as usize;
             let c_len = k_len + 1;
+
+            // Set the child's parent before we add it, just so we don't have as much unsafe.
+            //
+            // SAFETY: `borrow_mut` requires unique access to `child`, which is guaranteed by the
+            // caller. `with_mut` requires that we not call user-defined code, which is plainly
+            // visible.
+            unsafe {
+                child.borrow_mut().with_mut(|leaf| {
+                    leaf.parent = Some(this_ptr);
+                    leaf.idx_in_parent.write(ci as u8);
+                });
+            }
 
             // Step 1: Shift all the bits over to make room
             //
