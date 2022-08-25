@@ -1118,6 +1118,19 @@ pub struct Key<I, S, P: RleTreeConfig<I, S>> {
     pub ref_id: resolve![P::SliceRefStore::OptionRefId],
 }
 
+#[cfg(test)]
+impl<I, S, P: RleTreeConfig<I, S>> Debug for Key<I, S, P> {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        let mut s = f.debug_struct("Key");
+        s.field("pos", self.pos.fallible_debug())
+            .field("slice", self.slice.fallible_debug());
+        if mem::size_of::<resolve![P::SliceRefStore::OptionRefId]>() != 0 {
+            s.field("ref_id", self.ref_id.fallible_debug());
+        }
+        s.finish()
+    }
+}
+
 // any type, borrow::Mut
 //  * with_mut
 //  * remove_parent

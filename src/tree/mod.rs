@@ -8,6 +8,9 @@ use std::fmt::Debug;
 use std::mem::{self, ManuallyDrop};
 use std::ops::Range;
 
+#[cfg(test)]
+use std::fmt::{self, Formatter};
+
 pub(crate) mod cow;
 mod iter;
 mod node;
@@ -125,6 +128,85 @@ where
 {
     fn drop(&mut self) {
         destruct_root(self.root.take())
+    }
+}
+
+#[cfg(test)]
+impl<I: Index, S, P: RleTreeConfig<I, S>, const M: usize> Debug for Root<I, S, P, M> {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        struct Nodes<'t, I, S, P: RleTreeConfig<I, S>, const M: usize> {
+            root: NodeHandle<ty::Unknown, borrow::Immut<'t>, I, S, P, M>,
+            indent: &'static str,
+        }
+
+        impl<'t, I: Index, S, P: RleTreeConfig<I, S>, const M: usize> Debug for Nodes<'t, I, S, P, M> {
+            fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+                f.write_str("{")?;
+                let max_child_len = 2 * M + 1;
+                let elem_pad = format!("{max_child_len}").len();
+                let total_pad = match self.root.height() as usize {
+                    0 => 0,
+                    n => (elem_pad + 2) * n - 2, // +2 for the ", " between each
+                };
+                let mut path = Vec::new();
+                write_nodes(self.root, &mut path, self.indent, elem_pad, total_pad, f)?;
+                f.write_str("\n}")
+            }
+        }
+
+        struct SliceContents<'a, T>(&'a [T]);
+
+        impl<T: Debug> Debug for SliceContents<'_, T> {
+            fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+                for (i, v) in self.0.iter().enumerate() {
+                    if i != 0 {
+                        f.write_str(", ")?;
+                    }
+                    f.write_fmt(format_args!("{v:?}"))?;
+                }
+                Ok(())
+            }
+        }
+
+        fn write_nodes<I: Index, S, P: RleTreeConfig<I, S>, const M: usize>(
+            node: NodeHandle<ty::Unknown, borrow::Immut, I, S, P, M>,
+            path: &mut Vec<u8>,
+            indent: &'static str,
+            elem_pad: usize,
+            total_pad: usize,
+            f: &mut Formatter,
+        ) -> fmt::Result {
+            let path_fmt = format!("{:<elem_pad$?}", SliceContents(path));
+            f.write_fmt(format_args!(
+                "\n{indent}[{path_fmt:<total_pad$}] @ {:p}: {:?}",
+                node.ptr(),
+                node.typed_debug(),
+            ))?;
+
+            if let Type::Internal(n) = node.typed_ref() {
+                for c_idx in 0..=n.leaf().len() {
+                    // SAFETY: `into_child` requires that `c_idx <= n.leaf().len()`, which is
+                    // guaranteed by the iterator.
+                    let child = unsafe { n.into_child(c_idx) };
+                    path.push(c_idx);
+                    write_nodes(child, path, indent, elem_pad, total_pad, f)?;
+                    path.pop();
+                }
+            }
+
+            Ok(())
+        }
+
+        let indent = match f.alternate() {
+            false => "    ",
+            true => "        ",
+        };
+        let nodes = Nodes {
+            root: self.handle.borrow(),
+            indent,
+        };
+        // FIXME: Add SliceRefStore to this if size_of::<P::SliceRefStore>() != 0
+        f.debug_struct("Root").field("nodes", &nodes).finish()
     }
 }
 
