@@ -2169,6 +2169,10 @@ where
         }
 
         let this_ptr = self.ptr;
+        let pos = self
+            .leaf()
+            .try_key_pos(key_idx)
+            .unwrap_or(self.leaf().total_size);
 
         #[rustfmt::skip]
         let func = |internal: &mut Internal<I, S, P, M>| {
@@ -2198,9 +2202,7 @@ where
             // SAFETY: the only requirement here is that `ki` and `ci` are within bounds, which
             // we've already established above.
             unsafe {
-                // // Don't need to write the position; `shift` leaves it in place (which is sound
-                // // because it's `Copy`)
-                // internal.leaf.keys.get_mut_unchecked(ki).write(pos);
+                internal.leaf.keys.get_mut_unchecked(ki).write(pos);
                 internal.leaf.vals.get_mut_unchecked(ki).write(key.slice);
                 internal.leaf.refs.get_mut_unchecked(ki).write(UnsafeCell::new(key.ref_id));
                 internal.child_ptrs.get_mut_unchecked(ci).write(child.ptr);
@@ -2265,13 +2267,12 @@ where
                     }
                 }
             }
-
-            unsafe { internal.leaf.key_pos(key_idx) }
         };
 
         // SAFETY: `with_internal` requires that `func` doesn't call any user-defined code. This is
         // simple enough to verify by looking at the contents of the function.
-        unsafe { self.with_internal(func) }
+        unsafe { self.with_internal(func) };
+        pos
     }
 }
 
