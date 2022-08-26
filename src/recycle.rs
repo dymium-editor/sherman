@@ -55,7 +55,10 @@ struct Value<T> {
 
 impl<T> Default for RecycleVec<T> {
     fn default() -> Self {
-        RecycleVec { vals: Vec::new(), head_empty: None }
+        RecycleVec {
+            vals: Vec::new(),
+            head_empty: None,
+        }
     }
 }
 
@@ -99,7 +102,9 @@ impl<T> RecycleVec<T> {
         match NonZeroUsize::new(val.ref_count.get() - 1) {
             // We're done with this value; add it to the front of the empty values list
             None => {
-                self.head_empty = Some(LinkId { idx_plus_one: id.idx_plus_one });
+                self.head_empty = Some(LinkId {
+                    idx_plus_one: id.idx_plus_one,
+                });
                 mem::forget(id);
                 Some(val.inner)
             }
@@ -130,7 +135,9 @@ impl<T> RecycleVec<T> {
         };
 
         *rc = rc.checked_add(1).unwrap();
-        EntryId { idx_plus_one: id.idx_plus_one }
+        EntryId {
+            idx_plus_one: id.idx_plus_one,
+        }
     }
 
     /// Returns a reference to the value
@@ -176,7 +183,9 @@ impl EntryId {
     ///
     /// The [`RecycleVec`] that this `EntryId` belongs to must have been dropped.
     pub unsafe fn clone_because_vec_is_dropped(&self) -> Self {
-        EntryId { idx_plus_one: self.idx_plus_one }
+        EntryId {
+            idx_plus_one: self.idx_plus_one,
+        }
     }
 }
 

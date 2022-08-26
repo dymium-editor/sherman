@@ -292,7 +292,10 @@ impl param::BorrowState for Cell<BorrowState> {
                 return Err(BorrowFailure::CannotGetImmutAlreadyMutablyBorrowed)
             }
             BorrowState::Dropped => return Err(BorrowFailure::CannotGetImmutAlreadyDropped),
-            BorrowState::Immutable { count, drop_if_zero: d } => {
+            BorrowState::Immutable {
+                count,
+                drop_if_zero: d,
+            } => {
                 drop_if_zero = d;
                 count
                     .checked_add(1)
@@ -301,13 +304,19 @@ impl param::BorrowState for Cell<BorrowState> {
             BorrowState::NotBorrowed => NonZeroUsize::new(1).unwrap(),
         };
 
-        self.set(BorrowState::Immutable { count: new_count, drop_if_zero });
+        self.set(BorrowState::Immutable {
+            count: new_count,
+            drop_if_zero,
+        });
         Ok(())
     }
 
     fn release_immutable(&self) -> ShouldDrop {
         match self.get() {
-            BorrowState::Immutable { count, drop_if_zero } => {
+            BorrowState::Immutable {
+                count,
+                drop_if_zero,
+            } => {
                 let new_count = NonZeroUsize::new(count.get() - 1);
 
                 if matches!(new_count, None if drop_if_zero) {
@@ -315,7 +324,10 @@ impl param::BorrowState for Cell<BorrowState> {
                     ShouldDrop::Yes
                 } else {
                     match new_count {
-                        Some(c) => self.set(BorrowState::Immutable { count: c, drop_if_zero }),
+                        Some(c) => self.set(BorrowState::Immutable {
+                            count: c,
+                            drop_if_zero,
+                        }),
                         None => self.set(BorrowState::NotBorrowed),
                     }
                     ShouldDrop::No
@@ -349,7 +361,10 @@ impl param::BorrowState for Cell<BorrowState> {
     fn try_acquire_drop(&self) -> ShouldDrop {
         match self.get() {
             BorrowState::Mutable => unreachable!("cannot drop while mutably borrowed"),
-            BorrowState::Dropped | BorrowState::Immutable { drop_if_zero: true, .. } => {
+            BorrowState::Dropped
+            | BorrowState::Immutable {
+                drop_if_zero: true, ..
+            } => {
                 unreachable!("double-drop attempted")
             }
             BorrowState::NotBorrowed => {
@@ -357,7 +372,10 @@ impl param::BorrowState for Cell<BorrowState> {
                 ShouldDrop::Yes
             }
             BorrowState::Immutable { count, .. } => {
-                self.set(BorrowState::Immutable { count, drop_if_zero: true });
+                self.set(BorrowState::Immutable {
+                    count,
+                    drop_if_zero: true,
+                });
                 ShouldDrop::No
             }
         }
