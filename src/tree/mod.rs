@@ -1758,12 +1758,10 @@ where
             let old_node_size = parent.leaf().subtree_size();
 
             // SAFETY: There's two things to be concerned with here. First the call to
-            // `insert_key_and_child`, which requires that `lhs_child_idx <= parent.leaf().len()`
-            // and that we have unique access to `self.rhs`. The first part is guaranteed because
-            // `lhs`'s parent information must have a valid child index. The second is guaranteed
-            // because `self.rhs` has always just been created. It also requires that `self.rhs` is
-            // at the appropriate height, which is guaranteed because `self.lhs` and `self.rhs`
-            // were at the *same* height.
+            // `insert_key_and_child`, which requires that `lhs_child_idx <= parent.leaf().len()`.
+            // This is guaranteed because `lhs`'s parent information must have a valid child index.
+            // It also requires that `self.rhs` is at the appropriate height, which is guaranteed
+            // because `self.lhs` and `self.rhs` *were* at the same height.
             //
             // The call to `shift_keys_increase` requires that `from` is *also* a valid child
             // index. Even though we've added one to it, it's still valid because of the insertion
@@ -1894,8 +1892,6 @@ where
             // SAFETY: the calls to `insert_key_and_child` and `shift_keys_increase` together
             // require that `new_key_idx <= insert_into.leaf().len()`, which is guaranteed by the
             // values we chose for `midpoint_idx` and our comparison with `M` above.
-            // `insert_key_and_child` additionally requires unique access to `self.rhs`, which is
-            // always guaranteed for `BubbledInsertState`.
             unsafe {
                 let pos = insert_into.insert_key_and_child(store, new_key_idx, self.key, self.rhs);
 

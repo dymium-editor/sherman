@@ -2128,7 +2128,8 @@ where
     /// Inserts the key and child into this internal node, shifting the later keys *without*
     /// adjusting their positions
     ///
-    /// The child's parent pointer is set to point to `self`.
+    /// The child's parent pointer (and index within the parent) is set to point to `self` *only if
+    /// we have unique access*.
     ///
     /// The position of the inserted slice is set to the previous position of the slice at
     /// `key_idx`, and returned. If `key_idx == self.leaf().len()`, then the returned value is
@@ -2140,12 +2141,11 @@ where
     ///
     /// ## Safety
     ///
-    /// This method assumes four things:
+    /// This method assumes three things:
     ///
     ///  1. That `key_idx` is less than or equal to `self.leaf().len()`,
-    ///  2. That the node is not full -- i.e., `self.leaf().len() < self.leaf().max_len()`,
-    ///  3. That the child has the correct height for a child of this node, and
-    ///  4. That the handle for the child has unique access
+    ///  2. That the node is not full -- i.e., `self.leaf().len() < self.leaf().max_len()`, and
+    ///  3. That the child has the correct height for a child of this node
     ///
     /// Failing to satisfy any of these conditions will trigger immediate UB.
     ///
@@ -2156,7 +2156,7 @@ where
         store: &mut resolve![P::SliceRefStore],
         key_idx: u8,
         key: Key<I, S, P>,
-        mut child: NodeHandle<ty::Unknown, borrow::Owned, I, S, P, M>,
+        child: NodeHandle<ty::Unknown, borrow::Owned, I, S, P, M>,
     ) -> I
     where
         I: Copy,
@@ -2176,18 +2176,6 @@ where
             let ci = ki + 1;
             let k_len = internal.leaf.len as usize;
             let c_len = k_len + 1;
-
-            // Set the child's parent before we add it, just so we don't have as much unsafe.
-            //
-            // SAFETY: `borrow_mut` requires unique access to `child`, which is guaranteed by the
-            // caller. `with_mut` requires that we not call user-defined code, which is plainly
-            // visible.
-            unsafe {
-                child.borrow_mut().with_mut(|leaf| {
-                    leaf.parent = Some(this_ptr);
-                    leaf.idx_in_parent.write(ci as u8);
-                });
-            }
 
             // Step 1: Shift all the bits over to make room
             //
@@ -2232,6 +2220,49 @@ where
                 unsafe {
                     let r = &*internal.leaf.refs.get_unchecked(i as usize).assume_init_ref().get();
                     store.update(r, this_ptr.cast(), i);
+                }
+            }
+
+            // Step 4: update parent positions of all¹ children
+            //
+            // ¹ if the tree has COW enabled, we can't guarantee unique access to any child except
+            // the one we just added. While we could just skip all children if COW is enabled, that
+            // tends to produce inefficient trees (specifically: `Iter` requires a larger stack).
+            //
+            // While we're at it, we'll also make sure that the parent pointers are correct (which,
+            // again: may not be, if COW is enabled.
+            for i in ci as u8..=internal.leaf.len {
+                // SAFETY: !P::COW and Owned borrows guarantees unique access. The only reason
+                // we're not going through `into_child` is because we don't want to deal with
+                // `SupportsInsertIfMut`. The child pointer is valid for writes because it's
+                // stored here, and the child indexes are valid because everything <= len is
+                // valid and our steps above maintained that. Also accessing it as a `*mut
+                // Leaf` instead of `*mut <whatever type it is>` is ok because `struct
+                // Internal` is `#[repr(C)]` and starts with the `Leaf` it contains.
+                unsafe {
+                    let mut p: NonNull<Leaf<I, S, P, M>> = internal
+                        .child_ptrs
+                        .get_unchecked(i as usize)
+                        .assume_init()
+                        .cast();
+
+                    // Note: it's always valid to construct an immutable reference to a node
+                    // (provided it's not also mutably borrowed, which the borrows on `self`
+                    // and `child` guarantee here), and we're only mutably borrowing the node
+                    // if there aren't other pointers to it. The existing borrow means we
+                    // won't have existing mutable references to it, either.
+                    if p.as_ref().strong_count.is_unique() {
+                        let leaf = p.as_mut();
+                        // For `child` (i = ci), we need to set the parent pointer. But if we
+                        // have unique access, it's also worth doing that for the other values
+                        // as well; in general, the CPU will be smart enough to allow us to
+                        // continue before these writes have made it to the actual RAM.
+                        if i == ci as u8 || P::COW {
+                            leaf.parent = Some(this_ptr);
+                        }
+                        // Account for shifting
+                        leaf.idx_in_parent.write(i);
+                    }
                 }
             }
 
