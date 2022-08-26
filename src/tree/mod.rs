@@ -588,14 +588,13 @@ where
                     },
                 }
             }
-            ChildOrKey::Key(key) => {
-                let key_pos = key.handle.key_pos();
-                // |- ... -------- `key.idx_in_key` ---------| (insertion point in node)
-                // |- ... --- `key_pos` ---|                   (start position of key)
-                //                         |-- `split_pos` --| (position in key to split at)
-                let split_pos = key.pos_in_key.sub_left(key_pos);
-                Self::split_insert(&mut root.refs_store, key.handle, split_pos, slice, size)
-            }
+            ChildOrKey::Key(key) => Self::split_insert(
+                &mut root.refs_store,
+                key.handle,
+                key.pos_in_key,
+                slice,
+                size,
+            ),
         };
 
         // Propagate the size change up the tree
@@ -1356,11 +1355,13 @@ where
         // SAFETY: `split` requires that `midpoint_idx` is properly within the bounds of the node,
         // which we guarantee by the logic above, because `max_len = 2 * M`
         let (midpoint_key, mut rhs) = unsafe { node.split(midpoint_idx, store) };
-        node.set_subtree_size(midpoint_key.pos);
 
-        // SAFETY: `rhs.len()` is definitely >= 1
-        let rhs_start = unsafe { rhs.leaf().key_pos(0) };
+        let rhs_start = rhs
+            .leaf()
+            .try_key_pos(0)
+            .unwrap_or_else(|| node.leaf().subtree_size());
         let midpoint_size = rhs_start.sub_left(midpoint_key.pos);
+        node.set_subtree_size(midpoint_key.pos);
 
         // Before we do anything else, we'll update the positions in `rhs`. It's technically
         // possible to get away with only updating these once, but that's *really* complicated.
@@ -1754,36 +1755,23 @@ where
         let added_size = self.key_size.add_right(self.rhs.leaf().subtree_size());
 
         // No split, only insert:
+        //
+        // Do the minimal amount of work here, and let `PostInsertTraversalState::do_upward_step`
+        // handle the rest. This is not only cleaner but necessary so that `insert_rhs` is able to
+        // appropriately hijack the positions of the keys.
         if parent.leaf().len() < parent.leaf().max_len() {
-            let old_node_size = parent.leaf().subtree_size();
-
-            // SAFETY: There's two things to be concerned with here. First the call to
-            // `insert_key_and_child`, which requires that `lhs_child_idx <= parent.leaf().len()`.
-            // This is guaranteed because `lhs`'s parent information must have a valid child index.
-            // It also requires that `self.rhs` is at the appropriate height, which is guaranteed
-            // because `self.lhs` and `self.rhs` *were* at the same height.
-            //
-            // The call to `shift_keys_increase` requires that `from` is *also* a valid child
-            // index. Even though we've added one to it, it's still valid because of the insertion
-            // increasing the size of the node.
-            unsafe {
-                let slice_pos =
-                    parent.insert_key_and_child(store, lhs_child_idx, self.key, self.rhs);
-
-                shift_keys_increase(
-                    &mut parent,
-                    ShiftKeys {
-                        from: lhs_child_idx + 1,
-                        pos: slice_pos,
-                        old_size: I::ZERO,
-                        new_size: added_size,
-                    },
-                );
-            }
-
-            let new_node_size = parent.leaf().subtree_size();
+            // SAFETY: The call to `insert_key_and_child` requires that `lhs_child_idx <=
+            // parent.leaf().len()`. This is guaranteed because `lhs`'s parent information must
+            // have a valid child index. It also requires that `self.rhs` is at the appropriate
+            // height, which is guaranteed because `self.lhs` and `self.rhs` *were* at the same
+            // height.
+            unsafe { parent.insert_key_and_child(store, lhs_child_idx, self.key, self.rhs) };
 
             // Update the cursor -- and the insertion handle if necessary.
+            //
+            // We have to do this because we're lying to `PostInsertTraversalState` about where the
+            // insertion is in order to get it to use the correct key position for shifting and it
+            // won't update the cursor if we don't say it's in a `Child`.
             let insertion = match self.insertion {
                 Some(insertion) => {
                     self.partial_cursor.prepend_to_path(PathComponent {
@@ -1806,27 +1794,15 @@ where
                 }
             };
 
-            match parent.into_parent() {
-                // If there's no further parent, then we're completely done. We've already filled
-                // out the cursor as necessary.
-                Err(_) => {
-                    return Ok(PostInsertTraversalResult::Root(
-                        self.partial_cursor,
-                        insertion,
-                    ))
-                }
-                Ok((handle, child_idx)) => {
-                    return Ok(PostInsertTraversalResult::Continue(
-                        PostInsertTraversalState {
-                            inserted_slice: insertion,
-                            child_or_key: ChildOrKey::Child((child_idx, handle)),
-                            old_size: old_node_size,
-                            new_size: new_node_size,
-                            partial_cursor: self.partial_cursor,
-                        },
-                    ))
-                }
-            }
+            return Ok(PostInsertTraversalResult::Continue(
+                PostInsertTraversalState {
+                    inserted_slice: insertion,
+                    child_or_key: ChildOrKey::Key((lhs_child_idx, parent.erase_type())),
+                    old_size: I::ZERO,
+                    new_size: added_size,
+                    partial_cursor: self.partial_cursor,
+                },
+            ));
         }
         // Couldn't just insert: need to split
 
