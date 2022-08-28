@@ -194,41 +194,38 @@ where
         let mut stack = Vec::new();
         let mut cursor = cursor.map(|c| c.into_path());
         let mut head_node = root;
-        let (mut target, is_excluded) = match target {
-            IncludedOrExcludedBound::Included(i) => (i, false),
-            IncludedOrExcludedBound::Excluded(i) => (i, true),
+        let mut target = match target {
+            IncludedOrExcludedBound::Included(i) => i,
+            IncludedOrExcludedBound::Excluded(i) => i,
         };
 
         // Search downward with the cursor
         loop {
             let hint = cursor.as_mut().and_then(|c| c.next());
-            let mut result = search_step(head_node, hint, target);
 
-            if let ChildOrKey::Key((k_idx, k_pos)) = result {
-                if is_excluded && k_pos == target {
-                    // Use the key or child immediately to the left.
-                    match head_node.into_typed() {
-                        Type::Leaf(_) => {
-                            if k_idx == 0 {
-                                panic_internal_error_or_bad_index::<I>();
-                            }
+            let result = if target != head_node.leaf().subtree_size() {
+                search_step(head_node, hint, target)
+            } else {
+                let len = head_node.leaf().len();
 
-                            let i = k_idx - 1;
-                            // SAFETY: `k_idx - 1` can't overflow, so `k_idx` being a valid key
-                            // index means `k_idx - 1` is as well.
-                            let p = unsafe { head_node.leaf().key_pos(i) };
-                            result = ChildOrKey::Key((i, p));
-                        }
-                        Type::Internal(node) => {
-                            // The child immediately left of the key has the same index
-                            let c_idx = k_idx;
-                            let size = unsafe { node.child_size(c_idx) };
-                            let c_pos = k_pos.sub_right(size);
-                            result = ChildOrKey::Child((c_idx, c_pos));
-                        }
+                // Use the key or child immediately to the left.
+                match head_node.into_typed() {
+                    Type::Leaf(_) => {
+                        let i = len - 1;
+                        // SAFETY: `len` is guaranteed to be `>= 1`, so `len - 1` can't overflow,
+                        // and key indexes must be `< len`.
+                        let p = unsafe { head_node.leaf().key_pos(i) };
+                        ChildOrKey::Key((i, p))
+                    }
+                    Type::Internal(node) => {
+                        // The child immediately left of the key has the same index
+                        let c_idx = len;
+                        // SAFETY: the index `len` is always a valid child index
+                        let c_pos = unsafe { node.child_pos(c_idx) };
+                        ChildOrKey::Child((c_idx, c_pos))
                     }
                 }
-            }
+            };
 
             match result {
                 ChildOrKey::Key((k_idx, k_pos)) => {
