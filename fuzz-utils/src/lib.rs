@@ -147,7 +147,7 @@ impl<I: Debug, S: Debug> Debug for BasicCommand<I, S> {
                                 writeln!(f, "            let item = iter.{method}().unwrap();")?;
                                 writeln!(f, "            assert_eq!(item.range(), {range:?});")?;
                                 writeln!(f, "            assert_eq!(item.size(), {size:?});")?;
-                                writeln!(f, "            assert_eq!(item.slice(), {slice:?});")?;
+                                writeln!(f, "            assert_eq!(item.slice(), &{slice:?});")?;
                                 f.write_str("        }\n")?;
                             }
                         }
