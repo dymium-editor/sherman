@@ -63,13 +63,15 @@ impl<I: Index, S: Slice<I>> Mock<I, S> {
             let pos_in_key = index.sub_left(s);
             let rhs = self.runs[idx].1.split_at(pos_in_key);
             let rhs_end = mem::replace(&mut self.runs[idx].0, pos_in_key);
-            self.runs[idx].0 = pos_in_key;
+            self.runs[idx].0 = index;
             self.runs.insert(idx + 1, (rhs_end, rhs));
+            idx += 1;
         }
 
         let mut base_pos = index;
         let mut old_size = I::ZERO;
         let mut new_size = size;
+        let mut lhs_end_override = None;
 
         // insert at the the point between this key and the one before
 
@@ -89,6 +91,7 @@ impl<I: Index, S: Slice<I>> Mock<I, S> {
                     base_pos = lhs_start;
                     slice = new;
                     idx = p;
+                    lhs_end_override = Some(lhs_end);
                 }
             }
         }
@@ -96,16 +99,17 @@ impl<I: Index, S: Slice<I>> Mock<I, S> {
         // `idx` is already the right-hand node, because `index` is equal to the end of `lhs`
         if idx < self.runs.len() {
             let (rhs_end, rhs) = self.runs.remove(idx);
-            match rhs.try_join(slice) {
+            match slice.try_join(rhs) {
                 Err((s, rhs)) => {
-                    self.runs.insert(idx + 1, (rhs_end, rhs));
+                    self.runs.insert(idx, (rhs_end, rhs));
                     slice = s;
                 }
                 Ok(new) => {
-                    let rhs_start = idx
-                        .checked_sub(1)
-                        .map(|i| self.runs[i].0)
-                        .unwrap_or(I::ZERO);
+                    let rhs_start = lhs_end_override.unwrap_or_else(|| {
+                        idx.checked_sub(1)
+                            .map(|i| self.runs[i].0)
+                            .unwrap_or(I::ZERO)
+                    });
                     let rhs_size = rhs_end.sub_left(rhs_start);
                     old_size = old_size.add_right(rhs_size);
                     new_size = new_size.add_right(rhs_size);
@@ -273,5 +277,29 @@ mod tests {
                 assert_eq!(item.2, &Constant('A'));
             }
         }
+    }
+
+    #[test]
+    fn auto_fuzz_2() {
+        // manual state checks have been added to this function because they were useful during
+        // debugging, and there's not really a reason to remove them.
+
+        let mut tree_0: Mock<u8, Constant<char>> = Mock::new_empty();
+        tree_0.insert(0, Constant('V'), 147);
+        assert_eq!(tree_0.runs, [(147, Constant('V'))]);
+
+        tree_0.insert(0, Constant('A'), 9);
+        assert_eq!(tree_0.runs, [(9, Constant('A')), (156, Constant('V'))]);
+
+        tree_0.insert(98, Constant('A'), 8);
+        assert_eq!(
+            tree_0.runs,
+            [
+                (9, Constant('A')),
+                (98, Constant('V')),
+                (106, Constant('A')),
+                (164, Constant('V'))
+            ]
+        );
     }
 }
