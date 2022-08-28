@@ -117,6 +117,7 @@ impl<I: Index, S: Slice<I>> Mock<I, S> {
 
     pub fn iter(&self, range: impl RangeBounds<I>) -> MockIter<'_, I, S> {
         let start_pos;
+        let unbounded_start;
 
         let start = range.start_bound().cloned();
         let end = range.end_bound().cloned();
@@ -124,11 +125,13 @@ impl<I: Index, S: Slice<I>> Mock<I, S> {
         let fwd_idx = match start {
             StartBound::Unbounded => {
                 start_pos = I::ZERO;
+                unbounded_start = true;
                 0
             }
             StartBound::Included(i) => {
                 start_pos = i;
-                if i > self.size() {
+                unbounded_start = false;
+                if i >= self.size() {
                     panic!("start index out of bounds");
                 }
 
@@ -143,7 +146,9 @@ impl<I: Index, S: Slice<I>> Mock<I, S> {
             EndBound::Included(i) if i < start_pos || i >= self.size() => {
                 panic!("invalid range, or end index out of bounds")
             }
-            EndBound::Excluded(i) if i <= start_pos || i > self.size() => {
+            EndBound::Excluded(i)
+                if i < start_pos || (i == start_pos && !unbounded_start) || i > self.size() =>
+            {
                 panic!("invalid range, or end index out of bounds")
             }
 

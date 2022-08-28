@@ -129,10 +129,8 @@ where
 {
     /// Creates a new iterator
     ///
-    /// This function *assumes* that all the arguments are valid; it's the responsibility of the
-    /// caller ([`RleTree::iter_with_cursor`]) to ensure that bounds are appropriately checked.
-    ///
-    /// [`RleTree::iter_with_cursor`]: crate::RleTree::iter_with_cursor
+    /// This function panics if the arguments are invalid, as described in [`RleTree::iter`].
+    #[track_caller]
     pub(super) fn new(
         range: impl Debug + RangeBounds<I>,
         tree_size: I,
@@ -142,34 +140,30 @@ where
             &'t P::SliceRefStore,
         )>,
     ) -> Self {
-        let start = match range.start_bound() {
-            StartBound::Included(i) => *i,
+        let start_bound = range.start_bound().cloned();
+        let end_bound = range.end_bound().cloned();
+
+        let start = match start_bound {
+            StartBound::Included(i) => i,
             StartBound::Unbounded => I::ZERO,
         };
 
-        let end = match range.end_bound() {
-            EndBound::Included(i) => IncludedOrExcludedBound::Included(*i),
-            EndBound::Excluded(i) => IncludedOrExcludedBound::Excluded(*i),
-            EndBound::Unbounded => IncludedOrExcludedBound::Excluded(tree_size),
+        let (end, strict_end) = match end_bound {
+            EndBound::Included(i) => (IncludedOrExcludedBound::Included(i), EndBound::Included(i)),
+            EndBound::Excluded(i) => (IncludedOrExcludedBound::Excluded(i), EndBound::Excluded(i)),
+            EndBound::Unbounded => (
+                IncludedOrExcludedBound::Excluded(tree_size),
+                EndBound::Excluded(tree_size),
+            ),
         };
 
-        let starts_after_end;
-        let out_of_bounds;
-
-        match end {
-            IncludedOrExcludedBound::Included(i) => {
-                starts_after_end = i < start;
-                out_of_bounds = i >= tree_size;
-            }
-            IncludedOrExcludedBound::Excluded(i) => {
-                starts_after_end = i <= start && matches!(range.end_bound(), EndBound::Excluded(_));
-                out_of_bounds = i > tree_size;
-            }
-        }
-
-        if starts_after_end {
+        if range.starts_after_end() {
             panic!("invalid range `{range:?}`");
-        } else if out_of_bounds {
+        } else if start < I::ZERO {
+            panic!("range `{range:?}` out of bounds below zero");
+        } else if matches!(start_bound, StartBound::Included(i) if i >= tree_size)
+            || (StartBound::Unbounded, strict_end).overlaps_naive(tree_size..)
+        {
             panic!("range `{range:?}` out of bounds for tree size {tree_size:?}");
         }
 

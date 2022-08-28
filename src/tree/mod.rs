@@ -339,12 +339,55 @@ where
     ///
     /// This method is identical to calling [`iter_with_cursor`] with [`NoCursor`].
     ///
+    /// ## Panics
+    ///
+    /// This method panics either if (a) the range's start is after its end (b) the range's bounds
+    /// include an index greater than or equal to [`self.size()`](Self::size).
+    ///
+    /// The description above is a bit vague; here's some more concrete examples:
+    ///
+    /// ```should_panic
+    /// use sherman::{RleTree, Constant};
+    ///
+    /// let tree: RleTree<usize, Constant<char>> = RleTree::new(Constant('a'), 5);
+    /// // panics, out of bounds:
+    /// let _ = tree.iter(5..);
+    /// ```
+    ///
+    /// ```should_panic
+    /// # use sherman::{RleTree, Constant}; let tree: RleTree<usize, Constant<char>> = RleTree::new(Constant('a'), 5);
+    /// // panics, out of bounds:
+    /// let _ = tree.iter(..=5);
+    /// ```
+    ///
+    /// ```should_panic
+    /// # use sherman::{RleTree, Constant}; let tree: RleTree<usize, Constant<char>> = RleTree::new(Constant('a'), 5);
+    /// // panics, invalid range:
+    /// let _ = tree.iter(5..5);
+    /// ```
+    ///
+    /// ```
+    /// # use sherman::{RleTree, Constant}; let tree: RleTree<usize, Constant<char>> = RleTree::new(Constant('a'), 5);
+    /// // doesn't panic, produces an empty iterator:
+    /// let _ = tree.iter(..0);
+    /// ```
+    ///
     /// [`iter_with_cursor`]: Self::iter_with_cursor
     pub fn iter<R>(&self, range: R) -> Iter<'_, NoCursor, I, S, P, M>
     where
         R: Debug + RangeBounds<I>,
     {
-        self.iter_with_cursor(NoCursor, range)
+        // While this method is equivalent to `self.iter_with_cursor(NoCursor, range)`, it's better
+        // for us to replicate the body here so that any call stacks look correct.
+
+        let root = self
+            .root
+            .as_ref()
+            .map(|r| (r.handle.borrow(), &r.refs_store));
+
+        let size = self.size();
+
+        Iter::new(range, size, NoCursor, root)
     }
 
     /// Like [`iter`], but uses a [`Cursor`] to provide a hint on the first call to `next` or
@@ -355,7 +398,8 @@ where
     ///
     /// ## Panics
     ///
-    /// This method panics either if (a) the range starts after it ends
+    /// This method can panic with certain values of `range`; refer to [`iter`] for further
+    /// information.
     ///
     /// [`iter`]: Self::iter
     pub fn iter_with_cursor<C, R>(&self, cursor: C, range: R) -> Iter<'_, C, I, S, P, M>
