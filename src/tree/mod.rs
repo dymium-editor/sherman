@@ -9,6 +9,8 @@ use std::mem::{self, ManuallyDrop};
 use std::ops::Range;
 
 #[cfg(test)]
+use crate::{MaybeDebug, NoDebugImpl};
+#[cfg(test)]
 use std::fmt::{self, Formatter};
 
 pub(crate) mod cow;
@@ -572,14 +574,14 @@ where
                             &mut root.refs_store,
                             leaf.node,
                             leaf.new_k_idx,
-                            slice,
-                            size,
+                            SliceSize { slice, size },
+                            None,
                         );
 
                         match res {
                             Ok(r) => r,
                             Err(mut bubble_state) => loop {
-                                match bubble_state.do_upward_step(&mut root.refs_store) {
+                                match bubble_state.do_upward_step(&mut root.refs_store, None) {
                                     Err(b) => bubble_state = b,
                                     Ok(post_insert) => break post_insert,
                                 }
@@ -812,6 +814,10 @@ where
     /// The height of `rhs` is *always* equal to the height of `lhs`.
     rhs: NodeHandle<ty::Unknown, borrow::Owned, I, S, P, M>,
 
+    /// Total size of the node that was split into `lhs` and `rhs`, before we inserted anything or
+    /// split it
+    old_size: I,
+
     /// Handle to the slice that was inserted, plus which one of `lhs` or `rhs` it's in, only if it
     /// the inserted slice is actually in `key`
     ///
@@ -894,6 +900,10 @@ where
         (u8, NodeHandle<ty::Unknown, borrow::Mut<'t>, I, S, P, M>),
     >,
 
+    /// Optional override in case the start position of the size change is not equal to the start
+    /// position given by `child_or_key`
+    override_pos: Option<I>,
+
     /// The old size of the child or key containing the insertion
     old_size: I,
     /// The new size of the child or key containing the insertion. This is provided separately so
@@ -946,6 +956,104 @@ where
         /// If the insertion is not `key`, then a handle on the inserted slice
         insertion: Option<SliceHandle<ty::Unknown, borrow::SliceRef, I, S, P, M>>,
     },
+}
+
+#[cfg(test)]
+impl<'t, C, I, S, P, const M: usize> Debug for BubbledInsertState<'t, C, I, S, P, M>
+where
+    P: RleTreeConfig<I, S>,
+{
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        f.debug_struct("BubbledInsertState")
+            .field("lhs@", &self.lhs.ptr())
+            .field("lhs", self.lhs.typed_debug())
+            .field("key", &self.key)
+            .field("key_size", self.key_size.fallible_debug())
+            .field("rhs@", &self.rhs.ptr())
+            .field("rhs", self.rhs.typed_debug())
+            .field("old_size", &self.old_size.fallible_debug())
+            .field("insertion", &self.insertion)
+            .finish()
+    }
+}
+
+#[cfg(test)]
+impl<I, S, P: RleTreeConfig<I, S>, const M: usize> Debug for BubbledInsertion<I, S, P, M> {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        f.debug_struct("BubbledInsertion")
+            .field("side", &self.side)
+            .field("handle", &NoDebugImpl)
+            .finish()
+    }
+}
+
+#[cfg(test)]
+impl<'t, C, I, S, P, const M: usize> Debug for PostInsertTraversalState<'t, C, I, S, P, M>
+where
+    P: RleTreeConfig<I, S>,
+{
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        let (idx_name, idx, node) = match &self.child_or_key {
+            ChildOrKey::Key((k_idx, node)) => ("key_idx", k_idx, node.typed_debug()),
+            ChildOrKey::Child((c_idx, node)) => ("child_idx", c_idx, node.typed_debug()),
+        };
+
+        f.debug_struct("PostInsertTraversalState")
+            .field("node", node)
+            .field(idx_name, idx)
+            .field("override_pos", self.override_pos.fallible_debug())
+            .field("old_size", self.old_size.fallible_debug())
+            .field("new_size", self.new_size.fallible_debug())
+            .finish()
+    }
+}
+
+#[cfg(test)]
+impl<'t, C, I, S, P, const M: usize> Debug for PostInsertTraversalResult<'t, C, I, S, P, M>
+where
+    P: RleTreeConfig<I, S>,
+{
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        match self {
+            Self::Continue(state) => f.debug_tuple("Continue").field(&state).finish(),
+            Self::Root(_, _) => f.debug_tuple("Root").field(&NoDebugImpl).finish(),
+            Self::NewRoot {
+                lhs,
+                key,
+                key_size,
+                rhs,
+                ..
+            } => f
+                .debug_struct("NewRoot")
+                .field("lhs", lhs.typed_debug())
+                .field("key", &key)
+                .field("key_size", key_size.fallible_debug())
+                .field("rhs", rhs.typed_debug())
+                .finish(),
+        }
+    }
+}
+
+/// (*Internal*) A slice / size pairing
+struct SliceSize<I, S> {
+    slice: S,
+    size: I,
+}
+
+impl<I, S> SliceSize<I, S> {
+    fn new(slice: S, size: I) -> Self {
+        SliceSize { slice, size }
+    }
+}
+
+#[cfg(test)]
+impl<I, S> Debug for SliceSize<I, S> {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        f.debug_struct("SliceSize")
+            .field("slice", self.slice.fallible_debug())
+            .field("size", self.size.fallible_debug())
+            .finish()
+    }
 }
 
 /// (*Internal*) Performs a single step of searching for the location of the target index within
@@ -1280,13 +1388,17 @@ where
             // `PostInsertTraversalState` itself.
             inserted_slice: unsafe { handle.clone_slice_ref() },
             child_or_key: ChildOrKey::Key((handle.idx, handle.node)),
+            override_pos: None,
             old_size,
             new_size,
             partial_cursor: C::new_empty(),
         })
     }
 
-    /// (*Internal*) Performs an insertion into the leaf node, with the key at `new_key_idx`
+    /// (*Internal*) Performs an insertion into the leaf node, with the key(s) at `new_key_idx`
+    ///
+    /// A second key to insert may also be provided, which will be inserted after `fst`. If a
+    /// second key is provided, only the first key will be used for the slice reference.
     ///
     /// ## Safety
     ///
@@ -1295,22 +1407,32 @@ where
         store: &mut P::SliceRefStore,
         mut node: NodeHandle<ty::Leaf, borrow::Mut<'t>, I, S, P, M>,
         mut new_key_idx: u8,
-        slice: S,
-        slice_size: I,
+        fst: SliceSize<I, S>,
+        snd: Option<SliceSize<I, S>>,
     ) -> Result<PostInsertTraversalResult<'t, C, I, S, P, M>, BubbledInsertState<'t, C, I, S, P, M>>
     {
         // SAFETY: Guaranteed by caller
         unsafe { weak_assert!(new_key_idx <= node.leaf().len()) }
 
-        // "easy" case: just add the slice to the node
-        if node.leaf().len() < node.leaf().max_len() {
+        let (one_if_snd, added_size) = match &snd {
+            Some(pair) => (1_u8, fst.size.add_right(pair.size)),
+            None => (0, fst.size),
+        };
+
+        // "easy" case: just add the slice(s) to the node
+        if node.leaf().len() < node.leaf().max_len() - one_if_snd {
             // SAFETY: `insert_key` requires that the node is a leaf, which is guaranteed by the
             // caller of `do_insert_no_join`. It also requires that the node isn't full (checked
             // above), and that the key is not *greater* than the current number of keys
             // (guaranteed by caller, debug-checked above).
-            let _slice_pos = unsafe { node.insert_key(store, new_key_idx, slice) };
-            //  ^^^^^^^^^^ don't need to use `slice_pos` to shift the keys because that'll be
-            //  handled by `PostInsertTraversalState::do_upward_step`.
+            unsafe {
+                let _slice_pos = node.insert_key(store, new_key_idx, fst.slice);
+                //  ^^^^^^^^^^ don't need to use `slice_pos` to shift the keys because that'll be
+                //  handled by `PostInsertTraversalState::do_upward_step`.
+                if let Some(pair) = snd {
+                    node.insert_key(store, new_key_idx + 1, pair.slice);
+                }
+            }
 
             // SAFETY: we just inserted `new_slice_idx`, so it's a valid key index.
             let slice_handle = unsafe { node.into_slice_handle(new_key_idx) };
@@ -1325,8 +1447,9 @@ where
                     // `inserted_slice`.
                     inserted_slice: unsafe { slice_handle.clone_slice_ref().erase_type() },
                     child_or_key: ChildOrKey::Key((new_key_idx, slice_handle.node.erase_type())),
+                    override_pos: None,
                     old_size: I::ZERO,
-                    new_size: slice_size,
+                    new_size: added_size,
                     partial_cursor: C::new_empty(),
                 },
             ));
@@ -1356,10 +1479,8 @@ where
         // which we guarantee by the logic above, because `max_len = 2 * M`
         let (midpoint_key, mut rhs) = unsafe { node.split(midpoint_idx, store) };
 
-        let rhs_start = rhs
-            .leaf()
-            .try_key_pos(0)
-            .unwrap_or_else(|| node.leaf().subtree_size());
+        let old_node_size = node.leaf().subtree_size();
+        let rhs_start = rhs.leaf().try_key_pos(0).unwrap_or(old_node_size);
         let midpoint_size = rhs_start.sub_left(midpoint_key.pos);
         node.set_subtree_size(midpoint_key.pos);
 
@@ -1386,19 +1507,36 @@ where
             // having a value of `midpoint_idx` that removes *some* values from `node`.
             unsafe { node.push_key(store, midpoint_key, new_lhs_subtree_size) };
 
-            // At this point, the total sizes of `lhs + rhs` are essentially unchanged; we
-            // haven't really recorded the insertion yet. Using the inserted slice as our new
-            // midpoint key is all we actually have to do right now.
+            // If we have a second slice that we're adding, it should go at the start of `rhs`,
+            // which is directly after the midpoint.
+            if let Some(SliceSize { slice, size }) = snd {
+                // SAFETY: `insert_key` requires that the key index less than or equal to the
+                // current length, which is always true for zero. `shift_keys_increase` requires
+                // the same for `from`, which is true after the insertion completes. The calls to
+                // `as_mut` require uniqueness, which is guaranteed because we just created it
+                unsafe {
+                    let pos = rhs.as_mut().insert_key(store, 0, slice);
+
+                    let opts = ShiftKeys {
+                        from: 1,
+                        pos,
+                        old_size: I::ZERO,
+                        new_size: size,
+                    };
+                    shift_keys_increase(rhs.as_mut(), opts);
+                }
+            }
 
             Err(BubbledInsertState {
                 lhs: node.erase_type(),
                 key: node::Key {
                     pos: rhs_start,
-                    slice,
+                    slice: fst.slice,
                     ref_id: Default::default(),
                 },
-                key_size: slice_size,
+                key_size: fst.size,
                 rhs: rhs.erase_type(),
+                old_size: old_node_size,
                 insertion: None,
                 partial_cursor: C::new_empty(),
             })
@@ -1416,15 +1554,33 @@ where
 
             // SAFETY: the calls to `insert_key` and `shift_keys_increase` together require that
             // `new_key_idx <= insert_into.leaf().len()`, which is guaranteed by the values we
-            // chose for `midpoint_idx` and our comparison with `M` above.
+            // chose for `midpoint_idx` and our comparison with `M` above. In the case where `snd`
+            // is not `None`, the same guarantees are made, but shifted over by one.
+            //
+            // The call to `set_single_key_pos`, if we make it, requires that `new_key_idx + 1` is
+            // a valid key, which we know is true because we just inserted it.
             unsafe {
-                let pos = insert_into.insert_key(store, new_key_idx, slice);
+                let pos = insert_into.insert_key(store, new_key_idx, fst.slice);
+                let mut added_size = fst.size;
+                let mut from = new_key_idx + 1;
+
+                if let Some(SliceSize { slice, size }) = snd {
+                    insert_into.insert_key(store, new_key_idx + 1, slice);
+                    added_size = added_size.add_right(size);
+                    from += 1;
+
+                    // Update the position of `snd` because currently it's the same as `fst`. We
+                    // could make an extra call to `set_key_poss_with` but it's easier to just set
+                    // the value directly.
+                    let snd_pos = pos.add_right(fst.size);
+                    insert_into.set_single_key_pos(new_key_idx + 1, snd_pos);
+                }
 
                 let opts = ShiftKeys {
-                    from: new_key_idx + 1,
+                    from,
                     pos,
                     old_size: I::ZERO,
-                    new_size: slice_size,
+                    new_size: added_size,
                 };
                 shift_keys_increase(insert_into, opts);
             }
@@ -1445,6 +1601,7 @@ where
                 key: midpoint_key,
                 key_size: midpoint_size,
                 rhs: rhs.erase_type(),
+                old_size: old_node_size,
                 insertion: Some(BubbledInsertion {
                     side,
                     handle: inserted_handle.erase_type(),
@@ -1486,7 +1643,9 @@ where
         // Fast path: no need to try joining.
         if !S::MAY_JOIN {
             let (mid, mid_size) = (slice, slice_size);
-            return Self::insert_double_rhs(lhs_handle, lhs_size, mid_size, mid, rhs_size, rhs);
+            let fst = SliceSize::new(mid, mid_size);
+            let snd = SliceSize::new(rhs, rhs_size);
+            return Self::insert_rhs(store, lhs_handle, lhs_size, fst, Some(snd));
         }
 
         // Slow path: try to join with both sides.
@@ -1518,6 +1677,7 @@ where
                     // conditions in `PostInsertTraversalState` itself.
                     inserted_slice: unsafe { lhs_handle.clone_slice_ref() },
                     child_or_key: ChildOrKey::Key((lhs_handle.idx, lhs_handle.node)),
+                    override_pos: None,
                     old_size: lhs_size.add_right(rhs_size),
                     new_size: mid_size.add_right(rhs_size),
                     partial_cursor: C::new_empty(),
@@ -1525,16 +1685,22 @@ where
             }
             // Couldn't join with lhs, but slice + rhs joined. Still need to insert those:
             Ok(new) => {
-                let new_size = mid_size.add_right(rhs_size);
-                Self::insert_rhs(store, lhs_handle, lhs_size, new_size, new)
+                let size = mid_size.add_right(rhs_size);
+                Self::insert_rhs(store, lhs_handle, lhs_size, SliceSize::new(new, size), None)
             }
             // Couldn't join with rhs, but did join with lhs. Still need to insert rhs:
             Err((l, r)) if joined_with_lhs => {
                 lhs_handle.fill_hole(l);
-                Self::insert_rhs(store, lhs_handle, mid_size, rhs_size, r)
+                let fst = SliceSize::new(r, rhs_size);
+                Self::insert_rhs(store, lhs_handle, mid_size, fst, None)
             }
             // Couldn't join with either lhs or rhs. Need to insert both original slice AND new rhs
-            Err((m, r)) => Self::insert_double_rhs(lhs_handle, lhs_size, mid_size, m, rhs_size, r),
+            Err((m, r)) => {
+                let fst = SliceSize::new(m, mid_size);
+                let snd = SliceSize::new(r, rhs_size);
+
+                Self::insert_rhs(store, lhs_handle, lhs_size, fst, Some(snd))
+            }
         }
     }
 
@@ -1544,8 +1710,8 @@ where
         store: &mut P::SliceRefStore,
         right_of: SliceHandle<ty::Unknown, borrow::Mut<'b>, I, S, P, M>,
         new_lhs_size: I,
-        insert_size: I,
-        val: S,
+        fst: SliceSize<I, S>,
+        snd: Option<SliceSize<I, S>>,
     ) -> PostInsertTraversalResult<'b, C, I, S, P, M> {
         // If we're inserting to the right of the particular slice, we have to traverse down to the
         // leftmost leaf in the child right of `right_of` (if it's not yet in a leaf).
@@ -1554,6 +1720,7 @@ where
         // `BubbledInsertState` as we traverse back up the tree so that we appropriately update the
         // size of the node.
 
+        let lhs_pos = right_of.key_pos();
         let old_lhs_size = right_of.slice_size();
         let lhs_height = right_of.node.height();
         let lhs_k_idx = right_of.idx;
@@ -1591,17 +1758,34 @@ where
         // For `Type::Leaf`, we're guaranteed that `lhs_k_idx < right_of.leaf().len()` and
         // `next_leaf = right_of`. For `Type::Internal`, we only break with `insert_idx = 0`, which
         // is always <= len: u8.
-        let res =
-            unsafe { Self::do_insert_no_join::<C>(store, next_leaf, insert_idx, val, insert_size) };
+        let res = unsafe { Self::do_insert_no_join::<C>(store, next_leaf, insert_idx, fst, snd) };
 
         let mut handled_shift = false;
 
         let post_insert_result = match res {
             Ok(s) => s,
             Err(mut bubble_state) => loop {
-                // If the bubble state is at the height of the changed left-hand side, we need to
-                // handle the shift in its size for this height
-                if bubble_state.lhs.height() == lhs_height {
+                let mut maybe_shift_lhs = None;
+
+                // If the bubble state *will* change the node at the height of `lhs`, then we need
+                // to change the way that it internally calculates positions. This will have no
+                // effect if the return from `do_upward_step` is another `BubbledInsertState`.
+                if bubble_state.lhs.height() + 1 == lhs_height {
+                    handled_shift = true;
+
+                    maybe_shift_lhs = Some(BubbleLhs {
+                        pos: lhs_pos,
+                        old_size: old_lhs_size,
+                        new_size: new_lhs_size,
+                    });
+                } else if bubble_state.lhs.height() == lhs_height {
+                    // FIXME: the logic here should be moved into
+                    // `BubbledInsertState::do_upward_step`, and the condition above replaced with:
+                    //     `bubble_state.lhs.height() + 1 == lhs_height
+                    //         || bubble_state.lhs.height() == lhs_height`
+
+                    // If the bubble state is at the height of the changed left-hand side, we need
+                    // to handle the shift in its size for this height.
                     handled_shift = true;
                     if lhs_k_idx < bubble_state.lhs.leaf().len() {
                         // Shift the later keys in `bubble_state.lhs`. We don't need to do anything
@@ -1649,7 +1833,11 @@ where
                     }
                 }
 
-                match bubble_state.do_upward_step(store) {
+                // SAFETY: `do_upward_step` requires: if `maybe_shift_lhs` is `Some(_)`, then there
+                // must be a key to the left of the child `bubble_state.lhs`. This is guaranteed by
+                // our logic above, where `maybe_shift_lhs` is only set to `Some(_)` if `right_of`
+                // is at the height of `bubble_state.lhs`'s parent.
+                match bubble_state.do_upward_step(store, maybe_shift_lhs) {
                     Ok(post_insert) if handled_shift => return post_insert,
                     Ok(post_insert) => break post_insert,
                     Err(b) => bubble_state = b,
@@ -1665,6 +1853,7 @@ where
         loop {
             let mut state = match post_insert_result {
                 PostInsertTraversalResult::Continue(s) => s,
+                // FIXME: these shouldn't be possible, right?
                 r => return r,
             };
 
@@ -1678,38 +1867,71 @@ where
                 continue;
             }
 
-            // node.height() == lhs_height: shift everything and return
+            // node.height() == lhs_height: account for the change in `lhs` size
             //
-            // FIXME: this might not uphold the directional arithmetic guarantees it needs to.
-            // Should be tested by appropriate fuzzing.
+            // The easiest way for us to do this is to just change the values of `child_or_key` (to
+            // the left-hand key) and `old_size`/`new_size` (to incorporate the changes to `lhs`).
             //
-            // SAFETY: `node` is guaranteed to have at least as many keys as the original node
-            // containing `lhs`, so the index `lhs_k_idx` is still a valid key in `node`.
-            unsafe {
-                let k_pos = node.leaf().key_pos(lhs_k_idx);
+            // Because we just inserted to the immediate right-hand side of `right_of`, we're
+            // expecting `state.child_or_key` to either represent the key or child immediately to
+            // the right (i.e. `ChildOrKey::{Key,Child}(lhs_k_idx + 1)`). Updating the values then
+            // sets it to the `lhs` key.
 
-                let opts = ShiftKeys {
-                    from: lhs_k_idx + 1,
-                    old_size: old_lhs_size,
-                    new_size: new_lhs_size,
-                    pos: k_pos,
-                };
-                shift_keys_auto(node, opts);
+            debug_assert!(
+                matches!(&state.child_or_key, ChildOrKey::Child((i, _)) | ChildOrKey::Key((i, _)) if *i == lhs_k_idx + 1)
+            );
+
+            let old_lhs_end = lhs_pos.add_right(old_lhs_size);
+            let new_lhs_end = lhs_pos.add_right(new_lhs_size);
+
+            let state_pos = state
+                .override_pos
+                .unwrap_or_else(|| match &state.child_or_key {
+                    // SAFETY: docs for `PostInsertTraversalState` guarantee that `k_idx` is within
+                    // bounds for `node`.
+                    ChildOrKey::Key((k_idx, node)) => unsafe { node.leaf().key_pos(*k_idx) },
+                    ChildOrKey::Child((c_idx, node)) => {
+                        let next_key_pos = node
+                            .leaf()
+                            .try_key_pos(*c_idx)
+                            .unwrap_or_else(|| node.leaf().subtree_size());
+                        next_key_pos.sub_left(state.old_size)
+                    }
+                });
+
+            let diff = state_pos.sub_left(old_lhs_end);
+            state.old_size = state.old_size.add_left(diff).add_left(old_lhs_size);
+            state.new_size = state.new_size.add_left(diff).add_left(new_lhs_size);
+            state.override_pos = Some(lhs_pos);
+
+            // We're currently at key `lhs_k_idx`, so we want to manually shift all of the keys
+            // from `lhs_k_idx + 1` to the last key before what's automatically handled.
+            //
+            // However, because we know we just inserted to the right-hand side of `lhs`, we know
+            // that we only actually need to shift a single key -- if at all. We shift the key at
+            // `lhs_k_idx + 1` so long as `state.child_or_key` is `ChildOrKey::Key((_, _))`.
+            if let ChildOrKey::Key((_, node)) = &mut state.child_or_key {
+                // SAFETY: the calls to `key_pos` and `set_single_key_pos` both require only that
+                // `lhs_k_idx + 1` is a valid key index. Because (a) `node` is at the same height
+                // as `lhs` and (b) any splits are not continued at this height, we know that the
+                // index in `ChildOrKey::Key` must be equal to `lhs_k_idx + 1`. The documentation
+                // for `PostInsertTraversalState` guarantees that such a key index will be valid.
+                unsafe {
+                    let pos = node.leaf().key_pos(lhs_k_idx + 1);
+                    let new_pos = pos.sub_left(old_lhs_end).add_left(new_lhs_end);
+                    node.set_single_key_pos(lhs_k_idx + 1, new_pos);
+                }
             }
             return PostInsertTraversalResult::Continue(state);
         }
     }
+}
 
-    fn insert_double_rhs<'b, C: Cursor>(
-        right_of: SliceHandle<ty::Unknown, borrow::Mut<'b>, I, S, P, M>,
-        new_lhs_size: I,
-        mid_insert_size: I,
-        mid: S,
-        rhs_insert_size: I,
-        rhs: S,
-    ) -> PostInsertTraversalResult<'b, C, I, S, P, M> {
-        todo!()
-    }
+#[derive(Debug, Copy, Clone)]
+struct BubbleLhs<I> {
+    pos: I,
+    old_size: I,
+    new_size: I,
 }
 
 impl<'t, C, I, S, P, const M: usize> BubbledInsertState<'t, C, I, S, P, M>
@@ -1719,16 +1941,25 @@ where
     S: Slice<I>,
     P: RleTreeConfig<I, S>,
 {
+    // Note: `shift_lhs` does nothing if `Err(_)` is returned
     fn do_upward_step(
         mut self,
         store: &mut <P as RleTreeConfig<I, S>>::SliceRefStore,
+        shift_lhs: Option<BubbleLhs<I>>,
     ) -> Result<PostInsertTraversalResult<'t, C, I, S, P, M>, Self> {
+        let lhs_size = self.lhs.leaf().subtree_size();
+        let new_total_size = lhs_size
+            .add_right(self.key_size)
+            .add_right(self.rhs.leaf().subtree_size());
+
         let (mut parent, lhs_child_idx) = match self.lhs.into_parent() {
             Ok((p, idx)) => (p, idx),
 
             // Base case: no parent, need to create a new `Internal` root. That has to be done from
             // the main function, `insert_internal`, so we need to return a result indicating that.
             Err(lhs) => {
+                assert!(shift_lhs.is_none(), "internal error: this is a bug");
+
                 let insertion = self.insertion.map(|insertion| {
                     self.partial_cursor.prepend_to_path(PathComponent {
                         // `Side` is explicitly tagged so that Side::Left = 0 and Side::Right = 1
@@ -1757,15 +1988,44 @@ where
         // No split, only insert:
         //
         // Do the minimal amount of work here, and let `PostInsertTraversalState::do_upward_step`
-        // handle the rest. This is not only cleaner but necessary so that `insert_rhs` is able to
-        // appropriately hijack the positions of the keys.
+        // handle the rest.
         if parent.leaf().len() < parent.leaf().max_len() {
+            let (override_pos, old_size, new_size, lhs_child_pos) = match shift_lhs {
+                Some(k) => (
+                    k.pos,
+                    self.old_size.add_left(k.old_size),
+                    new_total_size.add_left(k.new_size),
+                    k.pos.add_right(k.new_size),
+                ),
+                None => {
+                    // Our position for shifts in `PostInsertTraversalState` should be based on the
+                    // left-hand child. We can't calculate that with current sizes, because those
+                    // won't match the (old) information in `parent`, so we have to use
+                    // `self.old_size` and the position of the next key.
+                    let next_pos = parent
+                        .leaf()
+                        .try_key_pos(lhs_child_idx + 1)
+                        .unwrap_or_else(|| parent.leaf().subtree_size());
+
+                    let lhs_child_pos = next_pos.sub_right(self.old_size);
+
+                    (lhs_child_pos, self.old_size, new_total_size, lhs_child_pos)
+                }
+            };
+
             // SAFETY: The call to `insert_key_and_child` requires that `lhs_child_idx <=
             // parent.leaf().len()`. This is guaranteed because `lhs`'s parent information must
             // have a valid child index. It also requires that `self.rhs` is at the appropriate
             // height, which is guaranteed because `self.lhs` and `self.rhs` *were* at the same
             // height.
-            unsafe { parent.insert_key_and_child(store, lhs_child_idx, self.key, self.rhs) };
+            //
+            // The call to `set_single_key_pos` requiers that `lhs_child_idx <
+            // parent.leaf().len()`, which is guaranteed after `insert_key_and_child`.
+            unsafe {
+                parent.insert_key_and_child(store, lhs_child_idx, self.key, self.rhs);
+                let midpoint_pos = lhs_child_pos.add_right(lhs_size);
+                parent.set_single_key_pos(lhs_child_idx, midpoint_pos);
+            };
 
             // Update the cursor -- and the insertion handle if necessary.
             //
@@ -1797,9 +2057,16 @@ where
             return Ok(PostInsertTraversalResult::Continue(
                 PostInsertTraversalState {
                     inserted_slice: insertion,
+                    // We need to use the midpoint key here so that
+                    // `PostInsertTraversalState::do_upward_step` updates only the keys after the
+                    // lhs-key-rhs grouping. The midpoint key has the same index as the left-hand
+                    // child, so the shifting will start immediately after rhs.
                     child_or_key: ChildOrKey::Key((lhs_child_idx, parent.erase_type())),
-                    old_size: I::ZERO,
-                    new_size: added_size,
+                    // ^ because of the funky stuff we're doing above, we need to make sure that
+                    // the base positions for shifting are correct
+                    override_pos: Some(override_pos),
+                    old_size,
+                    new_size,
                     partial_cursor: self.partial_cursor,
                 },
             ));
@@ -1807,6 +2074,7 @@ where
         // Couldn't just insert: need to split
 
         let mut new_key_idx = lhs_child_idx;
+        let old_parent_size = parent.leaf().subtree_size();
 
         // There's a couple things going on here. Basically, there's three cases for where we
         // want `self.key` to end up: the left-hand node, right-hand node, or as the new
@@ -1925,6 +2193,7 @@ where
                 key: midpoint_key,
                 key_size: midpoint_size,
                 rhs: rhs.erase_type(),
+                old_size: old_parent_size,
                 insertion: Some(insertion),
                 partial_cursor: self.partial_cursor,
             })
@@ -2006,6 +2275,7 @@ where
                 key: self.key,
                 key_size: self.key_size,
                 rhs: rhs.erase_type(),
+                old_size: old_parent_size,
                 insertion: self.insertion,
                 partial_cursor: self.partial_cursor,
             })
@@ -2026,18 +2296,22 @@ where
 
         let (mut node, first_key_after, maybe_child_idx, pos) = match self.child_or_key {
             ChildOrKey::Key((k_idx, node)) => {
-                // SAFETY: The documentation for `PostInsertTraversalState` guarantees that `k_idx`
-                // is within bounds.
-                let pos = unsafe { node.leaf().key_pos(k_idx) };
+                let pos = self
+                    .override_pos
+                    // SAFETY: The documentation for `PostInsertTraversalState` guarantees that
+                    // `k_idx` is within bounds.
+                    .unwrap_or_else(|| unsafe { node.leaf().key_pos(k_idx) });
 
                 (node, k_idx + 1, None, pos)
             }
             ChildOrKey::Child((c_idx, node)) => {
-                let next_key_pos = node
-                    .leaf()
-                    .try_key_pos(c_idx)
-                    .unwrap_or_else(|| node.leaf().subtree_size());
-                let pos = next_key_pos.sub_left(self.old_size);
+                let pos = self.override_pos.unwrap_or_else(|| {
+                    let next_key_pos = node
+                        .leaf()
+                        .try_key_pos(c_idx)
+                        .unwrap_or_else(|| node.leaf().subtree_size());
+                    next_key_pos.sub_left(self.old_size)
+                });
 
                 (node.erase_type(), c_idx, Some(c_idx), pos)
             }
@@ -2080,6 +2354,7 @@ where
                 PostInsertTraversalResult::Continue(PostInsertTraversalState {
                     inserted_slice: self.inserted_slice,
                     child_or_key: ChildOrKey::Child((c_idx, parent_handle)),
+                    override_pos: None,
                     old_size,
                     new_size,
                     partial_cursor: self.partial_cursor,
@@ -2098,11 +2373,11 @@ struct ShiftKeys<I> {
     ///
     /// We're being intentionally vague here because this can correspond to multiple different
     /// things. [`PostInsertTraversalState`], for example, uses this as the index of an updated
-    /// child or key. But for cases where we've inserted multiple things (e.g., in
-    /// [`insert_double_rhs`]), this might only correspond to the index of the first item, with
-    /// `old_size` and `new_size` referring to the total size of the pieces.
+    /// child or key. But for cases where we've inserted multiple things (e.g., where
+    /// [`insert_rhs`] is provided a second value), this might only correspond to the index of the
+    /// first item, with `old_size` and `new_size` referring to the total size of the pieces.
     ///
-    /// [`insert_double_rhs`]: RleTree::insert_double_rhs
+    /// [`insert_rhs`]: RleTree::insert_rhs
     pos: I,
     /// The old size of the object at `pos`
     old_size: I,

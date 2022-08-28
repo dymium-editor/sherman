@@ -1170,14 +1170,35 @@ where
     }
 
     /// Sets the size of the subtree rooted at the node
-    pub fn set_subtree_size(&mut self, size: I)
-    where
-        I: Copy,
-    {
+    pub fn set_subtree_size(&mut self, size: I) {
         // SAFETY: `with_mut` requires that we don't call any user-defined code. Because `I`
         // doesn't implement `Drop` (it conflicts with `Copy`), dropping `leaf.total_size` won't do
         // anything.
         unsafe { self.with_mut(|leaf| leaf.total_size = size) };
+    }
+
+    /// Sets the position of a single key in the node
+    ///
+    /// Note: If you're calling this multiple times, you probably want [`set_key_poss_with`]. This
+    /// method is only provided so that we can be efficient if a change doesn't *exactly* fit
+    /// [`set_key_poss_with`].
+    ///
+    /// ## Safety
+    ///
+    /// If `k_idx` is not less than `self.leaf().len()`, this method will invoke immediate UB.
+    ///
+    /// [`set_key_poss_with`]: Self::set_key_poss_with
+    pub unsafe fn set_single_key_pos(&mut self, k_idx: u8, pos: I) {
+        // SAFETY: guaranteed by caller
+        unsafe { weak_assert!(k_idx < self.leaf().len()) };
+
+        // SAFETY: `get_mut_unchecked` is guaranteed by caller; `with_mut` requires that we don't
+        // call user-defined code, which is clearly the case here.
+        unsafe {
+            self.with_mut(|leaf| {
+                let _ = leaf.keys.get_mut_unchecked(k_idx as usize).write(pos);
+            })
+        };
     }
 
     /// Sets the positions of all of the keys, plus the total subtree size of the node, using the

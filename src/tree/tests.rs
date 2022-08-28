@@ -17,6 +17,33 @@ fn basic_insert() {
 }
 
 #[test]
+fn medium_complex_insert() {
+    let mut tree: RleTree<usize, Constant<char>, NoFeatures, 1> = RleTree::new_empty();
+    tree.insert(0, Constant('a'), 4); // [ 'a' ]
+    tree.insert(4, Constant('b'), 3); // [ 'a', 'b' ]
+    tree.insert(2, Constant('c'), 5); // [ [ 'a' ], 'c', [ 'a', 'b' ] ]
+
+    let fst_expected = vec![(0_usize..2, 'a'), (2..7, 'c'), (7..9, 'a'), (9..12, 'b')];
+
+    let fst_result: Vec<_> = tree.iter(..).map(|e| (e.range(), e.slice().0)).collect();
+    assert_eq!(fst_result, fst_expected);
+
+    tree.insert(5, Constant('d'), 1); // [ [ 'a' ], 'c', [ 'd', 'c' ], 'a', [ 'b' ] ]
+    tree.validate();
+
+    let snd_expected = vec![
+        (0_usize..2, 'a'),
+        (2..5, 'c'),
+        (5..6, 'd'),
+        (6..8, 'c'),
+        (8..10, 'a'),
+        (10..13, 'b'),
+    ];
+    let snd_result: Vec<_> = tree.iter(..).map(|e| (e.range(), e.slice().0)).collect();
+    assert_eq!(snd_result, snd_expected);
+}
+
+#[test]
 fn basic_iter() {
     let mut tree: RleTree<usize, Constant<char>, NoFeatures, 2> = RleTree::new_empty();
     tree.insert(0, Constant('a'), 4);
@@ -37,7 +64,6 @@ fn basic_iter() {
         (18..21, 'c'),
     ];
 
-    enable_debug!();
     let result: Vec<_> = tree.iter(..).map(|e| (e.range(), e.slice().0)).collect();
 
     assert_eq!(result, expected);
