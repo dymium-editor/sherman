@@ -54,11 +54,17 @@
 
 use std::fmt::{self, Debug, Formatter};
 
+#[cfg(feature = "fuzz")]
+use arbitrary::Arbitrary;
+
 #[macro_use]
 mod macros;
 
 pub mod param;
 pub mod range;
+
+#[cfg(feature = "fuzz")]
+pub mod mock;
 
 mod const_math_hack;
 mod cursor;
@@ -81,6 +87,7 @@ pub use tree::{Drain, Iter, RleTree, SliceEntry, SliceRef, DEFAULT_MIN_KEYS};
 ///
 /// All the derivable traits are provided for `Constant`.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "fuzz", derive(Arbitrary))]
 pub struct Constant<T>(pub T);
 
 impl<Idx, T: Clone + PartialEq> Slice<Idx> for Constant<T> {

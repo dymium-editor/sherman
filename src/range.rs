@@ -12,12 +12,15 @@
 //!
 //! [`RleTree`]: crate::RleTree
 
+#[cfg(feature = "fuzz")]
+use arbitrary::Arbitrary;
 use std::ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive};
 
 /// The starting bound of a range
 ///
 /// Refer to the [module documentation](self) for more information.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "fuzz", derive(Arbitrary))]
 pub enum StartBound<T> {
     Included(T),
     Unbounded,
@@ -27,6 +30,7 @@ pub enum StartBound<T> {
 ///
 /// Refer to the [module documentation](self) for more information.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "fuzz", derive(Arbitrary))]
 pub enum EndBound<T> {
     Included(T),
     Excluded(T),

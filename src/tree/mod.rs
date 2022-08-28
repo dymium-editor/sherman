@@ -7,6 +7,7 @@ use crate::{Cursor, NoCursor, PathComponent};
 use std::fmt::Debug;
 use std::mem::{self, ManuallyDrop};
 use std::ops::Range;
+use std::panic::UnwindSafe;
 
 #[cfg(test)]
 use crate::{MaybeDebug, NoDebugImpl};
@@ -100,6 +101,16 @@ where
     P: RleTreeConfig<I, S>,
 {
     root: Option<Root<I, S, P, M>>,
+}
+
+// FIXME: This should be more precise, specifically around the interactions with `RefUnwindSafe`
+// and `AllowSliceRefs` / `AllowCow`
+impl<I, S, P, const M: usize> UnwindSafe for RleTree<I, S, P, M>
+where
+    I: UnwindSafe,
+    S: UnwindSafe,
+    P: RleTreeConfig<I, S>,
+{
 }
 
 // Separate struct to handle the data associated with the root node - but only when it actually

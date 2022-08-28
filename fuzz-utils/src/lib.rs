@@ -1,10 +1,24 @@
 use arbitrary::{Arbitrary, Unstructured};
+use sherman::mock::Mock;
 use sherman::param::{self, RleTreeConfig};
 use sherman::range::{EndBound, StartBound};
-use sherman::{Index, RleTree, Slice};
+use sherman::RleTree;
 use std::fmt::{self, Debug, Display, Formatter};
-use std::mem;
 use std::ops::Range;
+use std::panic::{self, UnwindSafe};
+
+fn expect_might_panic<R, F: UnwindSafe + FnOnce() -> R>(f: F) -> Result<R, ()> {
+    // set a custom hook that does nothing, so we don't print panic information every time the mock
+    // implementation panics
+    panic::set_hook(Box::new(|_| {}));
+
+    let result = panic::catch_unwind(f).map_err(|_| ());
+
+    // remove our custom hook
+    let _ = panic::take_hook();
+
+    result
+}
 
 const BASIC_VARIANTS: u8 = 2;
 
@@ -15,15 +29,34 @@ pub enum BasicCommand<I, S> {
         id: TreeId,
         start: StartBound<I>,
         end: EndBound<I>,
-        /// Access pattern for elements in the iterator
-        access: Vec<IterDirection>,
+        /// Access pattern for elements in the iterator, only if it shouldn't panic
+        access: Result<Vec<(IterDirection, Option<IterEntry<I, S>>)>, ()>,
     },
     Insert {
         id: TreeId,
         index: I,
         slice: S,
         size: I,
+        panics: bool,
     },
+}
+
+/// Owned iterator item
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IterEntry<I, S> {
+    range: Range<I>,
+    size: I,
+    slice: S,
+}
+
+impl<I, S: Clone> IterEntry<I, S> {
+    fn from_triple((range, size, slice): (Range<I>, I, &S)) -> Self {
+        IterEntry {
+            range,
+            size,
+            slice: slice.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone, Arbitrary)]
@@ -80,7 +113,6 @@ impl<I: Debug, S: Debug> Debug for BasicCommand<I, S> {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match self {
             Self::Iter { id, start, end, access } => {
-                f.write_str("    {\n")?;
                 let start_fmt = match start {
                     StartBound::Unbounded => String::new(),
                     StartBound::Included(i) => format!("{i:?}"),
@@ -90,21 +122,52 @@ impl<I: Debug, S: Debug> Debug for BasicCommand<I, S> {
                     EndBound::Included(i) => format!("={i:?}"),
                     EndBound::Excluded(i) => format!("{i:?}"),
                 };
-                writeln!(f, "        let mut iter = tree_{id}.iter({start_fmt}..{end_fmt});")?;
-                for a in access {
-                    let method = match a {
-                        IterDirection::Forward => "next",
-                        IterDirection::Backward => "next_back",
+
+                let call = format!("tree_{id}.iter({start_fmt}..{end_fmt})");
+
+                if let Ok(access) = access {
+                    f.write_str("    {\n")?;
+
+                    let maybe_mut = match access.is_empty() {
+                        true => "",
+                        false => "mut ",
                     };
 
-                    writeln!(f, "        let _ = iter.{method}();")?;
-                }
+                    writeln!(f, "        let {maybe_mut}iter = {call};")?;
+                    for (a, entry) in access {
+                        let method = match a {
+                            IterDirection::Forward => "next",
+                            IterDirection::Backward => "next_back",
+                        };
 
-                f.write_str("    }\n")
+                        match entry {
+                            None => writeln!(f, "        assert!(iter.{method}().is_none());")?,
+                            Some(IterEntry { range, size, slice }) => {
+                                f.write_str("        {\n")?;
+                                writeln!(f, "            let item = iter.{method}().unwrap();")?;
+                                writeln!(f, "            assert_eq!(item.range(), {range:?});")?;
+                                writeln!(f, "            assert_eq!(item.size(), {size:?});")?;
+                                writeln!(f, "            assert_eq!(item.slice(), {slice:?});")?;
+                                f.write_str("        }\n")?;
+                            }
+                        }
+                    }
+
+                    f.write_str("    }\n")
+                } else {
+                    f.write_str("    assert!(std::panic::catch_unwind(move || {\n")?;
+                    writeln!(f, "        let _ = {call};")?;
+                    f.write_str("    }).is_err());\n")
+                }
             }
-            Self::Insert { id, index, slice, size } => {
+            Self::Insert { id, index, slice, size, panics: false } => {
                 writeln!(f, "    tree_{id}.insert({index:?}, {slice:?}, {size:?});")
             },
+            Self::Insert { id, index, slice, size, panics: true } => {
+                f.write_str("    assert!(std::panic::catch_unwind(move || {\n")?;
+                writeln!(f, "        tree_{id}.insert({index:?}, {slice:?}, {size:?})")?;
+                f.write_str("    }).is_err());\n")
+            }
         }
     }
 }
@@ -148,13 +211,19 @@ impl<I, S> BasicCommand<I, S> {
                     EndBound::Excluded(i) => EndBound::Excluded(f(i)),
                     EndBound::Unbounded => EndBound::Unbounded,
                 },
-                access,
+                access: access.map(|vals| {
+                    vals
+                        .into_iter()
+                        .map(|(dir, entry)| (dir, entry.map(|e| e.map_index(&mut f))))
+                        .collect()
+                }),
             },
-            Self::Insert { id, index, slice, size } => BasicCommand::Insert {
+            Self::Insert { id, index, slice, size, panics } => BasicCommand::Insert {
                 id,
                 index: f(index),
                 slice,
                 size: f(size),
+                panics,
             }
         }
     }
@@ -166,13 +235,19 @@ impl<I, S> BasicCommand<I, S> {
                 id,
                 start,
                 end,
-                access,
+                access: access.map(|vals| {
+                    vals
+                        .into_iter()
+                        .map(|(dir, entry)| (dir, entry.map(|e| e.map_slice(&mut f))))
+                        .collect()
+                }),
             },
-            Self::Insert { id, index, slice, size } => BasicCommand::Insert {
+            Self::Insert { id, index, slice, size, panics } => BasicCommand::Insert {
                 id,
                 index,
                 slice: f(slice),
                 size,
+                panics,
             }
         }
     }
@@ -210,15 +285,38 @@ impl<I, S> CowCommand<I, S> {
     }
 }
 
-impl<'d, C: ArbitraryCommand<'d>> Arbitrary<'d> for CommandSequence<C> {
-    fn arbitrary(u: &mut Unstructured<'d>) -> arbitrary::Result<Self> {
-        let num_trees = 1;
-        let mut cmds = Vec::new();
+impl<I, S> IterEntry<I, S> {
+    fn map_index<J, F: FnMut(I) -> J>(self, mut f: F) -> IterEntry<J, S> {
+        IterEntry {
+            range: f(self.range.start)..f(self.range.end),
+            size: f(self.size),
+            slice: self.slice,
+        }
+    }
 
-        while !u.is_empty() {
-            let id = TreeId(u.int_in_range(0..=num_trees - 1)?);
+    fn map_slice<T, F: FnMut(S) -> T>(self, mut f: F) -> IterEntry<I, T> {
+        IterEntry {
+            range: self.range,
+            size: self.size,
+            slice: f(self.slice),
+        }
+    }
+}
+
+impl<'d, C: ArbitraryCommand<'d>> Arbitrary<'d> for CommandSequence<C>
+where
+    C::Index: sherman::Index,
+    C::Slice: sherman::Slice<C::Index>,
+{
+    fn arbitrary(u: &mut Unstructured<'d>) -> arbitrary::Result<Self> {
+        let mut cmds: Vec<C> = Vec::new();
+
+        let mut trees = vec![Mock::new_empty()];
+
+        while !u.is_empty() && !cmds.last().map(|c| c.should_panic()).unwrap_or(false) {
+            let id = TreeId(u.int_in_range(0..=trees.len() - 1)?);
             let variant = u.int_in_range(0..=C::VARIANTS - 1)?;
-            cmds.push(C::arbitrary(u, variant, id)?);
+            cmds.push(C::arbitrary(u, variant, id, &mut trees)?);
         }
 
         Ok(CommandSequence { cmds })
@@ -228,70 +326,167 @@ impl<'d, C: ArbitraryCommand<'d>> Arbitrary<'d> for CommandSequence<C> {
 pub trait ArbitraryCommand<'d>: Sized {
     const VARIANTS: u8;
 
-    fn arbitrary(u: &mut Unstructured<'d>, variant: u8, id: TreeId) -> arbitrary::Result<Self>;
+    type Index;
+    type Slice;
+
+    /// Returns true if the expected result of this command is a panic
+    fn should_panic(&self) -> bool;
+
+    /// Creates a new command and executes it on the provided mock trees
+    fn arbitrary(
+        u: &mut Unstructured<'d>,
+        variant: u8,
+        id: TreeId,
+        mocks: &mut Vec<Mock<Self::Index, Self::Slice>>,
+    ) -> arbitrary::Result<Self>;
 }
 
-#[derive(Arbitrary)]
-enum FuzzStartBound<I> {
-    Included(I),
-    Unbounded,
-}
-
-#[derive(Arbitrary)]
-enum FuzzEndBound<I> {
-    Included(I),
-    Excluded(I),
-    Unbounded,
-}
-
-impl<'d, I: Arbitrary<'d>, S: Arbitrary<'d>> ArbitraryCommand<'d> for BasicCommand<I, S> {
+impl<'d, I, S> ArbitraryCommand<'d> for BasicCommand<I, S>
+where
+    I: Arbitrary<'d> + UnwindSafe + sherman::Index,
+    S: Arbitrary<'d> + UnwindSafe + sherman::Slice<I> + Clone,
+{
     const VARIANTS: u8 = BASIC_VARIANTS;
 
-    fn arbitrary(u: &mut Unstructured<'d>, variant: u8, id: TreeId) -> arbitrary::Result<Self> {
+    type Index = I;
+    type Slice = S;
+
+    fn should_panic(&self) -> bool {
+        match self {
+            Self::Iter { access, .. } => access.is_err(),
+            Self::Insert { panics, .. } => *panics,
+        }
+    }
+
+    fn arbitrary(
+        u: &mut Unstructured<'d>,
+        variant: u8,
+        id: TreeId,
+        mocks: &mut Vec<Mock<I, S>>,
+    ) -> arbitrary::Result<Self> {
         match variant {
             // iter
-            0 => Ok(Self::Iter {
-                id,
-                start: match u.arbitrary()? {
-                    FuzzStartBound::Included(i) => StartBound::Included(i),
-                    FuzzStartBound::Unbounded => StartBound::Unbounded,
-                },
-                end: match u.arbitrary()? {
-                    FuzzEndBound::Included(i) => EndBound::Included(i),
-                    FuzzEndBound::Excluded(i) => EndBound::Excluded(i),
-                    FuzzEndBound::Unbounded => EndBound::Unbounded,
-                },
-                access: u.arbitrary()?,
-            }),
+            0 => {
+                let mock = mocks.remove(id.0);
+
+                let start: StartBound<I> = u.arbitrary()?;
+                let end: EndBound<I> = u.arbitrary()?;
+                let access_directions: Vec<IterDirection> = u.arbitrary()?;
+
+                let access = expect_might_panic(move || {
+                    let mut iter = mock.iter((start, end));
+                    let mut vals = Vec::new();
+                    for direction in access_directions {
+                        let entry = match direction {
+                            IterDirection::Forward => iter.next(),
+                            IterDirection::Backward => iter.next_back(),
+                        };
+
+                        vals.push((direction, entry.map(IterEntry::from_triple)));
+                    }
+
+                    (mock, vals)
+                });
+
+                Ok(Self::Iter {
+                    id,
+                    start,
+                    end,
+                    access: match access {
+                        Ok((mock, vals)) => {
+                            mocks.insert(id.0, mock);
+                            Ok(vals)
+                        }
+                        Err(()) => Err(()),
+                    },
+                })
+            }
             // insert
-            1 => Ok(Self::Insert {
-                id,
-                index: u.arbitrary()?,
-                slice: u.arbitrary()?,
-                size: u.arbitrary()?,
-            }),
+            1 => {
+                let mut mock = mocks.remove(id.0);
+
+                let index = u.arbitrary()?;
+                let slice: S = u.arbitrary()?;
+                let size = u.arbitrary()?;
+
+                let slice_cloned = slice.clone();
+                let result = expect_might_panic(move || {
+                    mock.insert(index, slice_cloned, size);
+                    mock
+                });
+
+                Ok(Self::Insert {
+                    id,
+                    index,
+                    slice,
+                    size,
+                    panics: match result {
+                        Ok(mock) => {
+                            mocks.insert(id.0, mock);
+                            false
+                        }
+                        Err(()) => true,
+                    },
+                })
+            }
             _ => unreachable!("bad BasicCommand variant {variant}"),
         }
     }
 }
 
-impl<'d, I: Arbitrary<'d>, S: Arbitrary<'d>> ArbitraryCommand<'d> for SliceRefCommand<I, S> {
+impl<'d, I, S> ArbitraryCommand<'d> for SliceRefCommand<I, S>
+where
+    I: Arbitrary<'d> + UnwindSafe + sherman::Index,
+    S: Arbitrary<'d> + UnwindSafe + sherman::Slice<I> + Clone,
+{
     const VARIANTS: u8 = BASIC_VARIANTS + SLICE_REF_VARIANTS;
 
-    fn arbitrary(u: &mut Unstructured<'d>, variant: u8, id: TreeId) -> arbitrary::Result<Self> {
+    type Index = I;
+    type Slice = S;
+
+    fn should_panic(&self) -> bool {
+        match self {
+            Self::Basic(c) => c.should_panic(),
+        }
+    }
+
+    fn arbitrary(
+        u: &mut Unstructured<'d>,
+        variant: u8,
+        id: TreeId,
+        mocks: &mut Vec<Mock<I, S>>,
+    ) -> arbitrary::Result<Self> {
         match variant {
-            v if v < BASIC_VARIANTS => BasicCommand::arbitrary(u, v, id).map(Self::Basic),
+            v if v < BASIC_VARIANTS => BasicCommand::arbitrary(u, v, id, mocks).map(Self::Basic),
             _ => unreachable!("bad SliceRefCommand variant {variant}"),
         }
     }
 }
 
-impl<'d, I: Arbitrary<'d>, S: Arbitrary<'d>> ArbitraryCommand<'d> for CowCommand<I, S> {
+impl<'d, I, S> ArbitraryCommand<'d> for CowCommand<I, S>
+where
+    I: Arbitrary<'d> + UnwindSafe + sherman::Index,
+    S: Arbitrary<'d> + UnwindSafe + sherman::Slice<I> + Clone,
+{
     const VARIANTS: u8 = BASIC_VARIANTS + COW_VARIANTS;
 
-    fn arbitrary(u: &mut Unstructured<'d>, variant: u8, id: TreeId) -> arbitrary::Result<Self> {
+    type Index = I;
+    type Slice = S;
+
+    fn should_panic(&self) -> bool {
+        match self {
+            Self::Basic(c) => c.should_panic(),
+        }
+    }
+
+    fn arbitrary(
+        u: &mut Unstructured<'d>,
+        variant: u8,
+        id: TreeId,
+        mocks: &mut Vec<Mock<I, S>>,
+    ) -> arbitrary::Result<Self> {
         match variant {
-            v if v < BASIC_VARIANTS => BasicCommand::arbitrary(u, v, id).map(Self::Basic),
+            v if v < BASIC_VARIANTS => BasicCommand::arbitrary(u, v, id, mocks).map(Self::Basic),
             _ => unreachable!("bad CowCommand variant {variant}"),
         }
     }
@@ -299,28 +494,24 @@ impl<'d, I: Arbitrary<'d>, S: Arbitrary<'d>> ArbitraryCommand<'d> for CowCommand
 
 /// Ongoing state for executing commands to an [`RleTree`] and mock implementation
 pub struct RunnerState<I, S, P: RleTreeConfig<I, S>, const M: usize> {
-    trees: Vec<(Mock<I, S>, RleTree<I, S, P, M>)>,
+    trees: Vec<RleTree<I, S, P, M>>,
 }
 
 impl<I, S, P, const M: usize> RunnerState<I, S, P, M>
 where
-    I: Index,
-    S: Debug + Clone + PartialEq + Slice<I>,
+    I: UnwindSafe + sherman::Index,
+    S: UnwindSafe + sherman::Slice<I> + Debug + Clone + PartialEq,
     P: RleTreeConfig<I, S> + param::SupportsInsert<I, S>,
 {
     /// Creates a new, blank `RunnerState` to run a series of commands
     pub fn init() -> Self {
         RunnerState {
-            trees: vec![(Mock::new(), RleTree::new_empty())],
+            trees: vec![RleTree::new_empty()],
         }
     }
 
-    /// Runs the command, returning an error if no more commands can be run
-    pub fn run_basic_cmd(
-        &mut self,
-        cmd: &BasicCommand<I, S>,
-        too_big: impl Fn(I, I) -> bool,
-    ) -> Result<(), ()> {
+    /// Runs the command
+    pub fn run_basic_cmd(&mut self, cmd: &BasicCommand<I, S>) {
         match cmd {
             BasicCommand::Iter {
                 id,
@@ -328,57 +519,53 @@ where
                 end,
                 access,
             } => {
-                let (mock, tree) = &mut self.trees[id.0];
-                let mut mock_iter = mock.try_iter(*start, *end)?;
-                let mut tree_iter = tree.iter((*start, *end));
-                for a in access {
-                    match a {
-                        IterDirection::Forward => {
-                            let mock_item = mock_iter.next();
-                            let tree_item =
-                                tree_iter.next().map(|s| (s.range(), s.size(), s.slice()));
+                let tree = self.trees.remove(id.0);
+                if let Ok(access) = access {
+                    let mut iter = tree.iter((*start, *end));
+                    for (dir, entry) in access {
+                        let item = match dir {
+                            IterDirection::Forward => iter.next(),
+                            IterDirection::Backward => iter.next_back(),
+                        };
 
-                            assert_eq!(mock_item, tree_item);
-                        }
-                        IterDirection::Backward => {
-                            let mock_item = mock_iter.next_back();
-                            let tree_item = tree_iter
-                                .next_back()
-                                .map(|s| (s.range(), s.size(), s.slice()));
-
-                            assert_eq!(mock_item, tree_item);
-                        }
+                        let item_entry = item
+                            .map(|e| (e.range(), e.size(), e.slice()))
+                            .map(IterEntry::from_triple);
+                        assert_eq!(entry, &item_entry);
                     }
+
+                    self.trees.insert(id.0, tree);
+                } else {
+                    let (start, end) = (*start, *end);
+                    let panicked = expect_might_panic(move || {
+                        let _ = tree.iter((start, end));
+                    })
+                    .is_err();
+
+                    assert!(panicked);
                 }
-                Ok(())
             }
             BasicCommand::Insert {
                 id,
                 index,
                 slice,
                 size,
+                panics,
             } => {
-                let (mock, tree) = &mut self.trees[id.0];
-                if too_big(mock.size(), *size) {
-                    return Err(());
+                let mut tree = self.trees.remove(id.0);
+
+                if !panics {
+                    tree.insert(*index, slice.clone(), *size);
+                    self.trees.insert(id.0, tree);
+                } else {
+                    let (index, slice, size) = (*index, slice.clone(), *size);
+                    let panicked = expect_might_panic(move || {
+                        tree.insert(index, slice, size);
+                    })
+                    .is_err();
+
+                    assert!(panicked);
                 }
-
-                mock.try_insert(*index, slice.clone(), *size)?;
-                tree.insert(*index, slice.clone(), *size);
-
-                // After inserting, check that the contents match what we're expecting.
-                let mock_items = mock
-                    .try_iter(StartBound::Unbounded, EndBound::Unbounded)
-                    .unwrap()
-                    .collect::<Vec<_>>();
-                let tree_items = tree
-                    .iter(..)
-                    .map(|s| (s.range(), s.size(), s.slice()))
-                    .collect::<Vec<_>>();
-
-                assert_eq!(mock_items, tree_items);
-
-                Ok(())
             }
         }
     }
@@ -386,230 +573,24 @@ where
 
 impl<I, S, const M: usize> RunnerState<I, S, param::AllowSliceRefs, M>
 where
-    I: Index,
-    S: Debug + Clone + PartialEq + Slice<I>,
+    I: UnwindSafe + sherman::Index,
+    S: UnwindSafe + sherman::Slice<I> + Debug + Clone + PartialEq,
 {
-    pub fn run_slice_ref_cmd(
-        &mut self,
-        cmd: &SliceRefCommand<I, S>,
-        too_big: impl Fn(I, I) -> bool,
-    ) -> Result<(), ()> {
+    pub fn run_slice_ref_cmd(&mut self, cmd: &SliceRefCommand<I, S>) {
         match cmd {
-            SliceRefCommand::Basic(c) => self.run_basic_cmd(c, too_big),
+            SliceRefCommand::Basic(c) => self.run_basic_cmd(c),
         }
     }
 }
 
 impl<I, S, const M: usize> RunnerState<I, S, param::AllowCow, M>
 where
-    I: Index,
-    S: Debug + Clone + PartialEq + Slice<I>,
+    I: UnwindSafe + sherman::Index,
+    S: UnwindSafe + sherman::Slice<I> + Debug + Clone + PartialEq,
 {
-    pub fn run_cow_cmd(
-        &mut self,
-        cmd: &CowCommand<I, S>,
-        too_big: impl Fn(I, I) -> bool,
-    ) -> Result<(), ()> {
+    pub fn run_cow_cmd(&mut self, cmd: &CowCommand<I, S>) {
         match cmd {
-            CowCommand::Basic(c) => self.run_basic_cmd(c, too_big),
+            CowCommand::Basic(c) => self.run_basic_cmd(c),
         }
-    }
-}
-
-/// A mock, inefficient implementation of the [`RleTree`] interface
-#[derive(Debug, Clone)]
-pub struct Mock<I, S> {
-    // list of end positions and the slices in the run
-    runs: Vec<(I, S)>,
-}
-
-impl<I: Index, S: Slice<I>> Mock<I, S> {
-    fn new() -> Self {
-        Mock { runs: Vec::new() }
-    }
-
-    fn size(&self) -> I {
-        self.runs.last().map(|(i, _)| *i).unwrap_or(I::ZERO)
-    }
-
-    fn try_insert(&mut self, index: I, mut slice: S, size: I) -> Result<(), ()> {
-        if index > self.size() || size == I::ZERO {
-            return Err(());
-        }
-
-        // find the insertion point
-        let mut idx = match self.runs.binary_search_by_key(&index, |(i, _)| *i) {
-            Err(i) => i,
-            Ok(i) => i + 1,
-        };
-
-        let key_start = if idx < self.runs.len() {
-            Some(
-                idx.checked_sub(1)
-                    .map(|i| self.runs[i].0)
-                    .unwrap_or(I::ZERO),
-            )
-        } else {
-            None
-        };
-
-        // If the index is greater than the start of the key it's in, then we need to split
-        // that key
-        if let Some(s) = key_start && s < index {
-            // let (key_end, mut lhs) = self.runs.remove(idx);
-            let pos_in_key = index.sub_left(s);
-            let rhs = self.runs[idx].1.split_at(pos_in_key);
-            let rhs_end = mem::replace(&mut self.runs[idx].0, pos_in_key);
-            self.runs[idx].0 = pos_in_key;
-            self.runs.insert(idx + 1, (rhs_end, rhs));
-        }
-
-        let mut base_pos = index;
-        let mut old_size = I::ZERO;
-        let mut new_size = size;
-
-        // insert at the the point between this key and the one before
-
-        if let Some(p) = idx.checked_sub(1) {
-            let (lhs_end, lhs) = self.runs.remove(p);
-            assert_eq!(lhs_end, index);
-            match lhs.try_join(slice) {
-                Err((lhs, s)) => {
-                    self.runs.insert(p, (lhs_end, lhs));
-                    slice = s;
-                }
-                Ok(new) => {
-                    let lhs_start = p.checked_sub(1).map(|i| self.runs[i].0).unwrap_or(I::ZERO);
-                    let lhs_size = lhs_end.sub_left(lhs_start);
-                    old_size = old_size.add_left(lhs_size);
-                    new_size = new_size.add_left(lhs_size);
-                    base_pos = lhs_start;
-                    slice = new;
-                    idx = p;
-                }
-            }
-        }
-
-        // `idx` is already the right-hand node, because `index` is equal to the end of `lhs`
-        if idx < self.runs.len() {
-            let (rhs_end, rhs) = self.runs.remove(idx);
-            match rhs.try_join(slice) {
-                Err((s, rhs)) => {
-                    self.runs.insert(idx + 1, (rhs_end, rhs));
-                    slice = s;
-                }
-                Ok(new) => {
-                    let rhs_start = idx
-                        .checked_sub(1)
-                        .map(|i| self.runs[i].0)
-                        .unwrap_or(I::ZERO);
-                    let rhs_size = rhs_end.sub_left(rhs_start);
-                    old_size = old_size.add_right(rhs_size);
-                    new_size = new_size.add_right(rhs_size);
-                    slice = new;
-                }
-            }
-        }
-
-        self.runs.insert(idx, (base_pos.add_right(new_size), slice));
-
-        let diff = base_pos
-            .add_right(new_size)
-            .sub_left(base_pos.add_right(old_size));
-
-        for (i, _) in self.runs.get_mut(idx + 1..).unwrap_or(&mut []) {
-            *i = i.add_left(diff);
-        }
-
-        Ok(())
-    }
-
-    fn try_iter(&self, start: StartBound<I>, end: EndBound<I>) -> Result<MockIter<'_, I, S>, ()> {
-        let start_pos;
-
-        let fwd_idx = match start {
-            StartBound::Unbounded => {
-                start_pos = I::ZERO;
-                0
-            }
-            StartBound::Included(i) => {
-                start_pos = i;
-                if i > self.size() {
-                    return Err(());
-                }
-
-                match self.runs.binary_search_by_key(&i, |(i, _)| *i) {
-                    Ok(i) => i + 1,
-                    Err(i) => i,
-                }
-            }
-        };
-
-        let bkwd_idx = match end {
-            EndBound::Included(i) if i < start_pos || i >= self.size() => return Err(()),
-            EndBound::Excluded(i) if i <= start_pos || i > self.size() => return Err(()),
-
-            EndBound::Unbounded => self.runs.len(),
-            EndBound::Included(i) => match self.runs.binary_search_by_key(&i, |(i, _)| *i) {
-                Ok(i) => i + 1,
-                Err(i) => i,
-            },
-            EndBound::Excluded(i) => match self.runs.binary_search_by_key(&i, |(i, _)| *i) {
-                Ok(i) => i,
-                Err(i) => i,
-            },
-        };
-
-        Ok(MockIter {
-            runs: &self.runs,
-            fwd_idx,
-            bkwd_idx,
-        })
-    }
-}
-
-pub struct MockIter<'t, I, S> {
-    runs: &'t [(I, S)],
-    fwd_idx: usize,
-    bkwd_idx: usize,
-}
-
-impl<'t, I: Index, S> Iterator for MockIter<'t, I, S> {
-    type Item = (Range<I>, I, &'t S);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.fwd_idx >= self.bkwd_idx {
-            return None;
-        }
-
-        let start = self
-            .fwd_idx
-            .checked_sub(1)
-            .map(|i| self.runs[i].0)
-            .unwrap_or(I::ZERO);
-
-        let &(end, ref slice) = &self.runs[self.fwd_idx];
-        self.fwd_idx += 1;
-
-        Some((start..end, end.sub_left(start), slice))
-    }
-}
-
-impl<'t, I: Index, S> DoubleEndedIterator for MockIter<'t, I, S> {
-    fn next_back(&mut self) -> Option<Self::Item> {
-        if self.fwd_idx >= self.bkwd_idx {
-            return None;
-        }
-
-        self.bkwd_idx -= 1;
-        let start = self
-            .bkwd_idx
-            .checked_sub(1)
-            .map(|i| self.runs[i].0)
-            .unwrap_or(I::ZERO);
-
-        let &(end, ref slice) = &self.runs[self.bkwd_idx];
-
-        Some((start..end, end.sub_left(start), slice))
     }
 }
