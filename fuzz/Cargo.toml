@@ -1,0 +1,25 @@
+[package]
+name = "sherman-fuzz"
+version = "0.0.0"
+authors = ["Automatically generated"]
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+arbitrary = { version = "1.1.3", features = ["derive"] }
+libfuzzer-sys = "0.4"
+sherman = { path = ".." }
+sherman-fuzz-utils = { path = "../fuzz-utils" }
+
+# Prevent this from interfering with workspaces
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "no_features_basic_slices"
+path = "fuzz_targets/no_features_basic_slices.rs"
+test = false
+doc = false
