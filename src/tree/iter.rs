@@ -456,8 +456,27 @@ where
     fn next(&mut self) -> Option<Self::Item> {
         let state = self.state.as_mut()?;
 
-        let fwd = match state.fwd.as_mut() {
-            Some(s) => s,
+        let (fwd, next_start) = match state.fwd.as_mut() {
+            Some(fwd) => {
+                // Update `fwd` to the next entry:
+                let next_start = fwd.end_pos;
+                // ... but first, check that it'll be within bounds:
+                match self.end {
+                    IncludedOrExcludedBound::Included(i) if i < next_start => {
+                        self.state = None;
+                        return None;
+                    }
+                    IncludedOrExcludedBound::Excluded(i) if i <= next_start => {
+                        self.state = None;
+                        return None;
+                    }
+                    _ => (),
+                }
+
+                fwd.fwd_step();
+
+                (fwd, next_start)
+            }
             None => {
                 let s = Self::make_stack(
                     state.root,
@@ -465,36 +484,12 @@ where
                     IncludedOrExcludedBound::Included(self.start),
                 );
 
-                let size = s.head.slice_size();
-                let start = s.end_pos.sub_right(size);
-
-                let entry = SliceEntry {
-                    range: start..s.end_pos,
-                    slice: s.head,
-                    store: state.store,
-                };
-
-                state.fwd = Some(s);
-                return Some(entry);
+                // We can't use `self.start` for the start position because it might be in the
+                // middle of a slice
+                let next_start = s.end_pos.sub_right(s.head.slice_size());
+                (state.fwd.insert(s), next_start)
             }
         };
-
-        // Update `fwd` to the next entry:
-        let next_start = fwd.end_pos;
-        // ... but first, check that it'll be within bounds:
-        match self.end {
-            IncludedOrExcludedBound::Included(i) if i < next_start => {
-                self.state = None;
-                return None;
-            }
-            IncludedOrExcludedBound::Excluded(i) if i <= next_start => {
-                self.state = None;
-                return None;
-            }
-            _ => (),
-        }
-
-        fwd.fwd_step();
 
         // If the current head is already the head of the backward stack, then it's already been
         // returned, which would mean that the iterator has yielded all of its items.
@@ -524,31 +519,22 @@ where
         let state = self.state.as_mut()?;
 
         let bkwd = match state.bkwd.as_mut() {
-            Some(s) => s,
+            Some(bkwd) => {
+                let next_end = bkwd.end_pos.sub_right(bkwd.head.slice_size());
+                if next_end <= self.start {
+                    self.state = None;
+                    return None;
+                }
+
+                bkwd.bkwd_step();
+                bkwd
+            }
             None => {
                 let s = Self::make_stack(state.root, state.cursor.take(), self.end);
 
-                let size = s.head.slice_size();
-                let start = s.end_pos.sub_right(size);
-
-                let entry = SliceEntry {
-                    range: start..s.end_pos,
-                    slice: s.head,
-                    store: state.store,
-                };
-
-                state.bkwd = Some(s);
-                return Some(entry);
+                state.bkwd.insert(s)
             }
         };
-
-        let next_end = bkwd.end_pos.sub_right(bkwd.head.slice_size());
-        if next_end <= self.start {
-            self.state = None;
-            return None;
-        }
-
-        bkwd.bkwd_step();
 
         let is_done = matches!(state.fwd.as_ref(), Some(s) if s.head == bkwd.head);
         if is_done {

@@ -70,20 +70,27 @@ fn basic_iter() {
 }
 
 #[test]
-fn auto_fuzz_1_iter_rangefull_single_backwards() {
-    let mut tree_0: RleTree<usize, Constant<char>> = RleTree::new_empty();
-    tree_0.insert(0, Constant('C'), 145138940641343);
-    {
-        let mut iter = tree_0.iter(..);
-        let _ = iter.next_back();
-    }
-}
-
-#[test]
 fn auto_fuzz_2_iter_rangefrom_out_of_bounds_panic() {
     let tree_0: RleTree<usize, Constant<char>> = RleTree::new_empty();
     assert!(std::panic::catch_unwind(move || {
         let _ = tree_0.iter(738590338888761098..);
     })
     .is_err());
+}
+
+// superset of the original auto_fuzz_1
+#[test]
+fn auto_fuzz_3_iter_rangefull_bkwd_fwd_none() {
+    let mut tree_0: RleTree<usize, Constant<char>> = RleTree::new_empty();
+    tree_0.insert(0, Constant('C'), 145138940641343);
+    {
+        let mut iter = tree_0.iter(..);
+        {
+            let item = iter.next_back().unwrap();
+            assert_eq!(item.range(), 0..145138940641343);
+            assert_eq!(item.size(), 145138940641343);
+            assert_eq!(item.slice(), &Constant('C'));
+        }
+        assert!(iter.next().is_none());
+    }
 }
