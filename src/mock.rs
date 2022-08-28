@@ -19,6 +19,16 @@ impl<I: Index, S: Slice<I>> Mock<I, S> {
         Mock { runs: Vec::new() }
     }
 
+    pub fn new(slice: S, size: I) -> Self {
+        if size <= I::ZERO {
+            panic!("size less than zero");
+        }
+
+        Mock {
+            runs: vec![(size, slice)],
+        }
+    }
+
     pub fn size(&self) -> I {
         self.runs.last().map(|(i, _)| *i).unwrap_or(I::ZERO)
     }
@@ -224,6 +234,31 @@ impl<'t, I: Index, S> DoubleEndedIterator for MockIter<'t, I, S> {
 mod tests {
     use super::Mock;
     use crate::Constant;
+
+    // Tests copied from the `RleTree::iter` documentation
+    #[test]
+    fn basic_iter_tests() {
+        assert!(std::panic::catch_unwind(|| {
+            let tree: Mock<usize, Constant<char>> = Mock::new(Constant('a'), 5);
+            let _ = tree.iter(5..);
+        })
+        .is_err());
+
+        assert!(std::panic::catch_unwind(|| {
+            let tree: Mock<usize, Constant<char>> = Mock::new(Constant('a'), 5);
+            let _ = tree.iter(..=5);
+        })
+        .is_err());
+
+        assert!(std::panic::catch_unwind(|| {
+            let tree: Mock<usize, Constant<char>> = Mock::new(Constant('a'), 5);
+            let _ = tree.iter(5..5);
+        })
+        .is_err());
+
+        let tree: Mock<usize, Constant<char>> = Mock::new(Constant('a'), 5);
+        let _ = tree.iter(..0);
+    }
 
     #[test]
     fn auto_fuzz_1() {
