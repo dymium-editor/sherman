@@ -152,14 +152,16 @@ impl<I: Index, S: Slice<I>> Mock<I, S> {
                 panic!("invalid range, or end index out of bounds")
             }
 
+            // bkwd_idx is always +1 from the next index, so most of these are +1 from the first
+            // backward index
             EndBound::Unbounded => self.runs.len(),
             EndBound::Included(i) => match self.runs.binary_search_by_key(&i, |(i, _)| *i) {
-                Ok(i) => i + 1,
-                Err(i) => i,
+                Ok(i) => i + 2,
+                Err(i) => i + 1,
             },
             EndBound::Excluded(i) => match self.runs.binary_search_by_key(&i, |(i, _)| *i) {
-                Ok(i) => i,
-                Err(i) => i,
+                Ok(i) => i + 1,
+                Err(i) => i + 1,
             },
         };
 
@@ -171,6 +173,7 @@ impl<I: Index, S: Slice<I>> Mock<I, S> {
     }
 }
 
+#[derive(Debug)]
 pub struct MockIter<'t, I, S> {
     runs: &'t [(I, S)],
     fwd_idx: usize,
@@ -214,5 +217,26 @@ impl<'t, I: Index, S> DoubleEndedIterator for MockIter<'t, I, S> {
         let &(end, ref slice) = &self.runs[self.bkwd_idx];
 
         Some((start..end, end.sub_left(start), slice))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Mock;
+    use crate::Constant;
+
+    #[test]
+    fn auto_fuzz_1() {
+        let mut tree_0: Mock<usize, Constant<char>> = Mock::new_empty();
+        tree_0.insert(0, Constant('A'), 16146052610957303968);
+        {
+            let mut iter = tree_0.iter(..=10978558926184448);
+            {
+                let item = iter.next_back().unwrap();
+                assert_eq!(item.0, 0..16146052610957303968);
+                assert_eq!(item.1, 16146052610957303968);
+                assert_eq!(item.2, &Constant('A'));
+            }
+        }
     }
 }
