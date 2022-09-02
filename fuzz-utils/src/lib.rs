@@ -129,7 +129,7 @@ impl<I: Debug, S: Debug> Debug for BasicCommand<I, S> {
                     f.write_str("    {\n")?;
 
                     let maybe_mut = match access.is_empty() {
-                        true => "",
+                        true => "_", // add an underscore to mark `iter` as unused
                         false => "mut ",
                     };
 
