@@ -1493,9 +1493,10 @@ where
 
             if let Some(new_lhs_size) = override_lhs_size {
                 let (lhs_pos, old_lhs_size) = {
-                    // SAFETY: `into_slice_handle` requires that `0` is a valid key index, which is
-                    // guaranteed by the caller if `override_lhs_size` is not `None`.
-                    let handle = unsafe { node.borrow().into_slice_handle(0) };
+                    // SAFETY: `into_slice_handle` requires that `new_key_idx - 1` is a valid key
+                    // index, which is guaranteed by the caller to (a) not overflow if
+                    // `override_lhs_size.is_some()` and (b) be a valid key index.
+                    let handle = unsafe { node.borrow().into_slice_handle(new_key_idx - 1) };
                     (handle.key_pos(), handle.slice_size())
                 };
 

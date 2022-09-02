@@ -110,3 +110,12 @@ fn auto_fuzz_4_middle_iter() {
         }
     }
 }
+
+#[test]
+fn auto_fuzz_5_insert_nearly_full() {
+    let mut tree_0: RleTree<u8, Constant<char>> = RleTree::new_empty();
+    tree_0.insert(0, Constant('V'), 147);
+    tree_0.insert(147, Constant('R'), 45);
+    tree_0.insert(0, Constant('A'), 1);
+    tree_0.insert(147, Constant('B'), 33);
+}
