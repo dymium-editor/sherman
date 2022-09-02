@@ -33,6 +33,7 @@ macro_rules! weak_assert {
 }
 
 #[cfg(test)]
+#[allow(dead_code)] // this is only used when actively debugging.
 pub(crate) static DEBUG: AtomicBool = AtomicBool::new(false);
 
 #[cfg(test)]
