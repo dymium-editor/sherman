@@ -119,3 +119,19 @@ fn auto_fuzz_5_insert_nearly_full() {
     tree_0.insert(0, Constant('A'), 1);
     tree_0.insert(147, Constant('B'), 33);
 }
+
+#[test]
+fn auto_fuzz_6_iter_excluded_slice_start_boundary() {
+    let mut tree_0: RleTree<u8, Constant<char>> = RleTree::new_empty();
+    tree_0.insert(0, Constant('V'), 147);
+    tree_0.insert(147, Constant('R'), 1);
+    {
+        let mut iter = tree_0.iter(..147);
+        {
+            let item = iter.next_back().unwrap();
+            assert_eq!(item.range(), 0..147);
+            assert_eq!(item.size(), 147);
+            assert_eq!(item.slice(), &Constant('V'));
+        }
+    }
+}

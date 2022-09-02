@@ -369,7 +369,8 @@ where
     /// ```
     /// # use sherman::{RleTree, Constant}; let tree: RleTree<usize, Constant<char>> = RleTree::new(Constant('a'), 5);
     /// // doesn't panic, produces an empty iterator:
-    /// let _ = tree.iter(..0);
+    /// let mut iter = tree.iter(..0);
+    /// assert!(iter.next().is_none());
     /// ```
     ///
     /// [`iter_with_cursor`]: Self::iter_with_cursor

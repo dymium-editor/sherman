@@ -9,6 +9,11 @@ use std::any::TypeId;
 use std::fmt::Debug;
 use std::ops::Range;
 
+#[cfg(test)]
+use crate::MaybeDebug;
+#[cfg(test)]
+use std::fmt::{self, Formatter};
+
 use super::node::{borrow, ty, NodeHandle, SliceHandle, Type};
 use super::{search_step, ChildOrKey, Root, DEFAULT_MIN_KEYS};
 
@@ -56,6 +61,88 @@ where
     head: SliceHandle<ty::Unknown, borrow::Immut<'t>, I, S, P, M>,
     /// The absolute end position of `head`
     end_pos: I,
+}
+
+#[cfg(test)]
+impl<'t, C, I, S, P: RleTreeConfig<I, S>, const M: usize> Debug for Iter<'t, C, I, S, P, M> {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        f.debug_struct("Iter")
+            .field("start", self.start.fallible_debug())
+            .field("end", self.end.fallible_debug())
+            .field("state", &self.state)
+            .finish()
+    }
+}
+
+#[cfg(test)]
+impl<'t, C, I, S, P: RleTreeConfig<I, S>, const M: usize> Debug for IterState<'t, C, I, S, P, M> {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        let mut s = f.debug_struct("IterState");
+        s.field("root", &self.root.ptr());
+
+        // Only show the cursor if there's possibly anything there
+        if std::mem::size_of::<C>() != 0 {
+            // match on `self.cursor` so that we display `Some(<No debug impl>)` if the cursor is
+            // present but doesn't have a debug implementation; or `None` if the cursor isn't
+            // present, regardless of whether it has a debug impl.
+            let _ = match self.cursor.as_ref() {
+                Some(c) => s.field("cursor", &Some(c.fallible_debug())),
+                None => s.field("cursor", &None as &Option<()>),
+            };
+        }
+
+        s.field("fwd", &self.fwd).field("bkwd", &self.bkwd).finish()
+    }
+}
+
+#[cfg(test)]
+impl<'t, I, S, P: RleTreeConfig<I, S>, const M: usize> Debug for IterStack<'t, I, S, P, M> {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        struct JustTheStack<'a, 't, I, S, P: RleTreeConfig<I, S>, const M: usize> {
+            this: &'a IterStack<'t, I, S, P, M>,
+        }
+
+        impl<'a, 't, I, S, P: RleTreeConfig<I, S>, const M: usize> Debug
+            for JustTheStack<'a, 't, I, S, P, M>
+        {
+            fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+                f.debug_list()
+                    .entries(
+                        self.this
+                            .stack
+                            .iter()
+                            .map(|(node, child_idx)| (node.ptr(), *child_idx)),
+                    )
+                    .finish()
+            }
+        }
+
+        struct HeadNode<T> {
+            ptr: std::ptr::NonNull<T>,
+            idx: u8,
+        }
+
+        impl<T> Debug for HeadNode<T> {
+            fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+                f.debug_struct("")
+                    .field("ptr", &self.ptr)
+                    .field("idx", &self.idx)
+                    .finish()
+            }
+        }
+
+        f.debug_struct("IterStack")
+            .field("stack", &JustTheStack { this: self })
+            .field(
+                "head",
+                &HeadNode {
+                    ptr: self.head.node.ptr(),
+                    idx: self.head.idx,
+                },
+            )
+            .field("end_pos", self.end_pos.fallible_debug())
+            .finish()
+    }
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -135,7 +222,7 @@ where
         range: impl Debug + RangeBounds<I>,
         tree_size: I,
         cursor: C,
-        root: Option<(
+        mut root: Option<(
             NodeHandle<ty::Unknown, borrow::Immut<'t>, I, S, P, M>,
             &'t P::SliceRefStore,
         )>,
@@ -167,6 +254,17 @@ where
             panic!("range `{range:?}` out of bounds for tree size {tree_size:?}");
         }
 
+        // Special case for empty iterators, so we don't attempt to traverse the tree when we won't
+        // end up with anything.
+        let bounded_end_bound = match end {
+            IncludedOrExcludedBound::Included(i) => EndBound::Included(i),
+            IncludedOrExcludedBound::Excluded(i) => EndBound::Excluded(i),
+        };
+
+        if (StartBound::Included(start), bounded_end_bound).is_empty_naive() {
+            root = None;
+        }
+
         Iter {
             start,
             end,
@@ -188,9 +286,9 @@ where
         let mut stack = Vec::new();
         let mut cursor = cursor.map(|c| c.into_path());
         let mut head_node = root;
-        let mut target = match target {
-            IncludedOrExcludedBound::Included(i) => i,
-            IncludedOrExcludedBound::Excluded(i) => i,
+        let (mut target, excluded) = match target {
+            IncludedOrExcludedBound::Included(i) => (i, false),
+            IncludedOrExcludedBound::Excluded(i) => (i, true),
         };
 
         // Search downward with the cursor
@@ -198,7 +296,43 @@ where
             let hint = cursor.as_mut().and_then(|c| c.next());
 
             let result = if target != head_node.leaf().subtree_size() {
-                search_step(head_node, hint, target)
+                match search_step(head_node, hint, target) {
+                    ChildOrKey::Key((k_idx, k_pos)) if excluded && k_pos == target => {
+                        match head_node.into_typed() {
+                            Type::Leaf(n) => {
+                                if k_idx == 0 {
+                                    panic_internal_error_or_bad_index::<I>();
+                                }
+
+                                // SAFETY: key indexes returned from `search_step` are guaranteed
+                                // to be in bounds; we checked above that `k_idx != 0`, so
+                                // subtracting one won't overlflow: `k_idx - 1` is still in bounds.
+                                let lhs_k_pos = unsafe { n.leaf().key_pos(k_idx - 1) };
+                                ChildOrKey::Key((k_idx - 1, lhs_k_pos))
+                            }
+                            Type::Internal(n) => {
+                                let c_idx = k_idx;
+                                // SAFETY: key indexes returned from `search_step` are guaranteed
+                                // to be in bounds, so a child at the same index (i.e. to its left)
+                                // will also be valid.
+                                let c_pos = k_pos.sub_right(unsafe { n.child_size(c_idx) });
+                                ChildOrKey::Child((c_idx, c_pos))
+                            }
+                        }
+                    }
+                    ChildOrKey::Child((c_idx, c_pos)) if excluded && c_pos == target => {
+                        if c_idx == 0 {
+                            panic_internal_error_or_bad_index::<I>();
+                        }
+
+                        let k_idx = c_idx - 1;
+                        // SAFETY: child indexes returned from `search_step` are guaranteed to be
+                        // valid children, so the key to their left (at `c_idx - 1`) is a valid key
+                        let k_pos = unsafe { head_node.leaf().key_pos(k_idx) };
+                        ChildOrKey::Key((k_idx, k_pos))
+                    }
+                    res => res,
+                }
             } else {
                 let len = head_node.leaf().len();
 
