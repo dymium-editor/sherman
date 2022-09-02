@@ -135,3 +135,11 @@ fn auto_fuzz_6_iter_excluded_slice_start_boundary() {
         }
     }
 }
+
+#[test]
+fn auto_fuzz_7_insert_and_join_lhs() {
+    let mut tree_0: RleTree<u8, Constant<char>> = RleTree::new_empty();
+    tree_0.insert(0, Constant('F'), 5);
+    tree_0.insert(5, Constant('H'), 1);
+    tree_0.insert(5, Constant('F'), 5);
+}

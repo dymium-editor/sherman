@@ -2732,7 +2732,7 @@ where
 
         let holes = self.node.leaf().holes;
         let new_holes = if holes[1] == Some(idx_plus_one) {
-            [None, None]
+            [None, holes[0]]
         } else if holes[0] == Some(idx_plus_one) {
             [None, holes[1]]
         } else {
