@@ -2449,7 +2449,7 @@ where
             // based on whether it's a net increase or decrease in size.
             //
             // SAFETY: `shift_keys_auto` requires that `from <= rhs.leaf().len()`, which is always
-            // true because `from = 0`. `as_mut` requires unique access, which is gauranteed
+            // true because `from = 0`. `as_mut` requires unique access, which is guaranteed
             // because `rhs` was just created.
             unsafe {
                 let opts = ShiftKeys {
