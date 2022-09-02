@@ -94,3 +94,19 @@ fn auto_fuzz_3_iter_rangefull_bkwd_fwd_none() {
         assert!(iter.next().is_none());
     }
 }
+
+#[test]
+fn auto_fuzz_4_middle_iter() {
+    let mut tree_0: RleTree<u8, Constant<char>> = RleTree::new_empty();
+    tree_0.insert(0, Constant('V'), 147);
+    tree_0.insert(28, Constant('C'), 28);
+    {
+        let mut iter = tree_0.iter(28..);
+        {
+            let item = iter.next().unwrap();
+            assert_eq!(item.range(), 28..56);
+            assert_eq!(item.size(), 28);
+            assert_eq!(item.slice(), &Constant('C'));
+        }
+    }
+}

@@ -623,12 +623,14 @@ where
                     // node. This is guaranteed by the `InsertSearchResult`, which says that it's
                     // guaranteed a leaf node if `result` is `ChildOrKey::Child`. We're also
                     // guaranteed that `c_idx` is within the appropriate bounds by
-                    // `InsertSearchResult`.
+                    // `InsertSearchResult`. The function has extra requirements if
+                    // `override_lhs_size` is not `None`, but those don't apply here.
                     Err(slice) => unsafe {
                         let res = Self::do_insert_no_join(
                             &mut root.refs_store,
                             leaf.node,
                             leaf.new_k_idx,
+                            None,
                             SliceSize { slice, size },
                             None,
                         );
@@ -1455,19 +1457,28 @@ where
     /// A second key to insert may also be provided, which will be inserted after `fst`. If a
     /// second key is provided, only the first key will be used for the slice reference.
     ///
+    /// `override_lhs_size` is used exclusively by [`insert_rhs`] in order to ensure that the key
+    /// positions (and resulting increases in size) are correct from the moment of insertion.
+    ///
     /// ## Safety
     ///
-    /// Callers must ensure that `new_key_idx <= node.leaf().len()`.
+    /// Callers must ensure that `new_key_idx <= node.leaf().len()`, and that if
+    /// `override_lhs_size` is provided, `new_key_idx != 0`.
     unsafe fn do_insert_no_join<'t, C: Cursor>(
         store: &mut P::SliceRefStore,
         mut node: NodeHandle<ty::Leaf, borrow::Mut<'t>, I, S, P, M>,
         mut new_key_idx: u8,
+        mut override_lhs_size: Option<I>,
         fst: SliceSize<I, S>,
         snd: Option<SliceSize<I, S>>,
     ) -> Result<PostInsertTraversalResult<'t, C, I, S, P, M>, BubbledInsertState<'t, C, I, S, P, M>>
     {
         // SAFETY: Guaranteed by caller
-        unsafe { weak_assert!(new_key_idx <= node.leaf().len()) }
+        unsafe {
+            weak_assert!(new_key_idx <= node.leaf().len());
+            // override_lhs_size.is_some() => new_key_idx != 0
+            weak_assert!(!(override_lhs_size.is_some() && new_key_idx == 0));
+        }
 
         let (one_if_snd, added_size) = match &snd {
             Some(pair) => (1_u8, fst.size.add_right(pair.size)),
@@ -1476,17 +1487,49 @@ where
 
         // "easy" case: just add the slice(s) to the node
         if node.leaf().len() < node.leaf().max_len() - one_if_snd {
-            // SAFETY: `insert_key` requires that the node is a leaf, which is guaranteed by the
-            // caller of `do_insert_no_join`. It also requires that the node isn't full (checked
-            // above), and that the key is not *greater* than the current number of keys
-            // (guaranteed by caller, debug-checked above).
-            unsafe {
-                let _slice_pos = node.insert_key(store, new_key_idx, fst.slice);
-                //  ^^^^^^^^^^ don't need to use `slice_pos` to shift the keys because that'll be
-                //  handled by `PostInsertTraversalState::do_upward_step`.
-                if let Some(pair) = snd {
-                    node.insert_key(store, new_key_idx + 1, pair.slice);
+            let mut override_pos = None;
+            let old_size;
+            let new_size;
+
+            if let Some(new_lhs_size) = override_lhs_size {
+                let (lhs_pos, old_lhs_size) = {
+                    // SAFETY: `into_slice_handle` requires that `0` is a valid key index, which is
+                    // guaranteed by the caller if `override_lhs_size` is not `None`.
+                    let handle = unsafe { node.borrow().into_slice_handle(0) };
+                    (handle.key_pos(), handle.slice_size())
+                };
+
+                let slice_pos = lhs_pos.add_right(new_lhs_size);
+                unsafe {
+                    let _ = node.insert_key(store, new_key_idx, fst.slice);
+                    node.set_single_key_pos(new_key_idx, slice_pos);
+                    if let Some(pair) = snd {
+                        node.insert_key(store, new_key_idx + 1, pair.slice);
+                        node.set_single_key_pos(new_key_idx + 1, slice_pos.add_right(fst.size));
+                    }
                 }
+
+                override_pos = Some(lhs_pos);
+                old_size = old_lhs_size;
+                new_size = new_lhs_size.add_right(added_size);
+            } else {
+                // SAFETY: `insert_key` requires that the node is a leaf, which is guaranteed by the
+                // caller of `do_insert_no_join`. It also requires that the node isn't full (checked
+                // above), and that the key is not *greater* than the current number of keys
+                // (guaranteed by caller, debug-checked above).
+                unsafe {
+                    let slice_pos = node.insert_key(store, new_key_idx, fst.slice);
+                    //  ^^^^^^^^^ don't need to use `slice_pos` to shift the keys because that'll be
+                    //  handled by `PostInsertTraversalState::do_upward_step`.
+                    if let Some(pair) = snd {
+                        node.insert_key(store, new_key_idx + 1, pair.slice);
+                        node.set_single_key_pos(new_key_idx + 1, slice_pos.add_right(fst.size));
+                        override_pos = Some(slice_pos);
+                    }
+                }
+
+                old_size = I::ZERO;
+                new_size = added_size;
             }
 
             // SAFETY: we just inserted `new_slice_idx`, so it's a valid key index.
@@ -1501,10 +1544,13 @@ where
                     // `node` is dropped, which is guaranteed by the safety bounds of
                     // `inserted_slice`.
                     inserted_slice: unsafe { slice_handle.clone_slice_ref().erase_type() },
-                    child_or_key: ChildOrKey::Key((new_key_idx, slice_handle.node.erase_type())),
-                    override_pos: None,
-                    old_size: I::ZERO,
-                    new_size: added_size,
+                    child_or_key: ChildOrKey::Key((
+                        new_key_idx + one_if_snd,
+                        slice_handle.node.erase_type(),
+                    )),
+                    override_pos,
+                    old_size,
+                    new_size,
                     partial_cursor: C::new_empty(),
                 },
             ));
@@ -1536,7 +1582,59 @@ where
 
         let old_node_size = node.leaf().subtree_size();
         let rhs_start = rhs.leaf().try_key_pos(0).unwrap_or(old_node_size);
-        let midpoint_size = rhs_start.sub_left(midpoint_key.pos);
+        let midpoint_size;
+
+        // We're handling `override_lhs_size` for some cases here. It's a little tricky, so we'll
+        // illustrate each case. For the examples, let's say M = 3. This is our start node:
+        //   ╔═══╤═══╤═══╤═══╤═══╤═══╗
+        //   ║ A │ B │ C │ D │ E │ F ║
+        //   ╚═══╧═══╧═══╧═══╧═══╧═══╝
+        // We'll suppose there's a single insertion (having a second doesn't change the logic
+        // here). It'll be labelled with a slash - "/"
+        //
+        // At the end of this block, we guarantee that `handled_override.is_some()` implies that
+        // the left-hand key is in the same *new* node as the inserted value.
+        match override_lhs_size {
+            Some(s) if new_key_idx == M as u8 => {
+                // Continuing the example, our final result if `new_key_idx == M` will be:
+                //                 ╔═══╗
+                //                 ║ / ║
+                //   ╔═══╤═══╤═══╗ ╚═══╝ ╔═══╤═══╤═══╗
+                //   ║ A │ B │ C ║       ║ D │ E │ F ║
+                //   ╚═══╧═══╧═══╝       ╚═══╧═══╧═══╝
+                // ... but currently, it's:
+                //                 ╔═══╗
+                //                 ║ C ║
+                //   ╔═══╤═══╗     ╚═══╝ ╔═══╤═══╤═══╗
+                //   ║ A │ B ║           ║ D │ E │ F ║
+                //   ╚═══╧═══╝           ╚═══╧═══╧═══╝
+                // ... so our left-hand key is in the midpoint. We can perform the necessary
+                // correction just by changing the midpoint's size.
+                midpoint_size = s;
+                override_lhs_size = None;
+            }
+            Some(s) if new_key_idx == M as u8 + 1 => {
+                // If `new_key_idx == M + 1`, then our final result should be:
+                //                 ╔═══╗
+                //                 ║ D ║
+                //   ╔═══╤═══╤═══╗ ╚═══╝ ╔═══╤═══╤═══╗
+                //   ║ A │ B │ C ║       ║ / │ E │ F ║
+                //   ╚═══╧═══╧═══╝       ╚═══╧═══╧═══╝
+                // ... but currently, it's:
+                //                 ╔═══╗
+                //                 ║ D ║
+                //   ╔═══╤═══╤═══╗ ╚═══╝     ╔═══╤═══╗
+                //   ║ A │ B │ C ║           ║ E │ F ║
+                //   ╚═══╧═══╧═══╝           ╚═══╧═══╝
+                // ... so our left-hand key is in the midpoint, and will stay there. We can do the
+                // necessary correction *just* by changing the size of the midpoint (like above).
+                midpoint_size = s;
+                override_lhs_size = None;
+            }
+            // Nothing out of the ordinary yet; calculate the midpoint size as normal.
+            _ => midpoint_size = rhs_start.sub_left(midpoint_key.pos),
+        }
+
         node.set_subtree_size(midpoint_key.pos);
 
         // Before we do anything else, we'll update the positions in `rhs`. It's technically
@@ -1557,7 +1655,9 @@ where
 
         if new_key_idx == M as u8 {
             // put `midpoint_key` back into `node`, use the desired insertion as the midpoint
-            let new_lhs_subtree_size = rhs_start;
+            //
+            // We've already handled `override_lhs_size`; see above.
+            let new_lhs_subtree_size = node.leaf().subtree_size().add_right(midpoint_size);
             // SAFETY: `push_key` requires only that there's space. This is guaranteed by
             // having a value of `midpoint_idx` that removes *some* values from `node`.
             unsafe { node.push_key(store, midpoint_key, new_lhs_subtree_size) };
@@ -1607,6 +1707,26 @@ where
                 (Side::Right, unsafe { rhs.as_mut() })
             };
 
+            let (pos, old_size, mut new_size) = match override_lhs_size {
+                None => {
+                    let p = insert_into
+                        .leaf()
+                        .try_key_pos(new_key_idx)
+                        .unwrap_or_else(|| insert_into.leaf().subtree_size());
+                    (p, I::ZERO, I::ZERO)
+                }
+                Some(s) => {
+                    // SAFETY: the caller originally guarantees that `override_lhs_size.is_some()`
+                    // implies that `new_key_idx != 0`. Our little bit of handling above extends
+                    // this to apply to the two split halves of the original node -- the case where
+                    // the insertion is at the start of `rhs` gets explicitly handled with
+                    // `override_lhs_size` set to `None` before control flow gets here.
+                    let handle = unsafe { insert_into.borrow().into_slice_handle(new_key_idx - 1) };
+
+                    (handle.key_pos(), handle.slice_size(), s)
+                }
+            };
+
             // SAFETY: the calls to `insert_key` and `shift_keys_increase` together require that
             // `new_key_idx <= insert_into.leaf().len()`, which is guaranteed by the values we
             // chose for `midpoint_idx` and our comparison with `M` above. In the case where `snd`
@@ -1615,27 +1735,30 @@ where
             // The call to `set_single_key_pos`, if we make it, requires that `new_key_idx + 1` is
             // a valid key, which we know is true because we just inserted it.
             unsafe {
-                let pos = insert_into.insert_key(store, new_key_idx, fst.slice);
-                let mut added_size = fst.size;
+                let _ = insert_into.insert_key(store, new_key_idx, fst.slice);
+                let fst_pos = pos.add_right(new_size);
+                insert_into.set_single_key_pos(new_key_idx, fst_pos);
+                new_size = new_size.add_right(fst.size);
+
                 let mut from = new_key_idx + 1;
 
                 if let Some(SliceSize { slice, size }) = snd {
                     insert_into.insert_key(store, new_key_idx + 1, slice);
-                    added_size = added_size.add_right(size);
+                    new_size = new_size.add_right(size);
                     from += 1;
 
                     // Update the position of `snd` because currently it's the same as `fst`. We
                     // could make an extra call to `set_key_poss_with` but it's easier to just set
                     // the value directly.
-                    let snd_pos = pos.add_right(fst.size);
+                    let snd_pos = fst_pos.add_right(fst.size);
                     insert_into.set_single_key_pos(new_key_idx + 1, snd_pos);
                 }
 
                 let opts = ShiftKeys {
                     from,
                     pos,
-                    old_size: I::ZERO,
-                    new_size: added_size,
+                    old_size,
+                    new_size,
                 };
                 shift_keys_increase(insert_into, opts);
             }
@@ -1801,19 +1924,37 @@ where
             }
         };
 
-        // From here, the control flow is a little tricky. In order to avoid duplicating the
-        // handling of `PostInsertTraversalState`s below `lhs_height`, we'll have
-        // `BubbledInsertState`s finish by falling through into the logic for the regular
-        // `PostInsertTraversalState`s. If the `BubbledInsertState` ends up progressing through
-        // `lhs_height` before finishing, we handle handle the shited positions directly and
-        // return.
+        let leaf_height = next_leaf.height(); // stored for later
+        let override_lhs_size = match lhs_height == leaf_height {
+            false => None,
+            true => Some(new_lhs_size),
+        };
 
         // SAFETY: `do_insert_no_join` requires that `insert_idx <= next_leaf.leaf().len()`, which
         // we can see is true for both cases of the match on `right_of.node.into_typed()` above:
         // For `Type::Leaf`, we're guaranteed that `lhs_k_idx < right_of.leaf().len()` and
         // `next_leaf = right_of`. For `Type::Internal`, we only break with `insert_idx = 0`, which
         // is always <= len: u8.
-        let res = unsafe { Self::do_insert_no_join::<C>(store, next_leaf, insert_idx, fst, snd) };
+        //
+        // It also requires that `insert_idx != 0` if `override_lhs_size.is_some()`, which is
+        // guaranteed by our search procedure above; `insert_idx = lhs_k_idx + 1` if `next_leaf` is
+        // at the same height, and is otherwise equal to zero.
+        let res = unsafe {
+            Self::do_insert_no_join::<C>(store, next_leaf, insert_idx, override_lhs_size, fst, snd)
+        };
+
+        // If `override_lhs_size` was provided, the change in `lhs`'s size was entirely handled by
+        // `do_insert_no_join`, so we don't need to do anything else here. Finish up the bubbled
+        // insert state if required
+        if override_lhs_size.is_some() {
+            let mut res = res;
+            loop {
+                match res {
+                    Ok(post_insert) => return post_insert,
+                    Err(bubble_state) => res = bubble_state.do_upward_step(store, None),
+                }
+            }
+        }
 
         let mut handled_shift = false;
 
@@ -1934,6 +2075,8 @@ where
 
             debug_assert!(
                 matches!(&state.child_or_key, ChildOrKey::Child((i, _)) | ChildOrKey::Key((i, _)) if *i == lhs_k_idx + 1)
+                    || (leaf_height == lhs_height
+                        && matches!(&state.child_or_key, ChildOrKey::Key((i, _)) if *i == lhs_k_idx + 2))
             );
 
             let old_lhs_end = lhs_pos.add_right(old_lhs_size);
