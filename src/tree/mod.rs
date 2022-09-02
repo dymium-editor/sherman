@@ -1964,8 +1964,8 @@ where
                 let mut maybe_shift_lhs = None;
 
                 // If the bubble state *will* change the node at the height of `lhs`, then we need
-                // to change the way that it internally calculates positions. This will have no
-                // effect if the return from `do_upward_step` is another `BubbledInsertState`.
+                // to change the way that it internally calculates positions. The case for equal
+                // heights is already handled above with `override_lhs_size`.
                 if bubble_state.lhs.height() + 1 == lhs_height {
                     handled_shift = true;
 
@@ -1974,59 +1974,6 @@ where
                         old_size: old_lhs_size,
                         new_size: new_lhs_size,
                     });
-                } else if bubble_state.lhs.height() == lhs_height {
-                    // FIXME: the logic here should be moved into
-                    // `BubbledInsertState::do_upward_step`, and the condition above replaced with:
-                    //     `bubble_state.lhs.height() + 1 == lhs_height
-                    //         || bubble_state.lhs.height() == lhs_height`
-
-                    // If the bubble state is at the height of the changed left-hand side, we need
-                    // to handle the shift in its size for this height.
-                    handled_shift = true;
-                    if lhs_k_idx < bubble_state.lhs.leaf().len() {
-                        // Shift the later keys in `bubble_state.lhs`. We don't need to do anything
-                        // for `rhs` because its position is uniquely determined by the size of
-                        // `bubble_state.lhs` and `bubble_state.key_size`
-                        //
-                        // SAFETY: the calls to `key_pos` and `shift_keys_auto` both require that
-                        // `lhs_k_idx < bubble_state.lhs.leaf().len()`, which we checked above.
-                        unsafe {
-                            let k_pos = bubble_state.lhs.leaf().key_pos(lhs_k_idx);
-                            let opts = ShiftKeys {
-                                from: lhs_k_idx + 1,
-                                pos: k_pos,
-                                old_size: old_lhs_size,
-                                new_size: new_lhs_size,
-                            };
-                            shift_keys_auto(bubble_state.lhs.as_mut(), opts);
-                        }
-                    } else if lhs_k_idx > bubble_state.lhs.leaf().len() {
-                        // Shift the later keys in `bubble_state.rhs`
-                        let k_idx_in_rhs = lhs_k_idx - bubble_state.rhs.leaf().len() - 1;
-                        // SAFETY: the calls to `key_pos` and `shift_keys_auto` both require that
-                        // `k_idx_in_rhs < bubble_state.rhs.leaf().len()`, which is guaranteed
-                        // because bubble state actions add one to the total number of keys, with
-                        // one midpoint stored, so a previously valid key index `lhs_k_idx` is
-                        // still valid, shifted into the right-hand side.
-                        unsafe {
-                            let k_pos = bubble_state.rhs.leaf().key_pos(k_idx_in_rhs);
-
-                            let opts = ShiftKeys {
-                                from: k_idx_in_rhs + 1,
-                                pos: k_pos,
-                                old_size: old_lhs_size,
-                                new_size: new_lhs_size,
-                            };
-                            shift_keys_auto(bubble_state.rhs.as_mut(), opts);
-                        }
-                    } else {
-                        // lhs_k_idx == bubble_state.lhs.leaf().len()
-                        //
-                        // The key we want to change the size of is *currently* `bubble_state.key`,
-                        // so we can just write to the value.
-                        debug_assert!(bubble_state.key_size == old_lhs_size);
-                        bubble_state.key_size = new_lhs_size;
-                    }
                 }
 
                 // SAFETY: `do_upward_step` requires: if `maybe_shift_lhs` is `Some(_)`, then there
@@ -2139,11 +2086,10 @@ where
     S: Slice<I>,
     P: RleTreeConfig<I, S>,
 {
-    // Note: `shift_lhs` does nothing if `Err(_)` is returned
     fn do_upward_step(
         mut self,
         store: &mut <P as RleTreeConfig<I, S>>::SliceRefStore,
-        shift_lhs: Option<BubbleLhs<I>>,
+        mut shift_lhs: Option<BubbleLhs<I>>,
     ) -> Result<PostInsertTraversalResult<'t, C, I, S, P, M>, Self> {
         let lhs_size = self.lhs.leaf().subtree_size();
         let new_total_size = lhs_size
@@ -2301,8 +2247,18 @@ where
             first_key_pos.sub_right(first_child_size)
         };
 
-        let midpoint_size = rhs_start.sub_left(midpoint_key.pos);
+        let mut midpoint_size = rhs_start.sub_left(midpoint_key.pos);
 
+        // The logic can get tricky to follow throughout the rest of this function. To help make
+        // things a bit easier, we'll provide illustrations to roughly show what the state of the
+        // tree is at each point. These illustrations will pretend that M = 3, so `parent`
+        // originally looked something like:
+        //         ╔═══╗     ╔═══╗     ╔═══╗     ╔═══╗     ╔═══╗     ╔═══╗
+        //    ╔═══╗║ A ║╔═══╗║ B ║╔═══╗║ C ║╔═══╗║ D ║╔═══╗║ E ║╔═══╗║ F ║╔═══╗
+        //    ║..a║╚═══╝║a-b║╚═══╝║b-c║╚═══╝║c-d║╚═══╝║d-e║╚═══╝║e-f║╚═══╝║f..║
+        //    ╚═══╝     ╚═══╝     ╚═══╝     ╚═══╝     ╚═══╝     ╚═══╝     ╚═══╝
+        // ... with the upper row representing keys of `parent` and the lower row representing its
+        // children. One of the children is `self.lhs`.
         if new_key_idx != M as u8 {
             // Before we do anything else, update the positions in `rhs` so that they start at
             // zero, instead of one.
@@ -2320,28 +2276,63 @@ where
                 shift_keys_decrease(rhs.as_mut(), opts);
             }
 
+            // Handle a special case with `shift_lhs`. All other cases (for `new_key_idx != M`)
+            // will have the left-hand key on the same side of the split as the insertion.
+            if let (Some(shift), true) = (shift_lhs, new_key_idx == M as u8 + 1) {
+                // If we have change the side of the left-hand key, AND that key is the current
+                // midpoint (because `new_key_idx` is at the start of `rhs`), then the change for
+                // `shift_lhs` can be made *just* by changing the size of the midpoint key.
+                //
+                // For reference, this is what we're currently looking at:
+                //                                       ╔═══╗
+                //         ╔═══╗     ╔═══╗     ╔═══╗     ║mid║          ╔═══╗     ╔═══╗
+                //    ╔═══╗║ A ║╔═══╗║ B ║╔═══╗║ C ║╔═══╗╚═══╝╔═══╗     ║ E ║╔═══╗║ F ║╔═══╗
+                //    ║..a║╚═══╝║a-b║╚═══╝║b-c║╚═══╝║c-d║     ║lhs║     ╚═══╝║e-f║╚═══╝║f..║
+                //    ╚═══╝     ╚═══╝     ╚═══╝     ╚═══╝     ╚═══╝          ╚═══╝     ╚═══╝
+                //                                            ^^^^^ self.lhs
+                midpoint_size = shift.new_size;
+
+                // remove `shift_lhs` to mark it as being resolved
+                shift_lhs = None;
+            }
+
             let (side, insert_into) = if new_key_idx < M as u8 {
                 // SAFETY: `as_mut` requires unique access; we're reborrowing and already have it.
                 (Side::Left, unsafe { parent.as_mut() })
             } else {
                 // Adjust the position of `slice` to be relative to the right-hand node
-                new_key_idx -= M as u8;
+                new_key_idx -= M as u8 + 1;
 
                 // SAFETY: `as_mut` requires unique access; `rhs` was just created.
                 (Side::Right, unsafe { rhs.as_mut() })
+            };
+
+            let (key_pos, shift_pos, old_size, new_size) = match shift_lhs {
+                None => {
+                    let p = insert_into
+                        .leaf()
+                        .try_key_pos(new_key_idx)
+                        .unwrap_or_else(|| insert_into.leaf().subtree_size());
+                    (p, p, I::ZERO, added_size)
+                }
+                Some(lhs) => {
+                    let key_pos = lhs.pos.add_right(lhs.new_size);
+                    (key_pos, lhs.pos, lhs.old_size, lhs.new_size)
+                }
             };
 
             // SAFETY: the calls to `insert_key_and_child` and `shift_keys_increase` together
             // require that `new_key_idx <= insert_into.leaf().len()`, which is guaranteed by the
             // values we chose for `midpoint_idx` and our comparison with `M` above.
             unsafe {
-                let pos = insert_into.insert_key_and_child(store, new_key_idx, self.key, self.rhs);
+                let _ = insert_into.insert_key_and_child(store, new_key_idx, self.key, self.rhs);
+                insert_into.set_single_key_pos(new_key_idx, key_pos);
 
                 let opts = ShiftKeys {
                     from: new_key_idx + 1,
-                    pos,
-                    old_size: I::ZERO,
-                    new_size: added_size,
+                    pos: shift_pos,
+                    old_size,
+                    new_size,
                 };
                 shift_keys_increase(insert_into, opts);
             }
@@ -2396,12 +2387,32 @@ where
                 partial_cursor: self.partial_cursor,
             })
         } else {
-            // need to use `self.key` as the new midpoint. this gets a little tricky, so bear with
-            // us here.
+            // ^ new_key_idx == M. We'll use `self.key` as the new midpoint. Our current state
+            // looks something like:
+            //                             ∨∨∨∨∨ midpoint
+            //                             ╔═══╗
+            //         ╔═══╗     ╔═══╗     ║ C ║     ╔═══╗     ╔═══╗     ╔═══╗
+            //    ╔═══╗║ A ║╔═══╗║ B ║╔═══╗╚═══╝╔═══╗║ D ║╔═══╗║ E ║╔═══╗║ F ║╔═══╗
+            //    ║..a║╚═══╝║a-b║╚═══╝║b-c║     ║c-d║╚═══╝║d-e║╚═══╝║e-f║╚═══╝║f..║
+            //    ╚═══╝     ╚═══╝     ╚═══╝     ╚═══╝     ╚═══╝     ╚═══╝     ╚═══╝
+            //                                  ^^^^^ self.lhs
             //
             // The eventual outcome will be that the current midpoint and leftmost child of `rhs`
             // are appended to `parent`, with `self.rhs` replacing `rhs`'s leftmost child, and
-            // `self.key` replacing the midpoint.
+            // `self.key` replacing the midpoint, so:
+            //                                       ╔═══╗
+            //         ╔═══╗     ╔═══╗     ╔═══╗     ║key║     ╔═══╗     ╔═══╗     ╔═══╗
+            //    ╔═══╗║ A ║╔═══╗║ B ║╔═══╗║ C ║╔═══╗╚═══╝╔═══╗║ D ║╔═══╗║ E ║╔═══╗║ F ║╔═══╗
+            //    ║..a║╚═══╝║a-b║╚═══╝║b-c║╚═══╝║c-d║     ║rhs║╚═══╝║d-e║╚═══╝║e-f║╚═══╝║f..║
+            //    ╚═══╝     ╚═══╝     ╚═══╝     ╚═══╝     ╚═══╝     ╚═══╝     ╚═══╝     ╚═══╝
+            //                                  ^^^^^ self.lhs
+            // From this, it's also easy enough to see that any correction to the left-hand key
+            // will happen to `C` -- the current midpoint and eventual last key in the left-hand
+            // node. So we can fully account for `shift_lhs` by correcting the size of the midpoint
+            // key.
+            if let Some(lhs) = shift_lhs {
+                midpoint_size = lhs.new_size;
+            }
 
             // Replace the leftmost child of `rhs`.
             let new_first_child_size = self.rhs.leaf().subtree_size();
