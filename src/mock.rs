@@ -173,6 +173,8 @@ impl<I: Index, S: Slice<I>> Mock<I, S> {
                 Ok(i) => i + 2,
                 Err(i) => i + 1,
             },
+            // Special case empty iterator
+            EndBound::Excluded(i) if i == I::ZERO => 0,
             EndBound::Excluded(i) => match self.runs.binary_search_by_key(&i, |(i, _)| *i) {
                 Ok(i) => i + 1,
                 Err(i) => i + 1,
@@ -301,5 +303,14 @@ mod tests {
                 (164, Constant('V'))
             ]
         );
+    }
+
+    #[test]
+    fn auto_fuzz_3() {
+        let mut tree_0: Mock<u8, Constant<char>> = Mock::new_empty();
+        {
+            let mut iter = tree_0.iter(..0);
+            assert!(iter.next().is_none());
+        }
     }
 }
