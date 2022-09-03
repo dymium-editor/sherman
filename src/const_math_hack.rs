@@ -56,12 +56,17 @@ pub unsafe trait ArrayHack: Sized {
     /// ## Safety
     ///
     /// The pointer `this` must *actually* point to a valid instance of `Self`, and the value `idx`
-    /// must be less than `Self::LEN`. The result is immediate UB if either of these are violated.
+    /// must be less than or equal to `Self::LEN`. The result is immediate UB if either of these
+    /// are violated.
+    ///
+    /// We allow `idx == Self::LEN` so that it's possible to produce dangling pointers one-past the
+    /// end of the array. Those pointers are not valid for reads or writes, but may be useful for
+    /// zero-size copies.
     unsafe fn get_ptr_unchecked(this: *const Self, idx: usize) -> *const Self::Element {
         // This function is "unchecked" so it doesn't *really* matter, but it's still worthwhile
         // having this debug-only check. If idx >= LEN at release time, then it's UB either way;
         // `weak_assert` just makes that official.
-        unsafe { weak_assert!(idx < Self::LEN) };
+        unsafe { weak_assert!(idx <= Self::LEN) };
 
         // So, pointer::add requires some interesting things about its input -- notably that the
         // offset (i.e. `idx * size_of::<T>()`) can't overflow an `isize`. We can't guarnatee this
@@ -84,9 +89,14 @@ pub unsafe trait ArrayHack: Sized {
     /// ## Safety
     ///
     /// The pointer `this` must *actually* point to a valid instance of `Self`, and the value `idx`
-    /// must be less than `Self::LEN`. The result is immediate UB if either of these are violated.
+    /// must be less than or equal to `Self::LEN`. The result is immediate UB if either of these
+    /// are violated.
+    ///
+    /// We allow `idx == Self::LEN` so that it's possible to produce dangling pointers one-past the
+    /// end of the array. Those pointers are not valid for reads or writes, but may be useful for
+    /// zero-size copies.
     unsafe fn get_mut_ptr_unchecked(this: *mut Self, idx: usize) -> *mut Self::Element {
-        unsafe { weak_assert!(idx < Self::LEN) };
+        unsafe { weak_assert!(idx <= Self::LEN) };
         if Self::LEN * size_of::<Self::Element>() < isize::MAX as usize {
             // SAFETY: See note above in `get_ptr_unchecked`; it's the same here.
             unsafe { (this as *mut Self::Element).add(idx) }
@@ -102,7 +112,7 @@ pub unsafe trait ArrayHack: Sized {
     /// `idx` must be less than `Self::LEN`. The result is immediate UB if this is violated.
     #[allow(unsafe_op_in_unsafe_fn)]
     unsafe fn get_unchecked(&self, idx: usize) -> &Self::Element {
-        // get_ptr_unchecked already does a weak_assert! -- no need to add a second here.
+        weak_assert!(idx < Self::LEN);
         let ptr = Self::get_ptr_unchecked(self as *const Self, idx);
         &*ptr
     }
@@ -114,6 +124,7 @@ pub unsafe trait ArrayHack: Sized {
     /// `idx` must be less than `Self::LEN`. The result is immediate UB if this is violated.
     #[allow(unsafe_op_in_unsafe_fn)]
     unsafe fn get_mut_unchecked(&mut self, idx: usize) -> &mut Self::Element {
+        weak_assert!(idx < Self::LEN);
         let ptr = Self::get_mut_ptr_unchecked(self as *mut Self, idx);
         &mut *ptr
     }
