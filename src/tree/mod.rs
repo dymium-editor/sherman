@@ -1747,7 +1747,7 @@ where
                         (m_u8 - 2, Ok(Side::Left))
                     } else {
                         // Case 3(b):
-                        (m_u8 - 1, Err(Side::Left))
+                        (m_u8 - 2, Err(Side::Left))
                     }
                 } // Cases 1 and 2(a):    [we chose 2(a) instead of 2(b)]
                 Some(_) | None => (m_u8 - 1, Ok(Side::Left)),
