@@ -2456,12 +2456,6 @@ where
             }
         };
 
-        // Insert `self.key` and `self.rhs` into `parent`, just after `lhs_child_idx`. If there
-        // isn't room, we should split `parent` and select a new midpoint key.
-        //
-        // Either way, we'll need to add where `insertion` is in the final node(s) to the cursor
-        let added_size = self.key_size.add_right(self.rhs.leaf().subtree_size());
-
         // No split, only insert:
         //
         // Do the minimal amount of work here, and let `PostInsertTraversalState::do_upward_step`
@@ -2640,19 +2634,22 @@ where
                 (Side::Right, unsafe { rhs.as_mut() })
             };
 
-            let (key_pos, shift_pos, old_size, new_size) = match shift_lhs {
+            let (lhs_child_pos, shift_pos, mut old_size, mut new_size) = match shift_lhs {
                 None => {
-                    let p = insert_into
-                        .leaf()
-                        .try_key_pos(new_key_idx)
-                        .unwrap_or_else(|| insert_into.leaf().subtree_size());
-                    (p, p, I::ZERO, added_size)
+                    // SAFETY: `new_key_idx` is at this point guaranteed to be less than or equal
+                    // to `insert_into.leaf().len()`, which is all that's required for `child_pos`.
+                    let lhs_child_pos = unsafe { insert_into.child_pos(new_key_idx) };
+                    (lhs_child_pos, lhs_child_pos, I::ZERO, I::ZERO)
                 }
                 Some(lhs) => {
-                    let key_pos = lhs.pos.add_right(lhs.new_size);
-                    (key_pos, lhs.pos, lhs.old_size, lhs.new_size)
+                    let lhs_child_pos = lhs.pos.add_right(lhs.new_size);
+                    (lhs_child_pos, lhs.pos, lhs.old_size, lhs.new_size)
                 }
             };
+
+            let key_pos = lhs_child_pos.add_right(lhs_size);
+            old_size = old_size.add_right(self.old_size);
+            new_size = new_size.add_right(new_total_size);
 
             // SAFETY: the calls to `insert_key_and_child` and `shift_keys_increase` together
             // require that `new_key_idx <= insert_into.leaf().len()`, which is guaranteed by the
