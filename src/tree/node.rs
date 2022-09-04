@@ -1787,8 +1787,7 @@ where
     ///
     /// ## Safety
     ///
-    /// `child_idx` must be less than or equal to `self.leaf().len()` *and* the node must have
-    /// children.
+    /// `child_idx` must be less than or equal to `self.leaf().len()`.
     pub unsafe fn child_pos(&self, idx: u8) -> I
     where
         I: Index,
