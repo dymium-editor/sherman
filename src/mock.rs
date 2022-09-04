@@ -307,7 +307,7 @@ mod tests {
 
     #[test]
     fn auto_fuzz_3() {
-        let mut tree_0: Mock<u8, Constant<char>> = Mock::new_empty();
+        let tree_0: Mock<u8, Constant<char>> = Mock::new_empty();
         {
             let mut iter = tree_0.iter(..0);
             assert!(iter.next().is_none());
