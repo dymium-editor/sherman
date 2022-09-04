@@ -238,3 +238,27 @@ fn auto_fuzz_9_misc_insert() {
         let _iter = tree_0.iter(0..=0);
     }
 }
+
+#[test]
+fn auto_fuzz_10_iter_back_into_child() {
+    let mut tree_0: BasicFuzzTree = RleTree::new_empty();
+    tree_0.insert(0, Constant('V'), 147);
+    tree_0.insert(24, Constant('C'), 28);
+    tree_0.insert(45, Constant('R'), 2);
+    tree_0.insert(1, Constant('R'), 1);
+    {
+        let mut iter = tree_0.iter(..45);
+        {
+            let item = iter.next_back().unwrap();
+            assert_eq!(item.range(), 25..46);
+            assert_eq!(item.size(), 21);
+            assert_eq!(item.slice(), &Constant('C'));
+        }
+        {
+            let item = iter.next_back().unwrap();
+            assert_eq!(item.range(), 2..25);
+            assert_eq!(item.size(), 23);
+            assert_eq!(item.slice(), &Constant('V'));
+        }
+    }
+}

@@ -495,7 +495,7 @@ where
             // For an internal node, recurse down to the rightmost key to the left of `self.head`
             Type::Internal(node) => {
                 let mut parent = node;
-                let mut c_idx = self.head.idx + 1;
+                let mut c_idx = self.head.idx;
                 loop {
                     // SAFETY: `c_idx` is either set to `parent.leaf().len()` (which is a valid
                     // child index) or, on the first iteration only, `self.head.idx + 1`.
@@ -558,8 +558,8 @@ where
                         Some(tuple) => tuple,
                         None => match child.into_parent() {
                             Ok((p, c_idx)) => (p.erase_type(), c_idx),
-                            // If this node has no parent, then we're at the end of the root node,
-                            // so no more iteration possible. This should have already been caught.
+                            // If this node has no parent, then we're at the end of the root node;
+                            // no more iteration is possible. This should have already been caught
                             Err(_) => panic_internal_error_or_bad_index::<I>(),
                         },
                     };
