@@ -2656,9 +2656,14 @@ where
 
             let (lhs_child_pos, shift_pos, mut old_size, mut new_size) = match shift_lhs {
                 None => {
-                    // SAFETY: `new_key_idx` is at this point guaranteed to be less than or equal
-                    // to `insert_into.leaf().len()`, which is all that's required for `child_pos`.
-                    let lhs_child_pos = unsafe { insert_into.child_pos(new_key_idx) };
+                    // Like our careful maneuvering above to get `rhs_start`, we have to similarly
+                    // ignore the *current* influence of `self.lhs` when we get its position,
+                    // instead using its previous size from `self.old_size`.
+                    let next_key_pos = insert_into
+                        .leaf()
+                        .try_key_pos(new_key_idx)
+                        .unwrap_or_else(|| insert_into.leaf().subtree_size());
+                    let lhs_child_pos = next_key_pos.sub_right(self.old_size);
                     (lhs_child_pos, lhs_child_pos, I::ZERO, I::ZERO)
                 }
                 Some(lhs) => {
