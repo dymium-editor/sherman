@@ -286,6 +286,7 @@ where
         let mut stack = Vec::new();
         let mut cursor = cursor.map(|c| c.into_path());
         let mut head_node = root;
+        let mut head_pos = I::ZERO;
         let (mut target, excluded) = match target {
             IncludedOrExcludedBound::Included(i) => (i, false),
             IncludedOrExcludedBound::Excluded(i) => (i, true),
@@ -358,7 +359,9 @@ where
             match result {
                 ChildOrKey::Key((k_idx, k_pos)) => {
                     let slice_handle = unsafe { head_node.into_slice_handle(k_idx) };
-                    let slice_end = k_pos.add_right(slice_handle.slice_size());
+                    let slice_end = head_pos
+                        .add_right(k_pos)
+                        .add_right(slice_handle.slice_size());
                     return IterStack {
                         stack,
                         end_pos: slice_end,
@@ -387,6 +390,7 @@ where
 
                     target = target.sub_left(c_pos);
                     head_node = child;
+                    head_pos = head_pos.add_right(c_pos);
                 }
             }
         }

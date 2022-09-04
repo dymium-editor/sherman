@@ -175,3 +175,39 @@ fn auto_fuzz_7_insert_and_join_lhs() {
     tree_0.insert(5, Constant('H'), 1);
     tree_0.insert(5, Constant('F'), 5);
 }
+
+#[test]
+fn auto_fuzz_8_split_key_causes_split_node() {
+    let mut tree_0: BasicFuzzTree = RleTree::new_empty();
+    tree_0.insert(0, Constant('V'), 147);
+    tree_0.insert(24, Constant('C'), 28);
+    tree_0.insert(45, Constant('R'), 2);
+    tree_0.insert(1, Constant('R'), 1);
+    {
+        let mut iter = tree_0.iter(0..=147);
+        {
+            let item = iter.next().unwrap();
+            assert_eq!(item.range(), 0..1);
+            assert_eq!(item.size(), 1);
+            assert_eq!(item.slice(), &Constant('V'));
+        }
+        {
+            let item = iter.next().unwrap();
+            assert_eq!(item.range(), 1..2);
+            assert_eq!(item.size(), 1);
+            assert_eq!(item.slice(), &Constant('R'));
+        }
+        {
+            let item = iter.next_back().unwrap();
+            assert_eq!(item.range(), 55..178);
+            assert_eq!(item.size(), 123);
+            assert_eq!(item.slice(), &Constant('V'));
+        }
+        {
+            let item = iter.next().unwrap();
+            assert_eq!(item.range(), 2..25);
+            assert_eq!(item.size(), 23);
+            assert_eq!(item.slice(), &Constant('V'));
+        }
+    }
+}
