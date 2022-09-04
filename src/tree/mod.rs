@@ -4,6 +4,7 @@ use crate::param::{self, AllowSliceRefs, BorrowState, RleTreeConfig, StrongCount
 use crate::public_traits::{Index, Slice};
 use crate::range::RangeBounds;
 use crate::{Cursor, NoCursor, PathComponent};
+use std::cmp::Ordering;
 use std::fmt::Debug;
 use std::mem::{self, ManuallyDrop};
 use std::ops::Range;
@@ -1468,8 +1469,8 @@ where
     unsafe fn do_insert_no_join<'t, C: Cursor>(
         store: &mut P::SliceRefStore,
         mut node: NodeHandle<ty::Leaf, borrow::Mut<'t>, I, S, P, M>,
-        mut new_key_idx: u8,
-        mut override_lhs_size: Option<I>,
+        new_key_idx: u8,
+        override_lhs_size: Option<I>,
         fst: SliceSize<I, S>,
         snd: Option<SliceSize<I, S>>,
     ) -> Result<PostInsertTraversalResult<'t, C, I, S, P, M>, BubbledInsertState<'t, C, I, S, P, M>>
@@ -1486,96 +1487,281 @@ where
             None => (0, fst.size),
         };
 
-        // "easy" case: just add the slice(s) to the node
-        if node.leaf().len() < node.leaf().max_len() - one_if_snd {
-            let mut override_pos = None;
-            let old_size;
-            let new_size;
-
-            if let Some(new_lhs_size) = override_lhs_size {
-                let (lhs_pos, old_lhs_size) = {
-                    // SAFETY: `into_slice_handle` requires that `new_key_idx - 1` is a valid key
-                    // index, which is guaranteed by the caller to (a) not overflow if
-                    // `override_lhs_size.is_some()` and (b) be a valid key index.
-                    let handle = unsafe { node.borrow().into_slice_handle(new_key_idx - 1) };
-                    (handle.key_pos(), handle.slice_size())
-                };
-
-                let slice_pos = lhs_pos.add_right(new_lhs_size);
-                unsafe {
-                    let _ = node.insert_key(store, new_key_idx, fst.slice);
-                    node.set_single_key_pos(new_key_idx, slice_pos);
-                    if let Some(pair) = snd {
-                        node.insert_key(store, new_key_idx + 1, pair.slice);
-                        node.set_single_key_pos(new_key_idx + 1, slice_pos.add_right(fst.size));
-                    }
-                }
-
-                override_pos = Some(lhs_pos);
-                old_size = old_lhs_size;
-                new_size = new_lhs_size.add_right(added_size);
-            } else {
-                // SAFETY: `insert_key` requires that the node is a leaf, which is guaranteed by the
-                // caller of `do_insert_no_join`. It also requires that the node isn't full (checked
-                // above), and that the key is not *greater* than the current number of keys
-                // (guaranteed by caller, debug-checked above).
-                unsafe {
-                    let slice_pos = node.insert_key(store, new_key_idx, fst.slice);
-                    //  ^^^^^^^^^ don't need to use `slice_pos` to shift the keys because that'll be
-                    //  handled by `PostInsertTraversalState::do_upward_step`.
-                    if let Some(pair) = snd {
-                        node.insert_key(store, new_key_idx + 1, pair.slice);
-                        node.set_single_key_pos(new_key_idx + 1, slice_pos.add_right(fst.size));
-                        override_pos = Some(slice_pos);
-                    }
-                }
-
-                old_size = I::ZERO;
-                new_size = added_size;
+        // "hard" case: split the node on insertion:
+        //
+        // SAFETY: `do_insert_no_join_split` requires the same things that this function does, and
+        // *also* the exact condition above.
+        if node.leaf().len() >= node.leaf().max_len() - one_if_snd {
+            unsafe {
+                return Self::do_insert_no_join_split(
+                    store,
+                    node,
+                    new_key_idx,
+                    override_lhs_size,
+                    fst,
+                    snd,
+                );
             }
-
-            // SAFETY: we just inserted `new_slice_idx`, so it's a valid key index.
-            let slice_handle = unsafe { node.into_slice_handle(new_key_idx) };
-
-            // We can allow `PostInsertTraversalState::do_upward_step` to shift the key positions,
-            // because the "current" size of the newly inserted slice is zero, so the increase from
-            // zero to `slice_size` in `do_upward_step` will have the desired effect anyways.
-            return Ok(PostInsertTraversalResult::Continue(
-                PostInsertTraversalState {
-                    // SAFETY: `clone_slice_ref` requires that the handle isn't used until after
-                    // `node` is dropped, which is guaranteed by the safety bounds of
-                    // `inserted_slice`.
-                    inserted_slice: unsafe { slice_handle.clone_slice_ref().erase_type() },
-                    child_or_key: ChildOrKey::Key((
-                        new_key_idx + one_if_snd,
-                        slice_handle.node.erase_type(),
-                    )),
-                    override_pos,
-                    old_size,
-                    new_size,
-                    partial_cursor: C::new_empty(),
-                },
-            ));
         }
 
-        // Otherwise, "hard" case: split the node on insertion
+        // Otherwise, "easy" case: just add the slice(s) to the node
 
-        // There's a couple cases here to determine where we split the node, depending on
-        // `new_key_idx`.
-        //
-        // If we were to insert the new slice *before* splitting, we'd always extract the `M`th key
-        // as the midpoint (max keys is 2*M, so splitting is on 2*M + 1 keys, splitting into two
-        // nodes with size M, plus a midpoint)
-        //
-        // We can't insert the slice before splitting, but we still need to make sure the right
-        // number of values end up in each node *after* the insertion. So depending on the value of
-        // `new_key_idx`, we'll either split at `M` (`new_key_idx > M`) or `M - 1`
-        // (`new_key_idx <= M`). If `new_key_idx == M`, then we'll end up adding the midpoint back
-        // to the end of the left-hand node.
-        let midpoint_idx = if new_key_idx > M as u8 {
-            M as u8
+        let mut override_pos = None;
+        let old_size;
+        let new_size;
+
+        if let Some(new_lhs_size) = override_lhs_size {
+            let (lhs_pos, old_lhs_size) = {
+                // SAFETY: `into_slice_handle` requires that `new_key_idx - 1` is a valid key
+                // index, which is guaranteed by the caller to (a) not overflow if
+                // `override_lhs_size.is_some()` and (b) be a valid key index.
+                let handle = unsafe { node.borrow().into_slice_handle(new_key_idx - 1) };
+                (handle.key_pos(), handle.slice_size())
+            };
+
+            let slice_pos = lhs_pos.add_right(new_lhs_size);
+            unsafe {
+                let _ = node.insert_key(store, new_key_idx, fst.slice);
+                node.set_single_key_pos(new_key_idx, slice_pos);
+                if let Some(pair) = snd {
+                    node.insert_key(store, new_key_idx + 1, pair.slice);
+                    node.set_single_key_pos(new_key_idx + 1, slice_pos.add_right(fst.size));
+                }
+            }
+
+            override_pos = Some(lhs_pos);
+            old_size = old_lhs_size;
+            new_size = new_lhs_size.add_right(added_size);
         } else {
-            (M - 1) as u8
+            // SAFETY: `insert_key` requires that the node is a leaf, which is guaranteed by the
+            // caller of `do_insert_no_join`. It also requires that the node isn't full (checked
+            // above), and that the key is not *greater* than the current number of keys
+            // (guaranteed by caller, debug-checked above).
+            unsafe {
+                let slice_pos = node.insert_key(store, new_key_idx, fst.slice);
+                //  ^^^^^^^^^ don't need to use `slice_pos` to shift the keys because that'll be
+                //  handled by `PostInsertTraversalState::do_upward_step`.
+                if let Some(pair) = snd {
+                    node.insert_key(store, new_key_idx + 1, pair.slice);
+                    node.set_single_key_pos(new_key_idx + 1, slice_pos.add_right(fst.size));
+                    override_pos = Some(slice_pos);
+                }
+            }
+
+            old_size = I::ZERO;
+            new_size = added_size;
+        }
+
+        // SAFETY: we just inserted `new_slice_idx`, so it's a valid key index.
+        let slice_handle = unsafe { node.into_slice_handle(new_key_idx) };
+
+        // We can allow `PostInsertTraversalState::do_upward_step` to shift the key positions,
+        // because the "current" size of the newly inserted slice is zero, so the increase from
+        // zero to `slice_size` in `do_upward_step` will have the desired effect anyways.
+        return Ok(PostInsertTraversalResult::Continue(
+            PostInsertTraversalState {
+                // SAFETY: `clone_slice_ref` requires that the handle isn't used until after
+                // `node` is dropped, which is guaranteed by the safety bounds of
+                // `inserted_slice`.
+                inserted_slice: unsafe { slice_handle.clone_slice_ref().erase_type() },
+                child_or_key: ChildOrKey::Key((
+                    new_key_idx + one_if_snd,
+                    slice_handle.node.erase_type(),
+                )),
+                override_pos,
+                old_size,
+                new_size,
+                partial_cursor: C::new_empty(),
+            },
+        ));
+    }
+
+    /// Helper function for [`do_insert_no_join`]; refer to that function for context
+    ///
+    /// ## Safety
+    ///
+    /// This function has all of the same safety requirements as [`do_insert_no_join`], and *also*
+    /// requires that `node.leaf().len()` is sufficiently close to `node.leaf().max_len()` such
+    /// that it *doesn't* support adding `fst` and `snd`, if `snd` is `Some`.
+    ///
+    /// [`do_insert_no_join`]: Self::do_insert_no_join
+    unsafe fn do_insert_no_join_split<'t, C: Cursor>(
+        store: &mut P::SliceRefStore,
+        mut node: NodeHandle<ty::Leaf, borrow::Mut<'t>, I, S, P, M>,
+        mut new_key_idx: u8,
+        mut override_lhs_size: Option<I>,
+        fst: SliceSize<I, S>,
+        snd: Option<SliceSize<I, S>>,
+    ) -> Result<PostInsertTraversalResult<'t, C, I, S, P, M>, BubbledInsertState<'t, C, I, S, P, M>>
+    {
+        // There's a few cases here to determine where we split the node, depending both on
+        // `new_key_idx` and `node.leaf().len()`. We'll illustrate them all, pretending for now
+        // that `M = 3`. Our node is initially:
+        //   ╔═══╤═══╤═══╤═══╤═══╤═══╗
+        //   ║ A │ B │ C │ D │ E │ F ║    (guaranteed if `snd` is `None`)
+        //   ╚═══╧═══╧═══╧═══╧═══╧═══╝
+        // ... or ...
+        //   ╔═══╤═══╤═══╤═══╤═══╗
+        //   ║ A │ B │ C │ D │ E ║        (possible if `snd` is `Some(_)`)
+        //   ╚═══╧═══╧═══╧═══╧═══╝
+        // There's also some particularly strange edge cases to handle if `M = 1`, in which case
+        // our node would be:
+        //   ╔═══╤═══╗      ╔═══╗
+        //   ║ A │ B ║  or  ║ A ║
+        //   ╚═══╧═══╝      ╚═══╝
+        // We'll handle the `M = 1` stuff in a moment.
+        //
+        // As a general rule, we represent `fst` with a slash ("/") and, if present, we represent
+        // `snd` with a plus ("+").
+        //
+        // ---
+        //
+        // STEP 1: determine the midpoint for splitting
+        //
+        // Let's start with the end goals, and work backwards from there. Even though it's tedious,
+        // we'll go through all 9(ish) cases because some of them are unexpected, and we can
+        // categorize them more simply afterwards:
+        //
+        //   Case 1 — `new_key_idx < M` and `snd = None`:
+        //                      ╔═══╗
+        //        ╔═══╤═══╤═══╗ ║ C ║ ╔═══╤═══╤═══╗
+        //        ║ A │ B │ / ║ ╚═══╝ ║ D │ E │ F ║  (note: '/' could also take the place of A or B)
+        //        ╚═══╧═══╧═══╝       ╚═══╧═══╧═══╝
+        //
+        //   Case 2 — `new_key_idx < M` and `snd = Some(_)` and `len = max_len`:
+        //                          ╔═══╗
+        //        ╔═══╤═══╤═══╤═══╗ ║ C ║ ╔═══╤═══╤═══╗
+        //    (a) ║ A │ B │ / │ + ║ ╚═══╝ ║ D │ E │ F ║
+        //        ╚═══╧═══╧═══╧═══╝       ╚═══╧═══╧═══╝
+        //                      ╔═══╗                    (equivalent options)
+        //        ╔═══╤═══╤═══╗ ║ + ║ ╔═══╤═══╤═══╤═══╗
+        //    (b) ║ A │ B │ / ║ ╚═══╝ ║ C │ D │ E │ F ║
+        //        ╚═══╧═══╧═══╝       ╚═══╧═══╧═══╧═══╝
+        //
+        //   Case 3 — `new_key_idx < M` and `snd = Some(_)` and `len = max_len - 1`:
+        //                      ╔═══╗
+        //        ╔═══╤═══╤═══╗ ║ B ║ ╔═══╤═══╤═══╗
+        //    (a) ║ A │ / │ + ║ ╚═══╝ ║ C │ D │ E ║   (if new_key_idx < M - 1)
+        //        ╚═══╧═══╧═══╝       ╚═══╧═══╧═══╝
+        //                      ╔═══╗
+        //        ╔═══╤═══╤═══╗ ║ + ║ ╔═══╤═══╤═══╗
+        //    (b) ║ A │ B │ / ║ ╚═══╝ ║ C │ D │ E ║   (if new_key_idx == M - 1)
+        //        ╚═══╧═══╧═══╝       ╚═══╧═══╧═══╝
+        //
+        //   Case 4 — `new_key_idx = M` and `snd = None`:
+        //                      ╔═══╗
+        //        ╔═══╤═══╤═══╗ ║ / ║ ╔═══╤═══╤═══╗
+        //        ║ A │ B │ C ║ ╚═══╝ ║ D │ E │ F ║
+        //        ╚═══╧═══╧═══╝       ╚═══╧═══╧═══╝
+        //
+        //   Case 5 — `new_key_idx = M` and `snd = Some(_)` and `len = max_len`:
+        //                          ╔═══╗
+        //        ╔═══╤═══╤═══╤═══╗ ║ + ║ ╔═══╤═══╤═══╗
+        //    (a) ║ A │ B │ C │ / ║ ╚═══╝ ║ D │ E │ F ║
+        //        ╚═══╧═══╧═══╧═══╝       ╚═══╧═══╧═══╝
+        //                      ╔═══╗                     (equivalent options)
+        //        ╔═══╤═══╤═══╗ ║ / ║ ╔═══╤═══╤═══╤═══╗
+        //    (b) ║ A │ B │ C ║ ╚═══╝ ║ + │ D │ E │ F ║
+        //        ╚═══╧═══╧═══╝       ╚═══╧═══╧═══╧═══╝
+        //
+        //   Case 6 — `new_key_idx = M` and `snd = Some(_)` and `len = max_len - 1`:
+        //                      ╔═══╗
+        //        ╔═══╤═══╤═══╗ ║ / ║ ╔═══╤═══╤═══╗
+        //        ║ A │ B │ C ║ ╚═══╝ ║ + │ D │ E ║
+        //        ╚═══╧═══╧═══╝       ╚═══╧═══╧═══╝
+        //
+        //   Case 7 — `new_key_idx > M` and `snd = None`:
+        //                      ╔═══╗
+        //        ╔═══╤═══╤═══╗ ║ D ║ ╔═══╤═══╤═══╗
+        //        ║ A │ B │ C ║ ╚═══╝ ║ / │ E │ F ║
+        //        ╚═══╧═══╧═══╝       ╚═══╧═══╧═══╝
+        //
+        //   Case 8 — `new_key_idx > M` and `snd = Some(_)` and `len = max_len`:
+        //                      ╔═══╗
+        //        ╔═══╤═══╤═══╗ ║ D ║ ╔═══╤═══╤═══╤═══╗
+        //        ║ A │ B │ C ║ ╚═══╝ ║ / │ + │ E │ F ║
+        //        ╚═══╧═══╧═══╝       ╚═══╧═══╧═══╧═══╝
+        //
+        //   Case 9 — `new_key_idx > M` and `snd = Some(_)` and `len = max_len - 1`:
+        //                      ╔═══╗
+        //        ╔═══╤═══╤═══╗ ║ D ║ ╔═══╤═══╤═══╗
+        //        ║ A │ B │ C ║ ╚═══╝ ║ / │ + │ E ║
+        //        ╚═══╧═══╧═══╝       ╚═══╧═══╧═══╝
+        //
+        // There's also two suprise cases we can get with `M = 1` and `snd = Some(_)`:
+        //
+        //   Case S1 — `M = 1` and `new_key_idx = 0` and `snd = Some(_)` and `len = 1`:
+        //              ╔═══╗
+        //        ╔═══╗ ║ + ║ ╔═══╗
+        //        ║ / ║ ╚═══╝ ║ A ║
+        //        ╚═══╝       ╚═══╝
+        //
+        //   Case S2 — `M = 1` and `new_key_idx = 1` and `snd = Some(_)` and `len = 1`:
+        //              ╔═══╗
+        //        ╔═══╗ ║ / ║ ╔═══╗
+        //        ║ A ║ ╚═══╝ ║ + ║
+        //        ╚═══╝       ╚═══╝
+        //
+        // So -- on to our choice of midpoint.
+        //
+        // We have to choose *a* midpoint, even if we'll replace it later. It's more efficient to
+        // move the midpoint to the end of the left-hand node (rather than shift all the keys of
+        // `rhs` after adding it there). So: where when there's two equivalent options, we pick the
+        // one that avoids unecessarily pushing something into the beginning of `rhs`. This isn't
+        // possible for cases S1 or S2, but we can handle those separately.
+        let midpoint_idx: u8;
+        let insert_at: Result<Side, Side>; // Err(_) gives the direction of unbalance if `snd` is
+                                           // Some(_). Must be `Side::Right` if `snd` is None
+
+        let m_u8 = M as u8;
+
+        (midpoint_idx, insert_at) = match new_key_idx.cmp(&m_u8) {
+            // pre-handle cases S1 and S2
+            _ if M == 1 && node.leaf().len() == 1 => {
+                let snd = match snd {
+                    Some(s) => s,
+                    // SAFETY: we're guaranteed that `len = max_len` (which is 2, for M = 1),
+                    // unless `snd` is `Some`, so it must be.
+                    None => unsafe { weak_unreachable!() },
+                };
+
+                // SAFETY: `do_insert_no_join_split_small_m` has all the same requirements as this
+                // function (so those are guaranteed by the caller), and also requires `M == 1`,
+                // which we can see is true.
+                unsafe {
+                    return Self::do_insert_no_join_split_small_m(
+                        store,
+                        node,
+                        new_key_idx,
+                        override_lhs_size,
+                        fst,
+                        snd,
+                    );
+                };
+            }
+            Ordering::Less => match &snd {
+                // Case 3:
+                Some(_) if node.leaf().len() < node.leaf().max_len() => {
+                    if new_key_idx < m_u8 - 1 {
+                        // Case 3(a):
+                        (m_u8 - 2, Ok(Side::Left))
+                    } else {
+                        // Case 3(b):
+                        (m_u8 - 1, Err(Side::Left))
+                    }
+                } // Cases 1 and 2(a):    [we chose 2(a) instead of 2(b)]
+                Some(_) | None => (m_u8 - 1, Ok(Side::Left)),
+            },
+            Ordering::Equal => match &snd {
+                // Case 5(a):    [we chose 5(a) instead of 5(b) to avoid shifting rhs]
+                Some(_) if node.leaf().len() == node.leaf().max_len() => {
+                    (m_u8 - 1, Err(Side::Left))
+                }
+                // Cases 4 and 6:
+                None | Some(_) => (m_u8 - 1, Err(Side::Right)),
+            },
+            // Cases 7, 8, and 9
+            Ordering::Greater => (m_u8, Ok(Side::Right)),
         };
 
         // SAFETY: `split` requires that `midpoint_idx` is properly within the bounds of the node,
@@ -1586,54 +1772,28 @@ where
         let rhs_start = rhs.leaf().try_key_pos(0).unwrap_or(old_node_size);
         let midpoint_size;
 
-        // We're handling `override_lhs_size` for some cases here. It's a little tricky, so we'll
-        // illustrate each case. For the examples, let's say M = 3. This is our start node:
-        //   ╔═══╤═══╤═══╤═══╤═══╤═══╗
-        //   ║ A │ B │ C │ D │ E │ F ║
-        //   ╚═══╧═══╧═══╧═══╧═══╧═══╝
-        // We'll suppose there's a single insertion (having a second doesn't change the logic
-        // here). It'll be labelled with a slash - "/"
-        //
-        // At the end of this block, we guarantee that `handled_override.is_some()` implies that
-        // the left-hand key is in the same *new* node as the inserted value.
+        // Handle `override_lhs_size` for cases around the midpoint -- it's easier to handle here,
+        // rather than down below. After the checks here are complete, we've guaranteed that
+        // `override_lhs_size` is `Some` only when the left-hand key is in the same node as what
+        // `insert_at` indicates.
         match override_lhs_size {
-            Some(s) if new_key_idx == M as u8 => {
-                // Continuing the example, our final result if `new_key_idx == M` will be:
-                //                 ╔═══╗
-                //                 ║ / ║
-                //   ╔═══╤═══╤═══╗ ╚═══╝ ╔═══╤═══╤═══╗
-                //   ║ A │ B │ C ║       ║ D │ E │ F ║
-                //   ╚═══╧═══╧═══╝       ╚═══╧═══╧═══╝
-                // ... but currently, it's:
-                //                 ╔═══╗
-                //                 ║ C ║
-                //   ╔═══╤═══╗     ╚═══╝ ╔═══╤═══╤═══╗
-                //   ║ A │ B ║           ║ D │ E │ F ║
-                //   ╚═══╧═══╝           ╚═══╧═══╧═══╝
-                // ... so our left-hand key is in the midpoint. We can perform the necessary
-                // correction just by changing the midpoint's size.
+            Some(s)
+                // Cases 3(b)/4/5/6 -- inserting into the midpoint
+                if matches!(insert_at, Err(_))
+                    // Cases 7/8/9 -- inserting as the first key in the right-hand node
+                    || matches!(insert_at, Ok(Side::Right) if new_key_idx == midpoint_idx + 1) =>
+            {
+                // Any time we insert into the midpoint (except for cases S1/S2, which have already
+                // been handled), we move the initial midpoint to the end of the left-hand node,
+                // and use it as the left-hand key (so updating its size is sufficient).
+                //
+                // When we insert as the first key in the right-hand node, the midpoint is
+                // similarly the left-hand key, but we keep it there. We can update it in the same
+                // way.
                 midpoint_size = s;
+                // Remove `override_lhs_size` because we've fully handled it
                 override_lhs_size = None;
             }
-            Some(s) if new_key_idx == M as u8 + 1 => {
-                // If `new_key_idx == M + 1`, then our final result should be:
-                //                 ╔═══╗
-                //                 ║ D ║
-                //   ╔═══╤═══╤═══╗ ╚═══╝ ╔═══╤═══╤═══╗
-                //   ║ A │ B │ C ║       ║ / │ E │ F ║
-                //   ╚═══╧═══╧═══╝       ╚═══╧═══╧═══╝
-                // ... but currently, it's:
-                //                 ╔═══╗
-                //                 ║ D ║
-                //   ╔═══╤═══╤═══╗ ╚═══╝     ╔═══╤═══╗
-                //   ║ A │ B │ C ║           ║ E │ F ║
-                //   ╚═══╧═══╧═══╝           ╚═══╧═══╝
-                // ... so our left-hand key is in the midpoint, and will stay there. We can do the
-                // necessary correction *just* by changing the size of the midpoint (like above).
-                midpoint_size = s;
-                override_lhs_size = None;
-            }
-            // Nothing out of the ordinary yet; calculate the midpoint size as normal.
             _ => midpoint_size = rhs_start.sub_left(midpoint_key.pos),
         }
 
@@ -1655,140 +1815,311 @@ where
             shift_keys_decrease(rhs.as_mut(), opts);
         }
 
-        if new_key_idx == M as u8 {
-            // put `midpoint_key` back into `node`, use the desired insertion as the midpoint
-            //
-            // We've already handled `override_lhs_size`; see above.
-            let new_lhs_subtree_size = node.leaf().subtree_size().add_right(midpoint_size);
-            // SAFETY: `push_key` requires only that there's space. This is guaranteed by
-            // having a value of `midpoint_idx` that removes *some* values from `node`.
-            unsafe { node.push_key(store, midpoint_key, new_lhs_subtree_size) };
+        match insert_at {
+            Err(Side::Right) => {
+                // put `midpoint_key` back into `node`, use the desired insertion as the midpoint
+                //
+                // We've already handled `override_lhs_size`; see above.
+                let new_lhs_subtree_size = node.leaf().subtree_size().add_right(midpoint_size);
+                // SAFETY: `push_key` requires only that there's space. This is guaranteed by
+                // having a value of `midpoint_idx` that removes *some* values from `node`.
+                unsafe { node.push_key(store, midpoint_key, new_lhs_subtree_size) };
 
-            // If we have a second slice that we're adding, it should go at the start of `rhs`,
-            // which is directly after the midpoint.
-            if let Some(SliceSize { slice, size }) = snd {
-                // SAFETY: `insert_key` requires that the key index less than or equal to the
-                // current length, which is always true for zero. `shift_keys_increase` requires
-                // the same for `from`, which is true after the insertion completes. The calls to
-                // `as_mut` require uniqueness, which is guaranteed because we just created it
-                unsafe {
-                    let pos = rhs.as_mut().insert_key(store, 0, slice);
+                // If we have a second slice that we're adding, it should go at the start of `rhs`,
+                // which is directly after the midpoint.
+                if let Some(SliceSize { slice, size }) = snd {
+                    // SAFETY: `insert_key` requires that the key index less than or equal to the
+                    // current length, which is always true for zero. `shift_keys_increase` requires
+                    // the same for `from`, which is true after the insertion completes. The calls to
+                    // `as_mut` require uniqueness, which is guaranteed because we just created it
+                    unsafe {
+                        let pos = rhs.as_mut().insert_key(store, 0, slice);
 
-                    let opts = ShiftKeys {
-                        from: 1,
-                        pos,
-                        old_size: I::ZERO,
-                        new_size: size,
-                    };
-                    shift_keys_increase(rhs.as_mut(), opts);
+                        let opts = ShiftKeys {
+                            from: 1,
+                            pos,
+                            old_size: I::ZERO,
+                            new_size: size,
+                        };
+                        shift_keys_increase(rhs.as_mut(), opts);
+                    }
                 }
-            }
 
-            Err(BubbledInsertState {
-                lhs: node.erase_type(),
-                key: node::Key {
-                    pos: rhs_start,
+                Err(BubbledInsertState {
+                    lhs: node.erase_type(),
+                    key: node::Key {
+                        pos: rhs_start,
+                        slice: fst.slice,
+                        ref_id: Default::default(),
+                    },
+                    key_size: fst.size,
+                    rhs: rhs.erase_type(),
+                    old_size: old_node_size,
+                    insertion: None,
+                    partial_cursor: C::new_empty(),
+                })
+            }
+            Err(Side::Left) => {
+                let snd = match snd {
+                    // SAFETY: `Err(Side::Left)` is only given when `snd` is `None`.
+                    None => unsafe { weak_unreachable!() },
+                    Some(s) => s,
+                };
+
+                // put `midpoint_key` into the left-hand node, and then `fst` after it. We can
+                // guarantee the positions are right by providing the correct values of the new
+                // subtree size to `push_key`
+                let lhs_key_end = node.leaf().subtree_size().add_right(midpoint_size);
+
+                let fst_key_end = lhs_key_end.add_right(fst.size);
+                let fst_key = node::Key {
+                    pos: lhs_key_end,
                     slice: fst.slice,
                     ref_id: Default::default(),
-                },
-                key_size: fst.size,
-                rhs: rhs.erase_type(),
-                old_size: old_node_size,
-                insertion: None,
-                partial_cursor: C::new_empty(),
-            })
-        } else {
-            let (side, insert_into) = if new_key_idx < M as u8 {
-                // SAFETY: `as_mut` requires unqiue access; we're reborrowing and already have it.
-                (Side::Left, unsafe { node.as_mut() })
-            } else {
-                // Adjust the position of `slice` to be relative to the right-hand node
-                new_key_idx -= M as u8 + 1;
-
-                // SAFETY: `as_mut` requires unique access; `rhs` was just created.
-                (Side::Right, unsafe { rhs.as_mut() })
-            };
-
-            let (pos, old_size, mut new_size) = match override_lhs_size {
-                None => {
-                    let p = insert_into
-                        .leaf()
-                        .try_key_pos(new_key_idx)
-                        .unwrap_or_else(|| insert_into.leaf().subtree_size());
-                    (p, I::ZERO, I::ZERO)
-                }
-                Some(s) => {
-                    // SAFETY: the caller originally guarantees that `override_lhs_size.is_some()`
-                    // implies that `new_key_idx != 0`. Our little bit of handling above extends
-                    // this to apply to the two split halves of the original node -- the case where
-                    // the insertion is at the start of `rhs` gets explicitly handled with
-                    // `override_lhs_size` set to `None` before control flow gets here.
-                    let handle = unsafe { insert_into.borrow().into_slice_handle(new_key_idx - 1) };
-
-                    (handle.key_pos(), handle.slice_size(), s)
-                }
-            };
-
-            // SAFETY: the calls to `insert_key` and `shift_keys_increase` together require that
-            // `new_key_idx <= insert_into.leaf().len()`, which is guaranteed by the values we
-            // chose for `midpoint_idx` and our comparison with `M` above. In the case where `snd`
-            // is not `None`, the same guarantees are made, but shifted over by one.
-            //
-            // The call to `set_single_key_pos`, if we make it, requires that `new_key_idx + 1` is
-            // a valid key, which we know is true because we just inserted it.
-            unsafe {
-                let _ = insert_into.insert_key(store, new_key_idx, fst.slice);
-                let fst_pos = pos.add_right(new_size);
-                insert_into.set_single_key_pos(new_key_idx, fst_pos);
-                new_size = new_size.add_right(fst.size);
-
-                let mut from = new_key_idx + 1;
-
-                if let Some(SliceSize { slice, size }) = snd {
-                    insert_into.insert_key(store, new_key_idx + 1, slice);
-                    new_size = new_size.add_right(size);
-                    from += 1;
-
-                    // Update the position of `snd` because currently it's the same as `fst`. We
-                    // could make an extra call to `set_key_poss_with` but it's easier to just set
-                    // the value directly.
-                    let snd_pos = fst_pos.add_right(fst.size);
-                    insert_into.set_single_key_pos(new_key_idx + 1, snd_pos);
-                }
-
-                let opts = ShiftKeys {
-                    from,
-                    pos,
-                    old_size,
-                    new_size,
                 };
-                shift_keys_increase(insert_into, opts);
+
+                // SAFETY: our careful case-by-case logic above guarantees that there's always room
+                // to put the midpoint and first key into the left-hand node, which is all that
+                // `push_key` requires.
+                unsafe {
+                    node.push_key(store, midpoint_key, lhs_key_end);
+                    node.push_key(store, fst_key, fst_key_end);
+                }
+
+                // We always use `fst` as the handle, and we know it's at the end of `node`:
+                //
+                // SAFETY: `into_slice_handle` requires that the index is valid (which we know it
+                // is because we just put it there). `clone_slice_ref` requires that we not use it
+                // until the other borrows on the tree are gone, which the safety docs for
+                // `BubbledInsertState` guarantees.
+                let inserted_handle = unsafe {
+                    let idx = node.leaf().len() - 1;
+                    node.borrow().into_slice_handle(idx).clone_slice_ref()
+                };
+
+                Err(BubbledInsertState {
+                    lhs: node.erase_type(),
+                    key: node::Key {
+                        pos: fst_key_end,
+                        slice: snd.slice,
+                        ref_id: Default::default(),
+                    },
+                    key_size: snd.size,
+                    rhs: rhs.erase_type(),
+                    old_size: old_node_size,
+                    insertion: Some(BubbledInsertion {
+                        side: Side::Left,
+                        handle: inserted_handle.erase_type(),
+                    }),
+                    partial_cursor: C::new_empty(),
+                })
             }
+            Ok(side) => {
+                let insert_into = match side {
+                    // SAFETY: `as_mut` requires unqiue access; we're reborrowing with existing
+                    // unique access.
+                    Side::Left => unsafe { node.as_mut() },
+                    Side::Right => {
+                        // Adjust the insert position to be relative to the right-hand node
+                        new_key_idx -= midpoint_idx + 1;
+                        // SAFETY: `as_mut` requires unique access; `rhs` was just created.
+                        unsafe { rhs.as_mut() }
+                    }
+                };
 
-            // SAFETY: `into_slice_handle` requires that `new_key_idx < insert_into.leaf().len()`,
-            // which is guaranteed by `insert_key`. `clone_slice_ref` requires that we not use it
-            // until the other borrows on the tree are gone, which the safety docs for
-            // `BubbledInsertState` guarantees.
-            let inserted_handle = unsafe {
-                insert_into
-                    .borrow()
-                    .into_slice_handle(new_key_idx)
-                    .clone_slice_ref()
-            };
+                let (pos, old_size, mut new_size) = match override_lhs_size {
+                    None => {
+                        let p = insert_into
+                            .leaf()
+                            .try_key_pos(new_key_idx)
+                            .unwrap_or_else(|| insert_into.leaf().subtree_size());
+                        (p, I::ZERO, I::ZERO)
+                    }
+                    Some(s) => {
+                        // SAFETY: the caller originally guarantees that
+                        // `override_lhs_size.is_some()` implies that `new_key_idx != 0`. Our
+                        // little bit of handling above extends this to apply to the two split
+                        // halves of the original node -- the case where the insertion is at the
+                        // start of `rhs` gets explicitly handled with `override_lhs_size` set to
+                        // `None` before control flow gets here.
+                        let handle =
+                            unsafe { insert_into.borrow().into_slice_handle(new_key_idx - 1) };
 
-            Err(BubbledInsertState {
-                lhs: node.erase_type(),
-                key: midpoint_key,
-                key_size: midpoint_size,
-                rhs: rhs.erase_type(),
-                old_size: old_node_size,
-                insertion: Some(BubbledInsertion {
-                    side,
-                    handle: inserted_handle.erase_type(),
-                }),
-                partial_cursor: C::new_empty(),
-            })
+                        (handle.key_pos(), handle.slice_size(), s)
+                    }
+                };
+
+                // SAFETY: the calls to `insert_key` and `shift_keys_increase` together require
+                // that `new_key_idx <= insert_into.leaf().len()`, which is guaranteed by the
+                // values we chose for `midpoint_idx` and our comparison with `M` above. In the
+                // case where `snd` is not `None`, the same guarantees are made, but shifted over
+                // by one.
+                //
+                // The call to `set_single_key_pos`, if we make it, requires that `new_key_idx + 1`
+                // is a valid key, which we know is true because we just inserted it.
+                unsafe {
+                    let _ = insert_into.insert_key(store, new_key_idx, fst.slice);
+                    let fst_pos = pos.add_right(new_size);
+                    insert_into.set_single_key_pos(new_key_idx, fst_pos);
+                    new_size = new_size.add_right(fst.size);
+
+                    let mut from = new_key_idx + 1;
+
+                    if let Some(SliceSize { slice, size }) = snd {
+                        insert_into.insert_key(store, new_key_idx + 1, slice);
+                        new_size = new_size.add_right(size);
+                        from += 1;
+
+                        // Update the position of `snd` because currently it's the same as `fst`.
+                        // We could make an extra call to `set_key_poss_with` but it's easier to
+                        // just set the value directly.
+                        let snd_pos = fst_pos.add_right(fst.size);
+                        insert_into.set_single_key_pos(new_key_idx + 1, snd_pos);
+                    }
+
+                    let opts = ShiftKeys {
+                        from,
+                        pos,
+                        old_size,
+                        new_size,
+                    };
+                    shift_keys_increase(insert_into, opts);
+                }
+
+                // SAFETY: `into_slice_handle` requires `new_key_idx < insert_into.leaf().len()`,
+                // which is guaranteed by `insert_key`. `clone_slice_ref` requires that we not use
+                // it until the other borrows on the tree are gone, which the safety docs for
+                // `BubbledInsertState` guarantees.
+                let inserted_handle = unsafe {
+                    insert_into
+                        .borrow()
+                        .into_slice_handle(new_key_idx)
+                        .clone_slice_ref()
+                };
+
+                Err(BubbledInsertState {
+                    lhs: node.erase_type(),
+                    key: midpoint_key,
+                    key_size: midpoint_size,
+                    rhs: rhs.erase_type(),
+                    old_size: old_node_size,
+                    insertion: Some(BubbledInsertion {
+                        side,
+                        handle: inserted_handle.erase_type(),
+                    }),
+                    partial_cursor: C::new_empty(),
+                })
+            }
         }
+    }
+
+    /// Helper function for [`do_insert_no_join_split`]; refer to that function for context
+    ///
+    /// ## Safety
+    ///
+    /// This function has all of the same safety requirements as [`do_insert_no_join_split`] and
+    /// *also* requires that `M = 1`.
+    ///
+    /// [`do_insert_no_join_split`]: Self::do_insert_no_join_split
+    unsafe fn do_insert_no_join_split_small_m<'t, C: Cursor>(
+        store: &mut P::SliceRefStore,
+        mut node: NodeHandle<ty::Leaf, borrow::Mut<'t>, I, S, P, M>,
+        new_key_idx: u8,
+        override_lhs_size: Option<I>,
+        fst: SliceSize<I, S>,
+        snd: SliceSize<I, S>,
+    ) -> Result<PostInsertTraversalResult<'t, C, I, S, P, M>, BubbledInsertState<'t, C, I, S, P, M>>
+    {
+        // SAFETY: these are all guaranteed by the caller in some form. refer to the individual
+        // comments for more information.
+        unsafe {
+            // directly required
+            weak_assert!(M == 1);
+            // copied from `do_insert_no_join`
+            weak_assert!(!(override_lhs_size.is_some() && new_key_idx == 0));
+            // derived from `max_len` and `M = 1` for `do_insert_no_join_split` requirements
+            weak_assert!(node.leaf().len() == 1);
+            // derived from the above assertion and `do_insert_no_join` requirements
+            weak_assert!(new_key_idx <= 1);
+        }
+
+        let old_size = node.leaf().subtree_size();
+
+        // Because there's only two outcomes here (refer to `do_insert_no_join_split, S1 and S2),
+        // our first goal is just to get all of the values together outside of the nodes; we'll
+        // then decide based on `new_key_idx` how to put them back.
+
+        // SAFETY: `split` requires `0 < node.leaf().len()`, which is guaranteed by the assertion
+        // above that `node.leaf().len() == 1`.
+        let (midpoint_key, mut rhs) = unsafe { node.split(0, store) };
+
+        // Currently, both `node` and `rhs` have the wrong subtree size (should be zero). We need
+        // to fix this because that's what'll be used as the positions of the keys we insert:
+        node.set_subtree_size(I::ZERO);
+        // SAFETY: `as_mut` requires unique access, which is guaranteed because we just created it.
+        unsafe { rhs.as_mut().set_subtree_size(I::ZERO) };
+
+        let fst_key = node::Key {
+            pos: I::ZERO, // doesn't matter; won't be used
+            slice: fst.slice,
+            ref_id: Default::default(),
+        };
+        let snd_key = node::Key {
+            pos: I::ZERO, // doesn't matter; won't be used
+            slice: snd.slice,
+            ref_id: Default::default(),
+        };
+
+        // Note: `override_lhs_size = Some(_)` means that `new_key_idx = 1` and the midpoint will
+        // be used as its left-hand side.
+        let midpoint_size = match override_lhs_size {
+            Some(s) => s,
+            None => old_size,
+        };
+
+        #[rustfmt::skip]
+        let ((lhs_key, lhs_size), (mid_key, mid_size), (rhs_key, rhs_size)) = if new_key_idx == 0 {
+            ((fst_key, fst.size), (snd_key, snd.size), (midpoint_key, midpoint_size))
+        } else /* new_key_idx == 1 */ {
+            ((midpoint_key, midpoint_size), (fst_key, fst.size), (snd_key, snd.size))
+        };
+
+        // SAFETY: because `node` originally had a length of 1, and we removed the only value into
+        // `midpoint_key`, both `node` and `rhs` currently have a length of 0, which means that any
+        // insertion satisfies the requirement of `push_key` that there's room for the insertion.
+        unsafe {
+            node.push_key(store, lhs_key, lhs_size);
+            rhs.as_mut().push_key(store, rhs_key, rhs_size);
+        }
+
+        // iF `new_key_idx` is 1, then `fst` ends up as the midpoint, so we can't produce a handle
+        // to the insertion yet. Otherwise (`new_key_idx == 0`), it ends up as the left-hand node's
+        // only value, so we get it from there.
+        #[rustfmt::skip]
+        let insertion = if new_key_idx == 1 {
+            None
+        } else /* new_key_idx == 0 */ {
+            // SAFETY: `into_slice_handle` requires that the key index is valid, which we know is
+            // true because we just pushed the value into `node`. `clone_slice_ref` requires that
+            // we don't use the value until after the other borrows on the tree are dropped, which
+            // is guaranteed by the safety docs for `BubbledInsertState`.
+            let handle = unsafe { node.borrow().into_slice_handle(0).clone_slice_ref() };
+
+            Some(BubbledInsertion {
+                side: Side::Left,
+                handle: handle.erase_type(),
+            })
+        };
+
+        Err(BubbledInsertState {
+            lhs: node.erase_type(),
+            key: mid_key,
+            key_size: mid_size,
+            rhs: rhs.erase_type(),
+            old_size,
+            insertion,
+            partial_cursor: C::new_empty(),
+        })
     }
 
     /// (*Internal*) Handles the deletion of `rhs` due to insertion that joins with `lhs`

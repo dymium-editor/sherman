@@ -21,7 +21,7 @@ fn medium_complex_insert() {
     let mut tree: RleTree<usize, Constant<char>, NoFeatures, 1> = RleTree::new_empty();
     tree.insert(0, Constant('a'), 4); // [ 'a' ]
     tree.insert(4, Constant('b'), 3); // [ 'a', 'b' ]
-    tree.insert(2, Constant('c'), 5); // [ [ 'a' ], 'c', [ 'a', 'b' ] ]
+    tree.insert(2, Constant('c'), 5); // [ [ 'a', 'c' ], 'a', [ 'b' ] ]
 
     let fst_expected = vec![(0_usize..2, 'a'), (2..7, 'c'), (7..9, 'a'), (9..12, 'b')];
 
@@ -41,6 +41,36 @@ fn medium_complex_insert() {
     ];
     let snd_result: Vec<_> = tree.iter(..).map(|e| (e.range(), e.slice().0)).collect();
     assert_eq!(snd_result, snd_expected);
+}
+
+#[test]
+fn insert_and_split_with_len_1() {
+    // There's a particular edge case here that we need to be able to handle -- when we try to
+    // insert two values into a node with a length of 1, and that causes us to split. There's two
+    // ways this can happen -- either before or after the existing value.
+    let mut tree: RleTree<u8, Constant<char>, NoFeatures, 1> = RleTree::new_empty();
+    tree.insert(0, Constant('a'), 5); // [ 'a' ]
+
+    // First split: end of the node
+    tree.insert(3, Constant('b'), 4_u8); // [ [ 'a' ] 'b' [ 'a' ] ]
+    tree.validate();
+    let fst_result: Vec<_> = tree.iter(..).map(|e| (e.range(), e.slice().0)).collect();
+    assert_eq!(fst_result, [(0..3, 'a'), (3..7, 'b'), (7..9, 'a')]);
+
+    // Second split: start of the right-hand child node.
+    tree.insert(6, Constant('c'), 2); // [ [ 'a' ] 'b' [ 'c' ] 'b' [ 'a' ] ]
+    tree.validate();
+    let snd_result: Vec<_> = tree.iter(..).map(|e| (e.range(), e.slice().0)).collect();
+    assert_eq!(
+        snd_result,
+        [
+            (0..3, 'a'),
+            (3..6, 'b'),
+            (6..8, 'c'),
+            (8..9, 'b'),
+            (9..11, 'a')
+        ]
+    );
 }
 
 #[test]
