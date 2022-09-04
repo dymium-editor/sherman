@@ -2751,8 +2751,9 @@ where
             let new_first_child_size = self.rhs.leaf().subtree_size();
             // SAFETY: `replace_first_child` requires that `self.rhs` is at the correct height to
             // be a child of `parent`. This is guaranteed by `self.rhs` being at the same height as
-            // `self.lhs`, because `parent` *is* the parent of `self.lhs`.
-            let old_first_child = unsafe { parent.replace_first_child(self.rhs) };
+            // `self.lhs`, because `parent` *is* the parent of `self.lhs`. `as_mut` requires unique
+            // access, which is guaranteed because we just created it.
+            let old_first_child = unsafe { rhs.as_mut().replace_first_child(self.rhs) };
             let old_first_child_size = old_first_child.leaf().subtree_size();
 
             // Add the key and child to the left-hand node (`parent`)

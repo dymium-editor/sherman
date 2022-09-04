@@ -1407,7 +1407,10 @@ where
                     let dst: &mut Internal<I, S, P, M> = new_ptr.as_mut().assume_init_mut();
                     let childs_dst = &mut dst.child_ptrs as *mut _ as *mut _;
 
-                    ptr::copy_nonoverlapping(childs_src, childs_dst, copy_len);
+                    // Note: `copy_len + 1` here because we have to account for the children on
+                    // either side of the leftmost *and* rightmost keys being transferred to the
+                    // new node.
+                    ptr::copy_nonoverlapping(childs_src, childs_dst, copy_len + 1);
                 }
 
                 let mut handle = NodeHandle {
