@@ -2063,17 +2063,31 @@ where
     ///
     /// ## Safety
     ///
-    /// The child's height must be one less than this node's.
+    /// The child's height must be one less than this node's and we must have unique access to the
+    /// child.
     pub unsafe fn replace_first_child(
         &mut self,
-        child: NodeHandle<ty::Unknown, borrow::Owned, I, S, P, M>,
+        mut child: NodeHandle<ty::Unknown, borrow::Owned, I, S, P, M>,
     ) -> NodeHandle<ty::Unknown, borrow::Owned, I, S, P, M> {
         let child_height = self.height.as_u8() - 1;
 
         // SAFETY: guaranteed by caller.
         unsafe { weak_assert!(child.height == child_height) };
 
-        let func = |internal: &mut Internal<I, S, P, M>| {
+        let this_ptr = self.ptr;
+
+        let mut func = |internal: &mut Internal<I, S, P, M>| {
+            // set the child's parent information to `self`:
+            //
+            // SAFETY: the caller guarantees the unique access required for `as_mut`. `with_mut`
+            // requires that we don't call any user-defined code, which we aren't.
+            unsafe {
+                child.as_mut().with_mut(|leaf| {
+                    leaf.parent = Some(this_ptr);
+                    leaf.idx_in_parent.write(0);
+                })
+            }
+
             // SAFETY: all internal nodes are guaranteed to have at least one initialized child.
             let fst = unsafe { internal.child_ptrs.get_mut_unchecked(0).assume_init_mut() };
             // The replacement is valid because we know that `child` has the correct height.

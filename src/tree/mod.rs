@@ -2567,10 +2567,30 @@ where
         let (midpoint_key, mut rhs) = unsafe { parent.split(midpoint_idx, store) };
         parent.set_subtree_size(midpoint_key.pos);
 
-        // SAFETY: `rhs.leaf().len() >= 1`
-        let rhs_start = unsafe {
-            let first_key_pos = rhs.leaf().key_pos(0);
-            let first_child_size = rhs.borrow().child(0).leaf().subtree_size();
+        // We want to find `rhs_start` (i.e. the position of the first child in `rhs`), but there's
+        // a couple edge cases we have to handle first:
+        //
+        // 1. If `M = 1` and `new_key_idx = 2`, then `rhs` will have no keys.
+        // 2. If `new_key_idx = M`, then the first child of `rhs` is actually `self.lhs`, so its
+        //    size has been changed. We have to use `self.old_size` instead for the size of that
+        //    first child.
+        let rhs_start = {
+            let first_key_pos = match rhs.leaf().try_key_pos(0) {
+                Some(p) => p,
+                // SAFETY: see note above. If `M > 1`, then all configurations require at least 1
+                // key in `rhs` to get `len >= M` by the end of this function; we're adding at most
+                // one key to it.
+                None if M > 1 => unsafe { weak_unreachable!() },
+                None => rhs.leaf().subtree_size(),
+            };
+
+            let first_child_size = if new_key_idx == M as u8 {
+                self.old_size
+            } else {
+                // SAFETY: `child` requires a valid child index. Internal nodes must always have at
+                // least one child, so `0` is valid.
+                unsafe { rhs.borrow().child(0).leaf().subtree_size() }
+            };
             first_key_pos.sub_right(first_child_size)
         };
 
@@ -2749,7 +2769,8 @@ where
             // SAFETY: `replace_first_child` requires that `self.rhs` is at the correct height to
             // be a child of `parent`. This is guaranteed by `self.rhs` being at the same height as
             // `self.lhs`, because `parent` *is* the parent of `self.lhs`. `as_mut` requires unique
-            // access, which is guaranteed because we just created it.
+            // access, which is guaranteed because we just created it. `replace_first_child`
+            // requires unique access to `self.rhs`, which is guaranteed for the same reason.
             let old_first_child = unsafe { rhs.as_mut().replace_first_child(self.rhs) };
             let old_first_child_size = old_first_child.leaf().subtree_size();
 
