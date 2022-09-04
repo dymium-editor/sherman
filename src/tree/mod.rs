@@ -2150,7 +2150,7 @@ where
                     // `self.old_size` and the position of the next key.
                     let next_pos = parent
                         .leaf()
-                        .try_key_pos(lhs_child_idx + 1)
+                        .try_key_pos(lhs_child_idx)
                         .unwrap_or_else(|| parent.leaf().subtree_size());
 
                     let lhs_child_pos = next_pos.sub_right(self.old_size);
