@@ -2165,7 +2165,7 @@ where
             // height, which is guaranteed because `self.lhs` and `self.rhs` *were* at the same
             // height.
             //
-            // The call to `set_single_key_pos` requiers that `lhs_child_idx <
+            // The call to `set_single_key_pos` requires that `lhs_child_idx <
             // parent.leaf().len()`, which is guaranteed after `insert_key_and_child`.
             unsafe {
                 parent.insert_key_and_child(store, lhs_child_idx, self.key, self.rhs);
