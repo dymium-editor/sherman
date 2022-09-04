@@ -3115,7 +3115,7 @@ where
     ) {
         match node.into_typed() {
             Type::Leaf(node) => Self::validate_leaf(node, path),
-            Type::Internal(node) => Self::validate_internal(node, &mut Vec::new()),
+            Type::Internal(node) => Self::validate_internal(node, path),
         }
     }
 
