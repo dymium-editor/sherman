@@ -556,6 +556,7 @@ where
 
                 if !panics {
                     tree.insert(*index, slice.clone(), *size);
+                    tree.validate();
                     self.trees.insert(id.0, tree);
                 } else {
                     let (index, slice, size) = (*index, slice.clone(), *size);

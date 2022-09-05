@@ -10,11 +10,11 @@ use std::mem::{self, ManuallyDrop};
 use std::ops::Range;
 use std::panic::UnwindSafe;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "fuzz"))]
 use crate::{MaybeDebug, NoDebugImpl};
-#[cfg(test)]
+#[cfg(any(test, feature = "fuzz"))]
 use std::fmt::{self, Formatter};
-#[cfg(test)]
+#[cfg(any(test, feature = "fuzz"))]
 use std::ptr::NonNull;
 
 pub(crate) mod cow;
@@ -3105,7 +3105,7 @@ unsafe fn shift_keys<'t, Ty, I, S, P, const M: usize, const IS_INCREASE: bool>(
     unsafe { node.set_key_poss_with(recalculate, from..) };
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "fuzz"))]
 macro_rules! valid_assert {
     ($path:ident: $cond:expr) => {
         if !$cond {
@@ -3117,7 +3117,7 @@ macro_rules! valid_assert {
     };
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "fuzz"))]
 macro_rules! valid_assert_eq {
     ($path:ident: $lhs:expr, $rhs:expr) => {
         let left = $lhs;
@@ -3137,17 +3137,17 @@ macro_rules! valid_assert_eq {
     };
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "fuzz"))]
 impl<I, S, P, const M: usize> RleTree<I, S, P, M>
 where
     I: Index,
     P: RleTreeConfig<I, S>,
 {
-    /// Validates the tree, panicking if the indexes don't add up.
+    /// (*Test-only*) Validates the tree, panicking if the indexes don't add up.
     ///
     /// This method basically exists for tests so that we can quickly narrow down exactly when a
     /// failure is introduced in a particular test case.
-    fn validate(&self) {
+    pub fn validate(&self) {
         let root = match self.root.as_ref() {
             Some(r) => r,
             None => return,
