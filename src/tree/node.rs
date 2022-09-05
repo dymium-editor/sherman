@@ -34,6 +34,8 @@ use std::slice;
 use crate::MaybeDebug;
 #[cfg(test)]
 use std::fmt::{self, Debug, Formatter};
+#[cfg(test)]
+use std::mem::size_of;
 
 use crate::const_math_hack::{self as hack, ArrayHack};
 use crate::param::{self, RleTreeConfig, SliceRefStore, StrongCount, SupportsInsert};
@@ -611,8 +613,12 @@ impl<I, S, P: RleTreeConfig<I, S>, const M: usize> Debug for Leaf<I, S, P, M> {
             }
         }
 
-        f.debug_struct("Leaf")
-            .field("parent", &parent.as_ref().map(|p| p.ptr))
+        let mut s = f.debug_struct("Leaf");
+        if size_of::<resolve![P::StrongCount]>() != 0 {
+            s.field("strong_count", self.strong_count.fallible_debug());
+        }
+
+        s.field("parent", &parent.as_ref().map(|p| p.ptr))
             .field("idx_in_parent", &parent.as_ref().map(|p| p.idx_in_parent))
             .field("holes", &self.holes)
             .field("len", &self.len)
