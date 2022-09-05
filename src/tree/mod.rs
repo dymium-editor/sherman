@@ -259,9 +259,12 @@ where
         handle.do_drop();
     }
 
-    // Only now can we decrement the tree-wide strong count; otherwise we could run into race
+    // Only now do we drop the tree-wide strong count - doing it earlier could run into race
     // conditions.
-    r.shared_total_strong_count.decrement();
+    //
+    // This is either an `Arc<()>` or nothing, and `Arc` doesn't support `decrement` because it
+    // doesn't make any sense.
+    drop(r.shared_total_strong_count);
 }
 
 /// (*Internal*) Checks that the value of `M` provided for a `RleTree` is within the allowed bounds
@@ -1000,11 +1003,13 @@ where
         valid_assert!(path: path.is_empty() != node.leaf().parent().is_some());
         valid_assert!(path: node.leaf().len() >= 1);
         valid_assert!(path: path.is_empty() || node.leaf().len() >= M as u8);
-        let node_parent = match node.leaf().parent() {
-            None => None,
-            Some(p) => Some((p.ptr.cast::<()>(), p.idx_in_parent)),
-        };
-        valid_assert_eq!(path: parent, node_parent);
+        if !P::COW {
+            let node_parent = match node.leaf().parent() {
+                None => None,
+                Some(p) => Some((p.ptr.cast::<()>(), p.idx_in_parent)),
+            };
+            valid_assert_eq!(path: parent, node_parent);
+        }
 
         match node.into_typed() {
             Type::Leaf(node) => Self::validate_leaf(node, path),

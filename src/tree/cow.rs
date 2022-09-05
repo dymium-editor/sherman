@@ -68,9 +68,7 @@ impl param::StrongCount for Arc<()> {
     }
 
     fn increment(&self) -> Self {
-        unsafe {
-            weak_unreachable!("tried to call unsupported StrongCount::increment method on Arc<()>");
-        }
+        Arc::clone(self)
     }
 
     fn decrement(&self) -> bool {
