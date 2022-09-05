@@ -2138,7 +2138,7 @@ where
         &mut self,
         store: &mut resolve![P::SliceRefStore],
         key: Key<I, S, P>,
-        child: NodeHandle<ty::Unknown, borrow::Owned, I, S, P, M>,
+        mut child: NodeHandle<ty::Unknown, borrow::Owned, I, S, P, M>,
         new_subtree_size: I,
     ) {
         // SAFETY: guaranteed by caller
@@ -2150,6 +2150,19 @@ where
             let key_idx = internal.leaf.len as usize;
             let child_idx = key_idx + 1; // the index of a child *after* a key is at `+1`
             let key_pos = mem::replace(&mut internal.leaf.total_size, new_subtree_size);
+
+            // Change `child` to use `self` as the parent, if we have unique access
+            if child.leaf().strong_count.is_unique() {
+                // SAFETY: `as_mut` requires unique access, which is guaranteed because `child` is
+                // `Owned` and we've verified that the handle is unique. `with_mut` requires that
+                // we don't call any user-defined code, which we aren't.
+                unsafe {
+                    child.as_mut().with_mut(|leaf| {
+                        leaf.parent = Some(self_ptr);
+                        leaf.idx_in_parent.write(child_idx as u8);
+                    });
+                }
+            }
 
             // SAFETY: the various calls to `get_mut_unchecked` are in general sound because
             // they're only required to be within the bounds of `{KeyArray,ChildArray}::LEN`, which

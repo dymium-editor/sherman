@@ -451,3 +451,41 @@ fn auto_fuzz_16_bubble_bubble_leftmost_rhs() {
     tree_0.insert(131, Constant('D'), 3);
     assert!(std::panic::catch_unwind(move || { tree_0.insert(35, Constant('Z'), 182) }).is_err());
 }
+
+#[test]
+fn auto_fuzz_17_misc_large_insert() {
+    let mut tree_0: BasicFuzzTree = RleTree::new_empty();
+    tree_0.insert(0, Constant('Y'), 77);
+    tree_0.insert(0, Constant('U'), 3);
+    tree_0.insert(49, Constant('D'), 3);
+    tree_0.insert(3, Constant('H'), 3);
+    tree_0.insert(3, Constant('D'), 3);
+    tree_0.insert(33, Constant('D'), 3);
+    tree_0.insert(3, Constant('B'), 3);
+    tree_0.insert(3, Constant('D'), 3);
+    tree_0.insert(3, Constant('J'), 3);
+    tree_0.insert(49, Constant('D'), 3);
+    tree_0.insert(3, Constant('D'), 3);
+    tree_0.insert(33, Constant('D'), 3);
+    tree_0.insert(3, Constant('B'), 3);
+    tree_0.insert(3, Constant('J'), 3);
+    tree_0.insert(3, Constant('X'), 3);
+    tree_0.insert(49, Constant('D'), 3);
+    tree_0.insert(17, Constant('R'), 21);
+    tree_0.insert(21, Constant('V'), 21);
+    tree_0.insert(21, Constant('V'), 21);
+    tree_0.insert(3, Constant('D'), 3);
+    tree_0.insert(3, Constant('D'), 3);
+    tree_0.insert(33, Constant('D'), 1);
+    tree_0.insert(3, Constant('U'), 3);
+    tree_0.insert(3, Constant('J'), 3);
+    tree_0.insert(3, Constant('X'), 3);
+    tree_0.insert(81, Constant('A'), 3);
+    tree_0.insert(3, Constant('D'), 3);
+    tree_0.insert(3, Constant('J'), 3);
+    tree_0.insert(65, Constant('D'), 3);
+    tree_0.insert(40, Constant('O'), 3);
+    tree_0.insert(49, Constant('D'), 3);
+    tree_0.insert(3, Constant('D'), 6);
+    assert!(std::panic::catch_unwind(move || { tree_0.insert(17, Constant('R'), 77) }).is_err());
+}
