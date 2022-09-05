@@ -695,6 +695,13 @@ impl<T, const M: usize> ChildArray<MaybeUninit<T>, M> {
 // START OF ACTUAL IMPLEMENTATIONS //
 /////////////////////////////////////
 
+/// Panics with the message "tree is in an invalid state"
+#[cold]
+#[inline(never)]
+fn panic_invalid_state() -> ! {
+    panic!("tree is in an invalid state");
+}
+
 #[derive(Copy, Clone)]
 pub enum Type<L, I> {
     Leaf(L),
@@ -1268,6 +1275,10 @@ where
         let old_len = self.leaf().len();
         let src_start = (midpoint_idx + 1) as usize;
         let copy_len = old_len as usize - src_start;
+
+        if self.leaf().has_holes() {
+            panic_invalid_state();
+        }
 
         let new_leaf: Leaf<I, S, P, M> = Leaf {
             parent: None,
@@ -2480,6 +2491,14 @@ where
         self.keys.len() as u8
     }
 
+    /// Returns whether the leaf has any holes
+    pub fn has_holes(&self) -> bool {
+        // from the docs on `Leaf.holes` - the only configurations of `self.holes` with at least
+        // one hole *must* have `self.holes[1].is_some()`. Otherwise, there are no holes. So we can
+        // just check for that:
+        self.holes[1].is_some()
+    }
+
     /// Returns whether `self` has a hole at `k_idx`
     ///
     /// ## Safety
@@ -2693,7 +2712,15 @@ where
     P: RleTreeConfig<I, S>,
 {
     /// Produces a reference to the inner slice, lasting for the duration of the original borrow
+    ///
+    /// ## Panics
+    ///
+    /// This method will panic if there is currently a hole at the slice
     pub fn into_ref(self) -> &'t S {
+        if self.is_hole() {
+            panic_invalid_state();
+        }
+
         // SAFETY: `self.idx` is always in bounds in `self.node` (so the calls to `get_unchecked`
         // and `assume_init_ref`) are fine, and it's ok to hold onto the reference for 't because
         // the original borrow to create the `Immut` requires a reference with lifetime 't.
