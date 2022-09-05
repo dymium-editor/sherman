@@ -1404,6 +1404,7 @@ where
                     // to copy from the same index in children as we do the keys.
                     let childs_src = ArrayHack::get_ptr_unchecked(child_ptrs, src_start);
 
+                    let dst_ptr: NonNull<AbstractNode<I, S, P, M>> = new_ptr.cast();
                     let dst: &mut Internal<I, S, P, M> = new_ptr.as_mut().assume_init_mut();
                     let childs_dst = &mut dst.child_ptrs as *mut _ as *mut _;
 
@@ -1411,6 +1412,21 @@ where
                     // either side of the leftmost *and* rightmost keys being transferred to the
                     // new node.
                     ptr::copy_nonoverlapping(childs_src, childs_dst, copy_len + 1);
+
+                    // At this point, we've initialized everything in the new node, but the children
+                    // still have the old parent pointer (and position in the parent). We need to
+                    // overwrite those:
+                    for ci in 0..(copy_len + 1) {
+                        let mut p: NonNull<Leaf<I, S, P, M>> =
+                            dst.child_ptrs.get_unchecked(ci).assume_init().cast();
+
+                        // Only overwrite the pointer if we have unique access
+                        if p.as_ref().strong_count.is_unique() {
+                            let leaf = p.as_mut();
+                            leaf.parent = Some(dst_ptr);
+                            leaf.idx_in_parent.write(ci as u8);
+                        }
+                    }
                 }
 
                 let mut handle = NodeHandle {
