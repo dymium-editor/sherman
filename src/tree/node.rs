@@ -751,6 +751,7 @@ where
 //  * into_slice_handle (where B: borrow::Ref)
 //  * try_child_size (where I: Copy)
 //  * shallow_clone (where I: Copy, P: SupportsInsert)
+//  * increase_strong_count_and_clone
 impl<Ty, B, I, S, P, const M: usize> NodeHandle<Ty, B, I, S, P, M>
 where
     Ty: TypeHint,
@@ -1114,6 +1115,25 @@ where
             ptr: new_alloc_ptr,
             height: self.height,
             borrow: PhantomData as PhantomData<borrow::Owned>,
+        }
+    }
+
+    /// Increases the strong count of this node and produces a copy
+    ///
+    /// ## Safety
+    ///
+    /// This function requires that `P = AllowCow` and *will* trigger UB if that is not true.
+    pub unsafe fn increase_strong_count_and_clone(
+        &self,
+    ) -> NodeHandle<Ty, borrow::Owned, I, S, P, M> {
+        // SAFETY: Guaranteed by caller
+        unsafe { weak_assert!(P::COW) };
+
+        self.leaf().strong_count.increment();
+        NodeHandle {
+            ptr: self.ptr,
+            height: self.height,
+            borrow: PhantomData,
         }
     }
 }
