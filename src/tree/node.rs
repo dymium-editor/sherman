@@ -24,7 +24,7 @@ use std::alloc::{self, Layout};
 use std::cell::UnsafeCell;
 use std::cmp::Ordering;
 use std::marker::PhantomData;
-use std::mem::{self, size_of, MaybeUninit};
+use std::mem::{self, MaybeUninit};
 use std::num::NonZeroU8;
 use std::ops::RangeFrom;
 use std::ptr::{self, addr_of_mut, NonNull};
@@ -750,7 +750,7 @@ where
 //  * into_parent
 //  * into_slice_handle (where B: borrow::Ref)
 //  * try_child_size (where I: Copy)
-//  * shallow_clone (where I: Copy, P: SupportsInsert)
+//  * shallow_clone (where I: Index, P: SupportsInsert)
 //  * increase_strong_count_and_clone
 impl<Ty, B, I, S, P, const M: usize> NodeHandle<Ty, B, I, S, P, M>
 where
@@ -988,133 +988,91 @@ where
     /// ## Safety
     ///
     /// This function requires that `P = AllowCow`, and *will* trigger UB if that is not true.
-    //
-    // TODO: This function is kinda messy; it might be slower, but we should instead assemble the
-    // new `Leaf`/`Internal` and then allocate it.
     pub unsafe fn shallow_clone(&self) -> NodeHandle<Ty, borrow::Owned, I, S, P, M>
     where
-        I: Copy,
+        B: borrow::AsImmut,
+        I: Index,
         P: SupportsInsert<I, S>,
     {
-        let leaf_ref = self.leaf();
+        // SAFETY: Guaranteed by caller
+        unsafe { weak_assert!(P::COW) };
 
-        let (new_alloc_ptr, new_leaf_ptr) = match self.height.as_u8() {
-            // height = 0 => leaf
-            0 => {
-                let p: NonNull<MaybeUninit<Leaf<I, S, P, M>>> =
-                    alloc_aligned(MaybeUninit::uninit());
+        let this_leaf = self.leaf();
 
-                (
-                    p.cast::<AbstractNode<I, S, P, M>>(),
-                    p.cast::<Leaf<I, S, P, M>>(),
-                )
-            }
-            // height > 0 => internal
-            _ => {
-                let p: NonNull<MaybeUninit<Internal<I, S, P, M>>> =
-                    alloc_aligned(MaybeUninit::uninit());
+        if this_leaf.has_holes() {
+            panic_invalid_state();
+        }
 
-                // Note: it's safe to cast from `*mut Internal` to `*mut Leaf` because `Internal`
-                // is `#[repr(C)]` and its first field is the inner `Leaf`.
-                (
-                    p.cast::<AbstractNode<I, S, P, M>>(),
-                    p.cast::<Leaf<I, S, P, M>>(),
-                )
-            }
+        let (parent, idx_in_parent) = match this_leaf.parent() {
+            None => (None, MaybeUninit::uninit()),
+            Some(p) => (Some(p.ptr), MaybeUninit::new(p.idx_in_parent)),
         };
 
-        let new_ptr = new_leaf_ptr.as_ptr();
-        // SAFETY: we're initializing all of the fields that need to be initialized; the rest
-        // are `MaybeUninit`s and not necessary yet.
-        unsafe {
-            addr_of_mut!((*new_ptr).parent).write(leaf_ref.parent);
-            addr_of_mut!((*new_ptr).idx_in_parent).write(leaf_ref.idx_in_parent);
-            addr_of_mut!((*new_ptr).holes).write([None; 2]);
-            // Note: setting `len = leaf_ref.len` is ok here because we haven't swapped in the new
-            // node -- if we panic, its destructor won't be run.
-            addr_of_mut!((*new_ptr).len).write(leaf_ref.len);
-            addr_of_mut!((*new_ptr).strong_count).write(P::StrongCount::one());
-            addr_of_mut!((*new_ptr).total_size).write(leaf_ref.total_size);
-        }
+        let mut new_leaf: Leaf<I, S, P, M> = Leaf {
+            parent,
+            idx_in_parent,
+            holes: [None; 2],
+            len: 0,
+            strong_count: P::StrongCount::one(),
+            keys: this_leaf.keys,
+            vals: KeyArray::new(),
+            refs: KeyArray::new(),
+            total_size: self.leaf().subtree_size(),
+        };
 
-        // SAFETY: we've initialized everything that's not `MaybeUninit` (and a couple more), and
-        // there's no other references to the new node.
-        let new_leaf_ref = unsafe { &mut *new_ptr };
+        // With `parent`, `idx_in_parent`, `holes`, `strong_count`, and `total_size` properly
+        // instantiated, we only have `vals`/`refs`/`len` left (plus the child pointers, if
+        // this is an internal node). Let's look at each of these briefly:
+        //  * `vals` -- must be cloned with `SupportsInsert::clone_slice`
+        //  * `refs` -- `P::SliceRefStore::OptionRefId` is zero-sized for `param::AllowCow`, so we
+        //     can leave the entire array uninitialized.
+        //  * `child_ptrs` (if internal) -- can be copied, but strong counts must be incremented
+        //  * `len` -- will be set equal to `self.leaf().len`
 
-        // Now that we've initialized the individual values in the `Leaf`, we need to write to the
-        // arrays in the `Leaf` and `Internal`. There's four total arrays:
-        //  * `keys` (all elements implement `Copy`)
-        //  * `vals` (must be cloned with `SupportsInsert`)
-        //  * `refs` (P::SliceRefStore::OptionRefId is zero-sized)
-        //  * `child_ptrs` (strong count must be incremented for each; only present if `Internal`)
-
-        // Copy into `keys`
-        new_leaf_ref.keys = leaf_ref.keys;
-
-        // Clone each of the old values into `vals`:
-        for k in 0..leaf_ref.len {
-            // SAFETY: There's a few things going on here. Firstly, we know we're not walking off the
-            // end of the arrays, bceause `leaf_ref.len` is already within that bound (so `k < len` is
-            // as well). The `assume_init_ref` on `leaf_ref.keys[k]` is also ok, because `k < len`
-            // means it's also initialized. The last piece is the call to `P::clone_slice`, which
-            // requires that `P = AllowCow`
+        for i in 0..this_leaf.len {
+            // SAFETY: the calls to various `get_unchecked` => `assume_init_ref` broadly require
+            // that `i < this_leaf.len` and that `this_leaf.len <= KeyArray<_, M>::LEN`. The first
+            // is guaranteed by the range above, and the second is always true. The call to
+            // `P::clone_slice` requires that `P = AllowCow`, which is guaranteed by the caller.
             unsafe {
-                let old_ref = leaf_ref.vals.get_unchecked(k as usize).assume_init_ref();
-                let new_ref = new_leaf_ref.vals.get_mut_unchecked(k as usize);
-                new_ref.write(P::clone_slice(old_ref));
+                let this_val = this_leaf.vals.get_unchecked(i as usize).assume_init_ref();
+                let new_val = P::clone_slice(this_val);
+                new_leaf.vals.get_mut_unchecked(i as usize).write(new_val);
             }
+            // set `len` as we go so that -- if `clone_slice` panics -- we drop everything that's
+            // already been initialized.
+            new_leaf.len = i + 1;
         }
 
-        // SAFETY: To get here, we need to have previously found that `strong_count` is not unqiue,
-        // which can only happen with P = AllowCow, which has a zero-sized `OptionRefId`. This means
-        // that we can leave `refs` as-is: uninitialized.
-        unsafe { weak_assert!(size_of::<resolve![P::SliceRefStore::OptionRefId]>() == 0) };
+        // Everything but `child_ptrs` is now initialized
 
-        drop(new_leaf_ref);
+        match self.typed_ref() {
+            Type::Leaf(_) => NodeHandle {
+                ptr: alloc_aligned(new_leaf).cast(),
+                height: self.height,
+                borrow: PhantomData,
+            },
+            Type::Internal(this) => {
+                let b = this.borrow();
 
-        // If this is an internal node, we need to copy all of the `child_ptrs`:
-        if let Some(child_height) = self.height.as_u8().checked_sub(1) {
-            // SAFETY: Same safety as creating `leaf_ref` and `new_leaf_ref` above, with the additional
-            // consideration that because `height != 0`, we know that casting the allocation to an
-            // `Internal` is ok. We also *cannot* use `new_leaf_ref` again, after creating
-            // `new_internal_ref` pointing to the same memory.
-            let (internal_ref, new_internal_ref) = unsafe {
-                let ir = self.ptr.cast::<Internal<I, S, P, M>>().as_ref();
-                let nir = new_alloc_ptr.cast::<Internal<I, S, P, M>>().as_mut();
-                (ir, nir)
-            };
+                // Increment all the strong counts of child pointers
+                for ci in 0..=this_leaf.len {
+                    // SAFETY: `into_child` for immutable borrows only requires that `ci <= len`,
+                    // which is guaranteed by the range above
+                    unsafe { b.into_child(ci) }.leaf().strong_count.increment();
+                }
 
-            for c in 0..=leaf_ref.len {
-                // SAFETY: the reasoning here is pretty similar to above, when we're cloning the
-                // contents of `vals`. We're guaranteed from the existing node that `len` is less than
-                // or equal to `child_ptrs.len()`, and it's initialized up to `child_ptrs[..len + 1]`.
-                // Because we have access to the parent node, we are allowed immtuable access to the
-                // child, where incrementing the strong count means that copying the pointer won't
-                // result in a use-after-free.
-                unsafe {
-                    let old_ref = internal_ref
-                        .child_ptrs
-                        .get_unchecked(c as usize)
-                        .assume_init_ref();
-                    let new_ref = new_internal_ref.child_ptrs.get_mut_unchecked(c as usize);
+                let new_internal = Internal {
+                    leaf: new_leaf,
+                    child_ptrs: this.internal().child_ptrs,
+                };
 
-                    // Increment the strong count on `old_ref`:
-                    let child: NodeHandle<ty::Unknown, borrow::Immut, _, _, _, M> = NodeHandle {
-                        ptr: *old_ref,
-                        height: child_height,
-                        borrow: PhantomData,
-                    };
-
-                    child.leaf().strong_count.increment();
-                    new_ref.write(*old_ref);
+                NodeHandle {
+                    ptr: alloc_aligned(new_internal).cast(),
+                    height: self.height,
+                    borrow: PhantomData,
                 }
             }
-        }
-
-        NodeHandle {
-            ptr: new_alloc_ptr,
-            height: self.height,
-            borrow: PhantomData as PhantomData<borrow::Owned>,
         }
     }
 
