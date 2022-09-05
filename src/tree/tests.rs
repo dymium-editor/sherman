@@ -489,3 +489,45 @@ fn auto_fuzz_17_misc_large_insert() {
     tree_0.insert(3, Constant('D'), 6);
     assert!(std::panic::catch_unwind(move || { tree_0.insert(17, Constant('R'), 77) }).is_err());
 }
+
+#[test]
+fn auto_fuzz_18_misc_large_insert() {
+    let mut tree_0: BasicFuzzTree = RleTree::new_empty();
+    tree_0.insert(0, Constant('B'), 5);
+    tree_0.insert(5, Constant('F'), 5);
+    tree_0.insert(5, Constant('R'), 5);
+    tree_0.insert(0, Constant('B'), 5);
+    tree_0.insert(5, Constant('F'), 5);
+    tree_0.insert(5, Constant('R'), 5);
+    tree_0.insert(1, Constant('E'), 5);
+    tree_0.insert(5, Constant('F'), 5);
+    tree_0.insert(5, Constant('F'), 5);
+    tree_0.insert(5, Constant('F'), 5);
+    tree_0.insert(5, Constant('F'), 5);
+    tree_0.insert(5, Constant('F'), 5);
+    tree_0.insert(5, Constant('N'), 5);
+    tree_0.insert(7, Constant('F'), 5);
+    tree_0.insert(5, Constant('E'), 5);
+    tree_0.insert(5, Constant('F'), 5);
+    tree_0.insert(4, Constant('Q'), 5);
+    tree_0.insert(63, Constant('F'), 5);
+    tree_0.insert(5, Constant('F'), 5);
+    tree_0.insert(5, Constant('F'), 5);
+    tree_0.insert(5, Constant('H'), 5);
+    tree_0.insert(5, Constant('F'), 5);
+    tree_0.insert(5, Constant('F'), 5);
+    tree_0.insert(5, Constant('F'), 5);
+    tree_0.insert(5, Constant('H'), 5);
+    tree_0.insert(5, Constant('F'), 5);
+    tree_0.insert(5, Constant('F'), 5);
+    tree_0.insert(5, Constant('P'), 5);
+    tree_0.insert(5, Constant('F'), 5);
+    tree_0.insert(5, Constant('F'), 5);
+    tree_0.insert(5, Constant('N'), 5);
+    tree_0.insert(7, Constant('F'), 5);
+    tree_0.insert(5, Constant('F'), 5);
+    tree_0.insert(5, Constant('F'), 5);
+    tree_0.insert(5, Constant('F'), 5);
+    tree_0.insert(120, Constant('Q'), 80);
+    tree_0.validate();
+}

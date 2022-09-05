@@ -2652,6 +2652,11 @@ where
                 // Adjust the position of `slice` to be relative to the right-hand node
                 new_key_idx -= M as u8 + 1;
 
+                // Appropriately adjsut `shift_lhs` to be relative to the right-hand node now
+                if let Some(s) = shift_lhs.as_mut() {
+                    s.pos = s.pos.sub_left(rhs_start);
+                }
+
                 // SAFETY: `as_mut` requires unique access; `rhs` was just created.
                 (Side::Right, unsafe { rhs.as_mut() })
             };
