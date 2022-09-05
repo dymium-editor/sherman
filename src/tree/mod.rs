@@ -2571,9 +2571,9 @@ where
         // a couple edge cases we have to handle first:
         //
         // 1. If `M = 1` and `new_key_idx = 2`, then `rhs` will have no keys.
-        // 2. If `new_key_idx = M`, then the first child of `rhs` is actually `self.lhs`, so its
-        //    size has been changed. We have to use `self.old_size` instead for the size of that
-        //    first child.
+        // 2. If `new_key_idx = M` or `M + 1`, then the first child of `rhs` is actually
+        //    `self.lhs`, so its size has been changed. We have to use `self.old_size` instead for
+        //    the size of that first child.
         let rhs_start = {
             let first_key_pos = match rhs.leaf().try_key_pos(0) {
                 Some(p) => p,
@@ -2584,7 +2584,7 @@ where
                 None => rhs.leaf().subtree_size(),
             };
 
-            let first_child_size = if new_key_idx == M as u8 {
+            let first_child_size = if new_key_idx == M as u8 || new_key_idx == M as u8 + 1 {
                 self.old_size
             } else {
                 // SAFETY: `child` requires a valid child index. Internal nodes must always have at
