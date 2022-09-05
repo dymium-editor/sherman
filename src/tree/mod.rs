@@ -218,7 +218,14 @@ impl<I: Index, S, P: RleTreeConfig<I, S>, const M: usize> Debug for Root<I, S, P
             indent,
         };
         // FIXME: Add SliceRefStore to this if size_of::<P::SliceRefStore>() != 0
-        f.debug_struct("Root").field("nodes", &nodes).finish()
+        let mut s = f.debug_struct("Root");
+        if P::COW {
+            s.field(
+                "shared_total_strong_count",
+                &self.shared_total_strong_count.count(),
+            );
+        }
+        s.field("nodes", &nodes).finish()
     }
 }
 

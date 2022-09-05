@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 #[rustfmt::skip]
 impl param::StrongCount for () {
+    fn count(&self) -> usize { 1 }
     fn one() -> Self { () }
     fn is_unique(&self) -> bool { true }
     fn increment(&self) -> Self { () }
@@ -16,6 +17,10 @@ impl param::sealed::YouCantImplementThis for AtomicUsize {}
 impl param::sealed::YouCantImplementThis for Arc<()> {}
 
 impl param::StrongCount for AtomicUsize {
+    fn count(&self) -> usize {
+        self.load(Ordering::Acquire)
+    }
+
     fn one() -> Self {
         AtomicUsize::new(1)
     }
@@ -59,6 +64,10 @@ impl param::StrongCount for AtomicUsize {
 }
 
 impl param::StrongCount for Arc<()> {
+    fn count(&self) -> usize {
+        Arc::strong_count(self)
+    }
+
     fn one() -> Self {
         Arc::new(())
     }

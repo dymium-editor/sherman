@@ -100,6 +100,12 @@ pub(crate) mod sealed {
 /// *Internal-only* abstraction trait required for types used as [`RleTreeConfig::StrongCount`] or
 /// [`RleTreeConfig::SharedStrongCount`].
 pub trait StrongCount: sealed::YouCantImplementThis {
+    /// Returns the associated count
+    ///
+    /// For `Arc<()>`, this returns `Arc::strong_count(self)`. For `AtomicUsize`, this returns
+    /// `self.load(...)`.
+    fn count(&self) -> usize;
+
     /// Creates a new value with a count of one
     fn one() -> Self;
 
