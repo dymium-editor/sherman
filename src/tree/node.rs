@@ -89,8 +89,9 @@ where
 /// same. This is true for all `TypeHint`s (they're all equivalent to `u8`s), which means we *can*
 /// transmute between `NodeHandle` parameterizations, or reinterpret references.
 #[repr(C)]
-pub(super) struct NodeHandle<T: TypeHint, B, I, S, P, const M: usize>
+pub(super) struct NodeHandle<Ty, B, I, S, P, const M: usize>
 where
+    Ty: TypeHint,
     P: RleTreeConfig<I, S>,
 {
     ptr: NodePtr<I, S, P, M>,
@@ -99,17 +100,18 @@ where
     /// All nodes at a `height` of zero are leaf nodes, and all nodes at `height > 0` are internal
     /// nodes. This is enforced by the implementations of [`TypeHint`] for the various types, where
     /// `u8` is only used for `ty::Unknown`.
-    height: T::Height,
+    height: Ty::Height,
     /// Borrow marker indicating what this `NodeHandle` is allowed to access
     borrow: PhantomData<B>,
 }
 
 /// Handle on a *particular* slice in a node
-pub(super) struct SliceHandle<T: TypeHint, B, I, S, P, const M: usize>
+pub(super) struct SliceHandle<Ty, B, I, S, P, const M: usize>
 where
+    Ty: TypeHint,
     P: RleTreeConfig<I, S>,
 {
-    pub(super) node: NodeHandle<T, B, I, S, P, M>,
+    pub(super) node: NodeHandle<Ty, B, I, S, P, M>,
     /// The index of the particular slice in the node
     ///
     /// ## Safety
@@ -117,6 +119,43 @@ where
     /// Existence of this `SliceHandle` guarantees that `idx < node.len`; you can assume it without
     /// checking.
     pub(super) idx: u8,
+}
+
+#[cfg(test)]
+impl<Ty, B, I, S, P, const M: usize> Debug for NodeHandle<Ty, B, I, S, P, M>
+where
+    Ty: TypeHint,
+    P: RleTreeConfig<I, S>,
+{
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        let ty = match self.typed_ref() {
+            Type::Leaf(_) => "Leaf",
+            Type::Internal(_) => "Internal",
+        };
+
+        let mut s = f.debug_struct(ty);
+        s.field("addr", &self.ptr);
+        s.field("height", &self.height.as_u8());
+        match self.typed_ref() {
+            Type::Leaf(node) => node.leaf().append_fields(&mut s),
+            Type::Internal(node) => node.internal().append_fields(&mut s),
+        }
+        s.finish()
+    }
+}
+
+#[cfg(test)]
+impl<Ty, B, I, S, P, const M: usize> Debug for SliceHandle<Ty, B, I, S, P, M>
+where
+    Ty: TypeHint,
+    P: RleTreeConfig<I, S>,
+{
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        f.debug_struct("SliceHandle")
+            .field("idx", &self.idx)
+            .field("node", &self.node)
+            .finish()
+    }
 }
 
 // In order to safely implement Send/Sync for the main RleTree (and other related items), it's
@@ -546,8 +585,8 @@ pub(super) enum ChildOrKey<C, K> {
 ////////////////////////
 
 #[cfg(test)]
-impl<I, S, P: RleTreeConfig<I, S>, const M: usize> Debug for Leaf<I, S, P, M> {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+impl<I, S, P: RleTreeConfig<I, S>, const M: usize> Leaf<I, S, P, M> {
+    fn append_fields(&self, s: &mut fmt::DebugStruct) {
         let parent = self.parent();
 
         struct Ks<'a, I, S, P: RleTreeConfig<I, S>, const M: usize>(&'a Leaf<I, S, P, M>);
@@ -613,7 +652,6 @@ impl<I, S, P: RleTreeConfig<I, S>, const M: usize> Debug for Leaf<I, S, P, M> {
             }
         }
 
-        let mut s = f.debug_struct("Leaf");
         if size_of::<resolve![P::StrongCount]>() != 0 {
             s.field("strong_count", self.strong_count.fallible_debug());
         }
@@ -623,18 +661,15 @@ impl<I, S, P: RleTreeConfig<I, S>, const M: usize> Debug for Leaf<I, S, P, M> {
             .field("holes", &self.holes)
             .field("len", &self.len)
             .field("keys", &Ks(&self))
-            .field("total_size", self.total_size.fallible_debug())
-            .finish()
+            .field("total_size", self.total_size.fallible_debug());
     }
 }
 
 #[cfg(test)]
-impl<I, S, P: RleTreeConfig<I, S>, const M: usize> Debug for Internal<I, S, P, M> {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        f.debug_struct("Internal")
-            .field("leaf", &self.leaf)
-            .field("child_ptrs", &self.child_ptrs())
-            .finish()
+impl<I, S, P: RleTreeConfig<I, S>, const M: usize> Internal<I, S, P, M> {
+    fn append_fields(&self, s: &mut fmt::DebugStruct) {
+        self.leaf.append_fields(s);
+        s.field("child_ptrs", &self.child_ptrs());
     }
 }
 
@@ -781,16 +816,6 @@ where
         // "safety" comment for `Internal` -- so regardless of the type of the node, we can read it
         // as a `Leaf`.
         unsafe { self.ptr.cast().as_ref() }
-    }
-
-    /// (*Test-only*) Method for producing a `Debug` representation of the node, including all
-    /// available information, regardless of type
-    #[cfg(test)]
-    pub fn typed_debug(&self) -> &dyn Debug {
-        match self.typed_ref() {
-            Type::Leaf(node) => node.leaf(),
-            Type::Internal(node) => node.internal(),
-        }
     }
 
     /// Produces an immutable handle for the node, borrowing the handle for its duration

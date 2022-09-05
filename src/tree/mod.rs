@@ -193,11 +193,7 @@ impl<I: Index, S, P: RleTreeConfig<I, S>, const M: usize> Debug for Root<I, S, P
             f: &mut Formatter,
         ) -> fmt::Result {
             let path_fmt = format!("{:<elem_pad$?}", SliceContents(path));
-            f.write_fmt(format_args!(
-                "\n{indent}[{path_fmt:<total_pad$}] @ {:p}: {:?}",
-                node.ptr(),
-                node.typed_debug(),
-            ))?;
+            f.write_fmt(format_args!("\n{indent}[{path_fmt:<total_pad$}]: {node:?}"))?;
 
             if let Type::Internal(n) = node.typed_ref() {
                 for c_idx in 0..=n.leaf().len() {

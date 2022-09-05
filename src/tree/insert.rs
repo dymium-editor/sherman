@@ -13,6 +13,8 @@ use super::{shift_keys_auto, shift_keys_decrease, shift_keys_increase, ShiftKeys
 use crate::{MaybeDebug, NoDebugImpl};
 #[cfg(test)]
 use std::fmt::{self, Debug, Formatter};
+#[cfg(test)]
+use std::mem::size_of;
 
 impl<I, S, P, const M: usize> RleTree<I, S, P, M>
 where
@@ -181,7 +183,7 @@ where
                 PostInsertTraversalResult::Continue(state) => {
                     post_insert_result = state.do_upward_step()
                 }
-                PostInsertTraversalResult::Root(cursor, insertion) => break (cursor, insertion),
+                PostInsertTraversalResult::Root { cursor, insertion } => break (cursor, insertion),
                 PostInsertTraversalResult::NewRoot {
                     cursor,
                     lhs,
@@ -442,7 +444,10 @@ where
     Continue(PostInsertTraversalState<'t, C, I, S, P, M>),
     /// Traversal has finished, with all nodes updated. The cursor and reference to the slice have
     /// been returned
-    Root(C, SliceHandle<ty::Unknown, borrow::SliceRef, I, S, P, M>),
+    Root {
+        cursor: C,
+        insertion: SliceHandle<ty::Unknown, borrow::SliceRef, I, S, P, M>,
+    },
     /// The insertion resulted in creating a new root node, but that needs to be handled by
     /// [`insert_internal`], because no other method has access to the existing root with an
     /// `Owned` borrow
@@ -465,18 +470,78 @@ where
 }
 
 #[cfg(test)]
+impl<'t, C, I, S, P, const M: usize> Debug for PreInsertTraversalState<'t, C, I, S, P, M>
+where
+    C: Cursor,
+    P: RleTreeConfig<I, S>,
+{
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        let mut s = f.debug_struct("PreInsertTraversalState");
+        if size_of::<C::PathIter>() != 0 {
+            let _ = match self.cursor_iter.as_ref() {
+                Some(it) => s.field("cursor_iter", &Some(it.fallible_debug())),
+                None => s.field("cursor_iter", &(None as Option<()>)),
+            };
+        }
+
+        s.field("node", &self.node)
+            .field("target", self.target.fallible_debug())
+            .field("adjacent_keys", &self.adjacent_keys)
+            .finish()
+    }
+}
+
+#[cfg(test)]
+impl<'t, I, S, P, const M: usize> Debug for LeafInsert<'t, I, S, P, M>
+where
+    P: RleTreeConfig<I, S>,
+{
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        f.debug_struct("LeafInsert")
+            .field("node", &self.node)
+            .field("adjacent_keys", &self.adjacent_keys)
+            .field("new_k_idx", &self.new_k_idx)
+            .finish()
+    }
+}
+
+#[cfg(test)]
+impl<'t, I, S, P, const M: usize> Debug for SplitKeyInsert<'t, I, S, P, M>
+where
+    P: RleTreeConfig<I, S>,
+{
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        f.debug_struct("SplitKeyInsert")
+            .field("handle", &self.handle)
+            .field("pos_in_key", self.pos_in_key.fallible_debug())
+            .finish()
+    }
+}
+
+#[cfg(test)]
+impl<'b, I, S, P, const M: usize> Debug for AdjacentKeys<'b, I, S, P, M>
+where
+    P: RleTreeConfig<I, S>,
+{
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        f.debug_struct("AdjacentKeys")
+            .field("lhs", &self.lhs)
+            .field("rhs", &self.rhs)
+            .finish()
+    }
+}
+
+#[cfg(test)]
 impl<'t, C, I, S, P, const M: usize> Debug for BubbledInsertState<'t, C, I, S, P, M>
 where
     P: RleTreeConfig<I, S>,
 {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         f.debug_struct("BubbledInsertState")
-            .field("lhs@", &self.lhs.ptr())
-            .field("lhs", self.lhs.typed_debug())
+            .field("lhs", &self.lhs)
             .field("key", &self.key)
             .field("key_size", self.key_size.fallible_debug())
-            .field("rhs@", &self.rhs.ptr())
-            .field("rhs", self.rhs.typed_debug())
+            .field("rhs", &self.rhs)
             .field("old_size", &self.old_size.fallible_debug())
             .field("insertion", &self.insertion)
             .finish()
@@ -500,8 +565,8 @@ where
 {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         let (idx_name, idx, node) = match &self.child_or_key {
-            ChildOrKey::Key((k_idx, node)) => ("key_idx", k_idx, node.typed_debug()),
-            ChildOrKey::Child((c_idx, node)) => ("child_idx", c_idx, node.typed_debug()),
+            ChildOrKey::Key((k_idx, node)) => ("key_idx", k_idx, node),
+            ChildOrKey::Child((c_idx, node)) => ("child_idx", c_idx, node.untyped_ref()),
         };
 
         f.debug_struct("PostInsertTraversalState")
@@ -522,20 +587,27 @@ where
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match self {
             Self::Continue(state) => f.debug_tuple("Continue").field(&state).finish(),
-            Self::Root(_, _) => f.debug_tuple("Root").field(&NoDebugImpl).finish(),
+            Self::Root { cursor, insertion } => {
+                let mut s = f.debug_struct("Root");
+                if size_of::<C>() != 0 {
+                    s.field("cursor", cursor.fallible_debug());
+                }
+                s.field("insertion", insertion).finish()
+            }
             Self::NewRoot {
                 lhs,
                 key,
                 key_size,
                 rhs,
                 ..
-            } => f
-                .debug_struct("NewRoot")
-                .field("lhs", lhs.typed_debug())
-                .field("key", &key)
-                .field("key_size", key_size.fallible_debug())
-                .field("rhs", rhs.typed_debug())
-                .finish(),
+            } => {
+                let mut s = f.debug_struct("NewRoot");
+                s.field("lhs", &lhs)
+                    .field("key", &key)
+                    .field("key_size", key_size.fallible_debug())
+                    .field("rhs", &rhs)
+                    .finish()
+            }
         }
     }
 }
@@ -2259,7 +2331,10 @@ where
         // Update `self` to the parent, if there is one. Otherwise, this is the root node so we
         // should return `Err` with the cursor and reference to the insertion.
         match node.into_parent().ok() {
-            None => PostInsertTraversalResult::Root(self.partial_cursor, self.inserted_slice),
+            None => PostInsertTraversalResult::Root {
+                cursor: self.partial_cursor,
+                insertion: self.inserted_slice,
+            },
             Some((parent_handle, c_idx)) => {
                 PostInsertTraversalResult::Continue(PostInsertTraversalState {
                     inserted_slice: self.inserted_slice,
