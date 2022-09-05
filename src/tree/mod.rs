@@ -14,6 +14,8 @@ use std::panic::UnwindSafe;
 use crate::{MaybeDebug, NoDebugImpl};
 #[cfg(test)]
 use std::fmt::{self, Formatter};
+#[cfg(test)]
+use std::ptr::NonNull;
 
 pub(crate) mod cow;
 mod iter;
@@ -3108,8 +3110,28 @@ macro_rules! valid_assert {
     ($path:ident: $cond:expr) => {
         if !$cond {
             panic!(
-                concat!("assertion failed: `", stringify!($cond), "` for path {:?}",),
+                concat!("assertion failed: `", stringify!($cond), "` for path {:?}"),
                 $path
+            );
+        }
+    };
+}
+
+#[cfg(test)]
+macro_rules! valid_assert_eq {
+    ($path:ident: $lhs:expr, $rhs:expr) => {
+        let left = $lhs;
+        let right = $rhs;
+        if left != right {
+            panic!(
+                concat!(
+                    "assertion failed: `",
+                    stringify!($lhs == $rhs),
+                    "` for path {:?}:\n",
+                    " left: {:?}\n",
+                    "right: {:?}",
+                ),
+                $path, left, right,
             );
         }
     };
@@ -3131,14 +3153,24 @@ where
             None => return,
         };
 
-        Self::validate_node(root.handle.borrow(), &mut Vec::new())
+        Self::validate_node(root.handle.borrow(), &mut Vec::new(), None)
     }
 
     /// Called by `validate` to check a node
     fn validate_node(
         node: NodeHandle<ty::Unknown, borrow::Immut, I, S, P, M>,
         path: &mut Vec<ChildOrKey<u8, u8>>,
+        parent: Option<(NonNull<()>, u8)>,
     ) {
+        valid_assert!(path: path.is_empty() != node.leaf().parent().is_some());
+        valid_assert!(path: node.leaf().len() >= 1);
+        valid_assert!(path: path.is_empty() || node.leaf().len() >= M as u8);
+        let node_parent = match node.leaf().parent() {
+            None => None,
+            Some(p) => Some((p.ptr.cast::<()>(), p.idx_in_parent)),
+        };
+        valid_assert_eq!(path: parent, node_parent);
+
         match node.into_typed() {
             Type::Leaf(node) => Self::validate_leaf(node, path),
             Type::Internal(node) => Self::validate_internal(node, path),
@@ -3150,12 +3182,8 @@ where
         node: NodeHandle<ty::Leaf, borrow::Immut, I, S, P, M>,
         path: &mut Vec<ChildOrKey<u8, u8>>,
     ) {
-        valid_assert!(path: path.is_empty() != node.leaf().parent().is_some());
-        valid_assert!(path: node.leaf().len() >= 1);
-        valid_assert!(path: path.is_empty() || node.leaf().len() >= M as u8);
-
         let poss = node.leaf().keys_pos_slice();
-        valid_assert!(path: poss[0] == I::ZERO);
+        valid_assert_eq!(path: poss[0], I::ZERO);
 
         for i in 1..node.leaf().len() {
             path.push(ChildOrKey::Key(i));
@@ -3171,15 +3199,17 @@ where
         node: NodeHandle<ty::Internal, borrow::Immut, I, S, P, M>,
         path: &mut Vec<ChildOrKey<u8, u8>>,
     ) {
-        valid_assert!(path: path.is_empty() != node.leaf().parent().is_some());
-        valid_assert!(path: node.leaf().len() >= 1);
-        valid_assert!(path: path.is_empty() || node.leaf().len() >= M as u8);
-
         let poss = node.leaf().keys_pos_slice();
+
+        let this_ptr = node.ptr().cast();
 
         path.push(ChildOrKey::Child(0));
         // SAFETY: internal nodes are guaranteed to have at least one child
-        Self::validate_node(unsafe { node.borrow().into_child(0) }, path);
+        Self::validate_node(
+            unsafe { node.borrow().into_child(0) },
+            path,
+            Some((this_ptr, 0)),
+        );
         path.pop();
 
         for i in 0..node.leaf().len() {
@@ -3187,7 +3217,7 @@ where
             // SAFETY: `i` is a valid key index, so it's also a valid child index.
             let previous_child_size = unsafe { node.child_size(i) };
             if i == 0 {
-                valid_assert!(path: poss[i as usize] == previous_child_size);
+                valid_assert_eq!(path: poss[i as usize], previous_child_size);
             } else {
                 valid_assert!(path: previous_child_size < poss[i as usize]);
                 let previous_child_start = poss[i as usize].sub_right(previous_child_size);
@@ -3198,7 +3228,11 @@ where
             let ci = i + 1;
             path.push(ChildOrKey::Child(ci));
             // SAFETY: `i` is a valid key index and there's always one more child than key
-            Self::validate_node(unsafe { node.borrow().into_child(ci) }, path);
+            Self::validate_node(
+                unsafe { node.borrow().into_child(ci) },
+                path,
+                Some((this_ptr, ci)),
+            );
             path.pop();
         }
 
