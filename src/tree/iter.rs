@@ -381,9 +381,11 @@ where
                     // If we have COW enabled, and the child's parent is not this node, we need to
                     // add `head_node` to the stack.
                     if P::COW {
-                        match child.leaf().parent().map(|p| p.ptr) {
+                        match child.leaf().parent().map(|p| (p.ptr, p.idx_in_parent)) {
                             // Different child pointer:
-                            Some(p) if p != node.ptr() => stack.push((head_node, c_idx)),
+                            Some(pair) if pair != (node.ptr(), c_idx) => {
+                                stack.push((head_node, c_idx))
+                            }
                             _ => (),
                         }
                     }
