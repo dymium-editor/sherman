@@ -1883,12 +1883,19 @@ where
         let ptr_ref = unsafe { &mut *child_ptr_ptr };
 
         if let Some(r) = B::cast_ref_if_mut(ptr_ref) {
-            let parent = Parent {
-                ptr: self.ptr.cast::<AbstractNode<I, S, _, M>>(),
-                idx_in_parent: child_idx,
-            };
+            unsafe { ensure_unique(r, self.height.get() - 1) };
 
-            unsafe { ensure_unique(r, self.height.get() - 1, parent) };
+            // Because we have unique mutable access now, make sure that the child's parent pointer
+            // is properly set. We can skip this step if COW is not enabled, because it's already
+            // guaranteed:
+            if P::COW {
+                // SAFETY: `ptr` is safe to dereference because `SupportsInsertIfMut` guarantees that
+                // it was originally a `borrow::Mut`, and the call to `ensure_unique` ensures that we
+                // now have unique mutable access.
+                let mut leaf = unsafe { &mut *r.cast::<Leaf<I, S, P, M>>().as_ptr() };
+                leaf.parent = Some(self.ptr.cast());
+                leaf.idx_in_parent.write(child_idx);
+            }
         }
 
         NodeHandle {
@@ -2375,11 +2382,8 @@ where
 /// The node pointer `*ptr` must point to a valid node, with a `height` matching the type of node.
 /// The caller must have mutable access to `*ptr` and immutable access to `**ptr` through the
 /// lifetime of the call to `ensure_unique`.
-unsafe fn ensure_unique<I, S, P, const M: usize>(
-    ptr: &mut NodePtr<I, S, P, M>,
-    height: u8,
-    parent: Parent<I, S, P, M>,
-) where
+unsafe fn ensure_unique<I, S, P, const M: usize>(ptr: &mut NodePtr<I, S, P, M>, height: u8)
+where
     I: Index,
     P: RleTreeConfig<I, S> + SupportsInsert<I, S>,
 {
@@ -2398,21 +2402,7 @@ unsafe fn ensure_unique<I, S, P, const M: usize>(
 
     // SAFETY: `shallow_clone` requires that `P = AllowCow`, which is guaranteed by a non-unique
     // strong count; all other `P: RleTreeConfig` have always-unique strong count implementations.
-    let mut new_handle = unsafe { node.borrow().shallow_clone() };
-
-    // Set the parent information for the node
-    //
-    // SAFETY: `as_mut` requires that our access to the node is unique, which is guaranteed because
-    // we just created it. `with_mut` requires that we don't call any user-defined code, which is
-    // plainly true.
-    unsafe {
-        new_handle.as_mut().with_mut(|leaf| {
-            leaf.parent = Some(parent.ptr);
-            leaf.idx_in_parent.write(parent.idx_in_parent);
-        });
-    }
-
-    *ptr = new_handle.ptr;
+    *ptr = unsafe { node.borrow().shallow_clone() }.ptr;
 
     // After creating a shallow clone, it's possible that the existing node has since become the
     // last reference (aside from the new clone). If that happens, we still need to call its
