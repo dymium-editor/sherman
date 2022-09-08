@@ -20,8 +20,7 @@
 //!
 //! [`RleTree`]: crate::RleTree
 
-use crate::tree::slice_ref::{self, BorrowFailure, ShouldDrop};
-use std::ptr::NonNull;
+use crate::tree::slice_ref::{self, BorrowFailure, RawRoot, RawSliceRef, ShouldDrop};
 
 /// Marker type to not enable any features for the [`RleTree`](crate::RleTree) (*default*)
 pub enum NoFeatures {}
@@ -32,11 +31,11 @@ pub enum AllowCow {}
 /// Marker type to allow slice references in the [`RleTree`](crate::RleTree)
 pub enum AllowSliceRefs {}
 
-/// *Internal-only* trait that parameterizations are required to implement
+/// Trait that [`RleTree`] parameterizations are required to implement
 ///
 /// This trait is made public to help with error messages and for your curiosity. It cannot be
 /// implemented outside of this crate.
-pub trait RleTreeConfig<I, S> {
+pub trait RleTreeConfig<I, S, const M: usize>: Sized {
     /// A type bound you can't satisfy, here to make sure you can't implement this trait
     #[doc(hidden)]
     type YouCantImplementThis: sealed::TraitYouCantReach;
@@ -60,13 +59,16 @@ pub trait RleTreeConfig<I, S> {
 
     /// If slice references are enabled, we keep a big vector mapping from `SliceRefId`s to
     /// pointers to the nodes (i.e. allocations) containing the slice
-    type SliceRefStore: Default + BorrowState + SliceRefStore<I, S>;
+    type SliceRefStore: BorrowState + SliceRefStore<I, S, Self, M>;
 }
 
-/// *Internal-only* trait that marks configurations as supporting insertion
+/// Trait that marks configurations as supporting insertion
+///
+/// Like [`RleTreeConfig`], this trait is made public to hep with error messages. It cannot be
+/// implemented outside this crate.
 ///
 /// This trait is implemented for everything except `AllowCow` when `S` doesn't implement `Clone`.
-pub trait SupportsInsert<I, S>: sealed::YouCantImplementThis {
+pub trait SupportsInsert<I, S, const M: usize>: sealed::YouCantImplementThis {
     /// Shim to access the implementation of `Clone` for `S` *only when used with `AllowCow`*. All
     /// other implementations are equivalent to [`std::hint::unreachable_unchecked`].
     ///
@@ -134,16 +136,25 @@ pub trait StrongCount: sealed::YouCantImplementThis {
 }
 
 /// *Internal-only* abstraction trait required for types used as [`RleTreeConfig::SliceRefStore`]
-pub trait SliceRefStore<I, S>: sealed::YouCantImplementThis {
+pub trait SliceRefStore<I, S, P, const M: usize>: sealed::YouCantImplementThis
+where
+    P: RleTreeConfig<I, S, M>,
+{
     /// An `Option<RefId>` for slices to point back to their own references, if these are being
     /// tracked.
     ///
     /// If slice references aren't being tracked, then this is an empty tuple: `()`.
     type OptionRefId: Default;
 
-    /// Record that the slices with the two `Option<RefId>`s have joined, and return whatever's now
-    /// being used
-    fn join_refs(&mut self, rx: Self::OptionRefId, ry: Self::OptionRefId) -> Self::OptionRefId;
+    /// Constructs a new `SliceRefStore` with the given root node
+    fn new(root: RawRoot<I, S, P, M>) -> Self;
+
+    /// Overwrites the reference for the root of the tree
+    fn set_root(&mut self, new_root: Option<RawRoot<I, S, P, M>>);
+
+    /// Record that `from` has joined into `to`, and that references to `from` should now point to
+    /// `to`
+    fn redirect(&mut self, from: &mut Self::OptionRefId, to: &mut Self::OptionRefId);
 
     /// Record that the slice with this `Option<RefId>` has been removed, so any references
     /// pointing to it should be dropped
@@ -157,7 +168,7 @@ pub trait SliceRefStore<I, S>: sealed::YouCantImplementThis {
     /// The node pointed to by `ptr` must be valid, containing `x` as a reference at index `idx`.
     /// Callers may *assume* (in `unsafe` code, without checking) that the node at `ptr` is not
     /// accessed during any call to this function.
-    unsafe fn update(&mut self, x: &Self::OptionRefId, ptr: NonNull<(I, S)>, idx: u8);
+    unsafe fn update(&mut self, x: &Self::OptionRefId, handle: RawSliceRef<I, S, P, M>);
 
     /// Marks that the slice with this `RefId` has been temporarily removed from its node, but will
     /// be added back later
@@ -174,16 +185,6 @@ pub trait SliceRefStore<I, S>: sealed::YouCantImplementThis {
 
 /// *Internal-only* abstraction trait required for types used as [`RleTreeConfig::SliceRefStore`]
 pub trait BorrowState: sealed::YouCantImplementThis {
-    /// Attempt to acquire an immutable reference, returning an appropriate error if it wasn't
-    /// possible
-    fn acquire_immutable(&self) -> Result<(), BorrowFailure>;
-    /// Release a single previously-held immutable reference
-    ///
-    /// It's possible for a lone immutable reference to keep the tree alive, so dropping an
-    /// immutable reference must handle the possibility that it is now responsible for dropping
-    /// everything else as well.
-    fn release_immutable(&self) -> ShouldDrop;
-
     /// Attempt to acquire a mutable reference, returning an appropriate error if it wasn't possible
     fn acquire_mutable(&self) -> Result<(), BorrowFailure>;
     /// Release the previously-held mutable reference
@@ -199,7 +200,7 @@ pub trait BorrowState: sealed::YouCantImplementThis {
     fn try_acquire_drop(&self) -> ShouldDrop;
 }
 
-impl<I, S> RleTreeConfig<I, S> for NoFeatures {
+impl<I, S, const M: usize> RleTreeConfig<I, S, M> for NoFeatures {
     type YouCantImplementThis = sealed::TypeYouCantSee;
     const COW: bool = false;
     type StrongCount = ();
@@ -207,8 +208,8 @@ impl<I, S> RleTreeConfig<I, S> for NoFeatures {
     type SliceRefStore = ();
 }
 
-impl<I, S> RleTreeConfig<I, S> for AllowCow {
-    type YouCantImplementThis = <NoFeatures as RleTreeConfig<I, S>>::YouCantImplementThis;
+impl<I, S, const M: usize> RleTreeConfig<I, S, M> for AllowCow {
+    type YouCantImplementThis = <NoFeatures as RleTreeConfig<I, S, M>>::YouCantImplementThis;
 
     const COW: bool = true;
     type StrongCount = std::sync::atomic::AtomicUsize;
@@ -217,20 +218,20 @@ impl<I, S> RleTreeConfig<I, S> for AllowCow {
     type SliceRefStore = ();
 }
 
-impl<I, S> RleTreeConfig<I, S> for AllowSliceRefs {
-    type YouCantImplementThis = <NoFeatures as RleTreeConfig<I, S>>::YouCantImplementThis;
+impl<I, S, const M: usize> RleTreeConfig<I, S, M> for AllowSliceRefs {
+    type YouCantImplementThis = <NoFeatures as RleTreeConfig<I, S, M>>::YouCantImplementThis;
 
     const COW: bool = false;
     type StrongCount = ();
     type SharedStrongCount = ();
 
-    type SliceRefStore = slice_ref::SliceRefStore<I, S>;
+    type SliceRefStore = slice_ref::SliceRefStore<I, S, M>;
 }
 
-impl<I, S> SupportsInsert<I, S> for NoFeatures {}
-impl<I, S> SupportsInsert<I, S> for AllowSliceRefs {}
+impl<I, S, const M: usize> SupportsInsert<I, S, M> for NoFeatures {}
+impl<I, S, const M: usize> SupportsInsert<I, S, M> for AllowSliceRefs {}
 
-impl<I: Clone, S: Clone> SupportsInsert<I, S> for AllowCow {
+impl<I: Clone, S: Clone, const M: usize> SupportsInsert<I, S, M> for AllowCow {
     unsafe fn clone_slice(slice: &S) -> S {
         slice.clone()
     }

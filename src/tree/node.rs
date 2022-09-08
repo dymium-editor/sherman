@@ -26,7 +26,7 @@ use std::cmp::Ordering;
 use std::marker::PhantomData;
 use std::mem::{self, MaybeUninit};
 use std::num::NonZeroU8;
-use std::ops::RangeFrom;
+use std::ops::{Range, RangeFrom};
 use std::ptr::{self, addr_of_mut, NonNull};
 use std::slice;
 
@@ -47,13 +47,15 @@ use self::ty::{Height, TypeHint};
 // verbose, and much harder to read.
 macro_rules! resolve {
     ( $base:ident :: StrongCount ) => {
-        <$base as RleTreeConfig<I, S>>::StrongCount
+        <$base as RleTreeConfig<I, S, M>>::StrongCount
     };
     ( $base:ident :: SliceRefStore ) => {
-        <$base as RleTreeConfig<I, S>>::SliceRefStore
+        <$base as RleTreeConfig<I, S, M>>::SliceRefStore
     };
     ( $base:ident :: SliceRefStore :: OptionRefId ) => {
-        <<$base as RleTreeConfig<I, S>>::SliceRefStore as param::SliceRefStore<I, S>>::OptionRefId
+        <
+            <$base as RleTreeConfig<I, S, M>>::SliceRefStore as param::SliceRefStore<I, S, P, M>
+        >::OptionRefId
     };
 }
 
@@ -73,7 +75,7 @@ pub(super) type NodePtr<I, S, P, const M: usize> = NonNull<AbstractNode<I, S, P,
 /// allocation is determined by the height of the [`NodeHandle`] used to access this node.
 pub struct AbstractNode<I, S, P, const M: usize>(Leaf<I, S, P, M>)
 where
-    P: RleTreeConfig<I, S>;
+    P: RleTreeConfig<I, S, M>;
 
 /// Reference to a node in the tree, abstracted over borrowing and node-type hints
 ///
@@ -88,11 +90,13 @@ where
 /// This type is `#[repr(C)]` so that the layout is guaranteed to be the same if `T::Height` is the
 /// same. This is true for all `TypeHint`s (they're all equivalent to `u8`s), which means we *can*
 /// transmute between `NodeHandle` parameterizations, or reinterpret references.
+//
+// Needs to be `pub` so that we can expose it via `RawSliceRef`
 #[repr(C)]
-pub(super) struct NodeHandle<Ty, B, I, S, P, const M: usize>
+pub struct NodeHandle<Ty, B, I, S, P, const M: usize>
 where
     Ty: TypeHint,
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     ptr: NodePtr<I, S, P, M>,
     /// The height of the tree rooted at this node
@@ -106,10 +110,10 @@ where
 }
 
 /// Handle on a *particular* slice in a node
-pub(super) struct SliceHandle<Ty, B, I, S, P, const M: usize>
+pub struct SliceHandle<Ty, B, I, S, P, const M: usize>
 where
     Ty: TypeHint,
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     pub(super) node: NodeHandle<Ty, B, I, S, P, M>,
     /// The index of the particular slice in the node
@@ -125,7 +129,7 @@ where
 impl<Ty, B, I, S, P, const M: usize> Debug for NodeHandle<Ty, B, I, S, P, M>
 where
     Ty: TypeHint,
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         let ty = match self.typed_ref() {
@@ -148,7 +152,7 @@ where
 impl<Ty, B, I, S, P, const M: usize> Debug for SliceHandle<Ty, B, I, S, P, M>
 where
     Ty: TypeHint,
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         f.debug_struct("SliceHandle")
@@ -166,7 +170,7 @@ unsafe impl<T: TypeHint, B, I, S, P, const M: usize> Send for NodeHandle<T, B, I
 where
     I: Send,
     S: Send,
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
     P::SliceRefStore: Send,
     resolve![P::SliceRefStore::OptionRefId]: Send {}
 
@@ -175,7 +179,7 @@ unsafe impl<T: TypeHint, B, I, S, P, const M: usize> Sync for NodeHandle<T, B, I
 where
     I: Sync,
     S: Sync,
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
     P::SliceRefStore: Sync,
     resolve![P::SliceRefStore::OptionRefId]: Sync {}
 
@@ -184,7 +188,7 @@ unsafe impl<T: TypeHint, B, I, S, P, const M: usize> Send for SliceHandle<T, B, 
 where
     I: Send,
     S: Send,
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
     P::SliceRefStore: Send,
     resolve![P::SliceRefStore::OptionRefId]: Send {}
 
@@ -193,7 +197,7 @@ unsafe impl<T: TypeHint, B, I, S, P, const M: usize> Sync for SliceHandle<T, B, 
 where
     I: Sync,
     S: Sync,
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
     P::SliceRefStore: Sync,
     resolve![P::SliceRefStore::OptionRefId]: Sync {}
 
@@ -204,12 +208,12 @@ where
 #[rustfmt::skip]
 impl<'t, T: TypeHint, I, S, P, const M: usize> Copy for NodeHandle<T, borrow::Immut<'t>, I, S, P, M>
 where
-    P: RleTreeConfig<I, S> {}
+    P: RleTreeConfig<I, S, M> {}
 
 #[rustfmt::skip]
 impl<'t, T: TypeHint, I, S, P, const M: usize> Clone for NodeHandle<T, borrow::Immut<'t>, I, S, P, M>
 where
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     fn clone(&self) -> Self { *self }
 }
@@ -217,12 +221,12 @@ where
 #[rustfmt::skip]
 impl<'t, T: TypeHint, I, S, P, const M: usize> Copy for SliceHandle<T, borrow::Immut<'t>, I, S, P, M>
 where
-    P: RleTreeConfig<I, S> {}
+    P: RleTreeConfig<I, S, M> {}
 
 #[rustfmt::skip]
 impl<'t, T: TypeHint, I, S, P, const M: usize> Clone for SliceHandle<T, borrow::Immut<'t>, I, S, P, M>
 where
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     fn clone(&self) -> Self { *self }
 }
@@ -234,7 +238,7 @@ where
 impl<Ty, B, I, S, P, const M: usize> PartialEq for NodeHandle<Ty, B, I, S, P, M>
 where
     Ty: TypeHint,
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     fn eq(&self, other: &Self) -> bool {
         self.ptr == other.ptr
@@ -245,12 +249,12 @@ where
 impl<Ty, B, I, S, P, const M: usize> Eq for NodeHandle<Ty, B, I, S, P, M>
 where
     Ty: TypeHint,
-    P: RleTreeConfig<I, S> {}
+    P: RleTreeConfig<I, S, M> {}
 
 impl<Ty, B, I, S, P, const M: usize> PartialEq for SliceHandle<Ty, B, I, S, P, M>
 where
     Ty: TypeHint,
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     fn eq(&self, other: &Self) -> bool {
         self.node == other.node && self.idx == other.idx
@@ -261,7 +265,7 @@ where
 impl<Ty, B, I, S, P, const M: usize> Eq for SliceHandle<Ty, B, I, S, P, M>
 where
     Ty: TypeHint,
-    P: RleTreeConfig<I, S> {}
+    P: RleTreeConfig<I, S, M> {}
 
 /// Abstraction over known/unknown types of a [`NodeHandle`] or [`SliceHandle`], so that we can
 /// provide certain guarantees via the type system
@@ -333,33 +337,37 @@ pub(super) mod borrow {
     ///
     /// The name "cast" for `cast_ref_if_mut` isn't quite accurate; it either returns its input
     /// (with added guarantees about the types), or does nothing.
-    pub trait SupportsInsertIfMut<I, S, P: RleTreeConfig<I, S>> {
-        type Param: RleTreeConfig<I, S> + SupportsInsert<I, S>;
+    pub trait SupportsInsertIfMut<I, S, P, const M: usize>
+    where
+        P: RleTreeConfig<I, S, M>,
+    {
+        type Param: RleTreeConfig<I, S, M> + SupportsInsert<I, S, M>;
 
-        fn cast_ref_if_mut<const M: usize>(
+        fn cast_ref_if_mut(
             r: &mut NodePtr<I, S, P, M>,
         ) -> Option<&mut NodePtr<I, S, Self::Param, M>>;
     }
-    impl<'a, I, S, P: RleTreeConfig<I, S>> SupportsInsertIfMut<I, S, P> for Immut<'a> {
+    impl<'a, I, S, P, const M: usize> SupportsInsertIfMut<I, S, P, M> for Immut<'a>
+    where
+        P: RleTreeConfig<I, S, M>,
+    {
         // This may not match `P`, but is still sound because `cast_ref_if_mut` will always return
         // `None`, meaning that it's never used.
         type Param = crate::param::NoFeatures;
 
-        fn cast_ref_if_mut<const M: usize>(
+        fn cast_ref_if_mut(
             _: &mut NodePtr<I, S, P, M>,
         ) -> Option<&mut NodePtr<I, S, Self::Param, M>> {
             None
         }
     }
-    impl<'a, I, S, P> SupportsInsertIfMut<I, S, P> for Mut<'a>
+    impl<'a, I, S, P, const M: usize> SupportsInsertIfMut<I, S, P, M> for Mut<'a>
     where
-        P: RleTreeConfig<I, S> + SupportsInsert<I, S>,
+        P: RleTreeConfig<I, S, M> + SupportsInsert<I, S, M>,
     {
         type Param = P;
 
-        fn cast_ref_if_mut<const M: usize>(
-            r: &mut NodePtr<I, S, P, M>,
-        ) -> Option<&mut NodePtr<I, S, P, M>> {
+        fn cast_ref_if_mut(r: &mut NodePtr<I, S, P, M>) -> Option<&mut NodePtr<I, S, P, M>> {
             Some(r)
         }
     }
@@ -416,7 +424,7 @@ pub(super) mod borrow {
 /// [`AllowCow`]: crate::param::AllowCow
 pub(super) struct Leaf<I, S, P, const M: usize>
 where
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     /// Parent pointer, always present so that insertion and other algorithms can be done in a
     /// loop, rather than recursively or with an explicit stack
@@ -561,7 +569,7 @@ where
 #[repr(C)]
 pub(super) struct Internal<I, S, P, const M: usize>
 where
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     /// The data from the leaf
     leaf: Leaf<I, S, P, M>,
@@ -585,13 +593,13 @@ pub(super) enum ChildOrKey<C, K> {
 ////////////////////////
 
 #[cfg(test)]
-impl<I, S, P: RleTreeConfig<I, S>, const M: usize> Leaf<I, S, P, M> {
+impl<I, S, P: RleTreeConfig<I, S, M>, const M: usize> Leaf<I, S, P, M> {
     fn append_fields(&self, s: &mut fmt::DebugStruct) {
         let parent = self.parent();
 
-        struct Ks<'a, I, S, P: RleTreeConfig<I, S>, const M: usize>(&'a Leaf<I, S, P, M>);
+        struct Ks<'a, I, S, P: RleTreeConfig<I, S, M>, const M: usize>(&'a Leaf<I, S, P, M>);
 
-        impl<'a, I, S, P: RleTreeConfig<I, S>, const M: usize> Debug for Ks<'a, I, S, P, M> {
+        impl<'a, I, S, P: RleTreeConfig<I, S, M>, const M: usize> Debug for Ks<'a, I, S, P, M> {
             fn fmt(&self, f: &mut Formatter) -> fmt::Result {
                 let mut ls = f.debug_list();
                 let poss = self.0.keys_pos_slice();
@@ -666,7 +674,7 @@ impl<I, S, P: RleTreeConfig<I, S>, const M: usize> Leaf<I, S, P, M> {
 }
 
 #[cfg(test)]
-impl<I, S, P: RleTreeConfig<I, S>, const M: usize> Internal<I, S, P, M> {
+impl<I, S, P: RleTreeConfig<I, S, M>, const M: usize> Internal<I, S, P, M> {
     fn append_fields(&self, s: &mut fmt::DebugStruct) {
         self.leaf.append_fields(s);
         s.field("child_ptrs", &self.child_ptrs());
@@ -759,7 +767,7 @@ pub trait Typed {
 impl<Ty, B, I, S, P, const M: usize> Typed for NodeHandle<Ty, B, I, S, P, M>
 where
     Ty: TypeHint,
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     type Leaf = NodeHandle<ty::Leaf, B, I, S, P, M>;
     type Internal = NodeHandle<ty::Internal, B, I, S, P, M>;
@@ -769,7 +777,7 @@ where
 impl<Ty, B, I, S, P, const M: usize> Typed for SliceHandle<Ty, B, I, S, P, M>
 where
     Ty: TypeHint,
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     type Leaf = SliceHandle<ty::Leaf, B, I, S, P, M>;
     type Internal = SliceHandle<ty::Internal, B, I, S, P, M>;
@@ -796,7 +804,7 @@ where
 impl<Ty, B, I, S, P, const M: usize> NodeHandle<Ty, B, I, S, P, M>
 where
     Ty: TypeHint,
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     /// Returns the inner pointer this `NodeHandle` uses
     ///
@@ -811,7 +819,7 @@ where
     }
 
     /// Returns a reference to the inner `Leaf`
-    pub fn leaf(&self) -> &Leaf<I, S, P, M> {
+    pub(super) fn leaf(&self) -> &Leaf<I, S, P, M> {
         // SAFETY: references to `Internal` nodes can be cast to `Leaf`s, as described in the
         // "safety" comment for `Internal` -- so regardless of the type of the node, we can read it
         // as a `Leaf`.
@@ -1023,7 +1031,7 @@ where
     where
         B: borrow::AsImmut,
         I: Index,
-        P: SupportsInsert<I, S>,
+        P: SupportsInsert<I, S, M>,
     {
         // SAFETY: Guaranteed by caller
         unsafe { weak_assert!(P::COW) };
@@ -1128,14 +1136,14 @@ where
 }
 
 /// An owned, extracted key-value pair from a node
-pub struct Key<I, S, P: RleTreeConfig<I, S>> {
+pub struct Key<I, S, P: RleTreeConfig<I, S, M>, const M: usize> {
     pub pos: I,
     pub slice: S,
     pub ref_id: resolve![P::SliceRefStore::OptionRefId],
 }
 
 #[cfg(test)]
-impl<I, S, P: RleTreeConfig<I, S>> Debug for Key<I, S, P> {
+impl<I, S, P: RleTreeConfig<I, S, M>, const M: usize> Debug for Key<I, S, P, M> {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         let mut s = f.debug_struct("Key");
         s.field("pos", self.pos.fallible_debug())
@@ -1156,7 +1164,7 @@ impl<I, S, P: RleTreeConfig<I, S>> Debug for Key<I, S, P> {
 impl<'t, Ty, I, S, P, const M: usize> NodeHandle<Ty, borrow::Mut<'t>, I, S, P, M>
 where
     Ty: TypeHint,
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     /// Calls the given function with a mutable reference to the leaf
     ///
@@ -1173,7 +1181,10 @@ where
     /// `func` is explicitly allowed to panic.
     ///
     /// [`RefId`]: super::slice_ref::RefId
-    pub unsafe fn with_mut<R>(&mut self, func: impl FnOnce(&mut Leaf<I, S, P, M>) -> R) -> R {
+    pub(super) unsafe fn with_mut<R>(
+        &mut self,
+        func: impl FnOnce(&mut Leaf<I, S, P, M>) -> R,
+    ) -> R {
         // SAFETY: The existence of a `borrow::Mut` means that we can construct a `&mut Leaf`. The
         // caller guarantees it won't be aliased so calling `func` with it is ok.
         unsafe { func(self.ptr.cast().as_mut()) }
@@ -1277,7 +1288,7 @@ where
         &mut self,
         midpoint_idx: u8,
         store: &mut resolve![P::SliceRefStore],
-    ) -> (Key<I, S, P>, NodeHandle<Ty, borrow::Owned, I, S, P, M>)
+    ) -> (Key<I, S, P, M>, NodeHandle<Ty, borrow::Owned, I, S, P, M>)
     where
         I: Copy,
     {
@@ -1300,6 +1311,8 @@ where
             refs: KeyArray::new(),
             total_size: self.leaf().subtree_size(),
         };
+
+        let height = self.height.as_u8();
 
         // Note: this function expects `dst_ptr` to be a heap-allocated `Leaf` or `Internal` node
         // where the `Leaf` part has already been initialized to `new_leaf`.
@@ -1333,14 +1346,18 @@ where
             }
 
             // update the positions in the store
-            let ptr = dst_ptr.cast::<(I, S)>();
+            let ptr = dst_ptr.cast::<AbstractNode<I, S, P, M>>();
             for i in 0..copy_len as u8 {
                 // SAFETY: `i` is in bounds and initialized because we just wrote `copy_len`
                 // `RefId`s to `dst.refs`, and we're safe to access through the `UnsafeCell`
                 // because there's no other access to `dst` yet.
                 unsafe {
                     let r = &*dst.refs.get_unchecked(i as usize).assume_init_ref().get();
-                    store.update(r, ptr.cast(), i);
+                    let handle = SliceHandle {
+                        idx: i,
+                        node: NodeHandle { ptr, height, borrow: PhantomData },
+                    };
+                    store.update(r, handle);
                 }
             }
 
@@ -1470,9 +1487,10 @@ where
 // ty::Unknown, borrow::Owned
 //  * try_drop
 //  * make_new_parent (where I: Index)
+//  * clone_root_for_refs_store
 impl<I, S, P, const M: usize> NodeHandle<ty::Unknown, borrow::Owned, I, S, P, M>
 where
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     /// Decrements the strong count on the references to this node, returning a dropping handle if
     /// there's none left
@@ -1506,7 +1524,7 @@ where
     pub unsafe fn make_new_parent(
         &mut self,
         store: &mut resolve![P::SliceRefStore],
-        key: Key<I, S, P>,
+        key: Key<I, S, P, M>,
         key_size: I,
         mut rhs: Self,
     ) where
@@ -1591,7 +1609,15 @@ where
                 .get_unchecked(0)
                 .assume_init_ref()
                 .get();
-            store.update(r, new_internal.cast(), 0)
+            let handle = SliceHandle {
+                idx: 0,
+                node: NodeHandle {
+                    ptr: new_internal.cast::<AbstractNode<I, S, P, M>>(),
+                    height: new_height,
+                    borrow: PhantomData,
+                },
+            };
+            store.update(r, handle);
         };
 
         // Finally, update `self` to be the new parent.
@@ -1601,13 +1627,23 @@ where
             borrow: PhantomData,
         };
     }
+
+    /// Produces a clone of the root pointer, for use only within the `SliceRefStore`
+    ///
+    /// ## Safety
+    ///
+    /// The returned `Owned` handle can only be used inside the `SliceRefStore` attached to the
+    /// tree, with all appropriate care taken to avoid double-drops and such.
+    pub unsafe fn clone_root_for_refs_store(&self) -> Self {
+        NodeHandle { ..*self }
+    }
 }
 
 // ty::Leaf, borrow::Owned
 //  * new_root
 impl<I, S, P, const M: usize> NodeHandle<ty::Leaf, borrow::Owned, I, S, P, M>
 where
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     /// Creates a new root node with the given slice and size
     pub fn new_root(slice: S, size: I) -> Self
@@ -1645,7 +1681,7 @@ where
 //  * drop_vals
 impl<I, S, P, const M: usize> NodeHandle<ty::Unknown, borrow::Dropping, I, S, P, M>
 where
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     /// Actually performs the destructor for a node
     ///
@@ -1771,10 +1807,10 @@ where
 //  * typed_ptr
 impl<B, I, S, P, const M: usize> NodeHandle<ty::Internal, B, I, S, P, M>
 where
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     /// Produces a reference to the `Internal`
-    pub fn internal(&self) -> &Internal<I, S, P, M> {
+    pub(super) fn internal(&self) -> &Internal<I, S, P, M> {
         // SAFETY: The type hint guarantees that this is an `Internal` node
         unsafe { self.ptr.cast().as_ref() }
     }
@@ -1860,7 +1896,7 @@ where
     /// unique (only relevant, and not trivially true, for COW-enabled trees).
     pub unsafe fn into_child<'t>(self, child_idx: u8) -> NodeHandle<ty::Unknown, B, I, S, P, M>
     where
-        B: borrow::SupportsInsertIfMut<I, S, P>,
+        B: borrow::SupportsInsertIfMut<I, S, P, M>,
         I: Index,
     {
         unsafe { weak_assert!(child_idx <= self.leaf().len) };
@@ -1916,14 +1952,14 @@ where
 impl<'t, Ty, I, S, P, const M: usize> NodeHandle<Ty, borrow::Mut<'t>, I, S, P, M>
 where
     Ty: TypeHint,
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     pub unsafe fn split_slice_handle(
         &self,
         key_idx: u8,
     ) -> SliceHandle<Ty, borrow::Mut<'t>, I, S, P, M>
     where
-        P: SupportsInsert<I, S>,
+        P: SupportsInsert<I, S, M>,
     {
         unsafe { weak_assert!(key_idx < self.leaf().len) };
 
@@ -1943,7 +1979,7 @@ where
 //  * insert_key (where I: Copy)
 impl<'t, I, S, P, const M: usize> NodeHandle<ty::Leaf, borrow::Mut<'t>, I, S, P, M>
 where
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     /// Inserts the key into this leaf node, shifting the later keys *without* adjusting their
     /// positions
@@ -1985,6 +2021,7 @@ where
         let refid = UnsafeCell::new(<resolve![P::SliceRefStore::OptionRefId]>::default());
 
         let this_ptr = self.ptr;
+        let height = self.height.as_u8();
 
         // SAFETY: most of the stuff here is guaranteed by the fact that `key_idx` is guaranteed to
         // be within bounds by the caller, plus the node not being full, plus existence of the
@@ -2012,7 +2049,15 @@ where
                     // which is sound because we know that no aliases to the node exist, and the
                     // reference is temporary.
                     let r = &*leaf.refs.get_unchecked(i as usize).assume_init_ref().get();
-                    store.update(r, this_ptr.cast(), i);
+                    let handle = SliceHandle {
+                        idx: i,
+                        node: NodeHandle {
+                            ptr: this_ptr,
+                            height,
+                            borrow: PhantomData,
+                        },
+                    };
+                    store.update(r, handle);
                 }
 
                 pos
@@ -2036,7 +2081,7 @@ where
     pub unsafe fn push_key(
         &mut self,
         store: &mut resolve![P::SliceRefStore],
-        key: Key<I, S, P>,
+        key: Key<I, S, P, M>,
         new_subtree_size: I,
     ) {
         // SAFETY: guaranteed by caller
@@ -2072,7 +2117,16 @@ where
                 .assume_init_ref()
                 .get();
 
-            store.update(&*ref_ptr, self.ptr.cast(), k_idx);
+            let handle = SliceHandle {
+                idx: k_idx,
+                node: NodeHandle {
+                    ptr: self.ptr,
+                    height: self.height.as_u8(),
+                    borrow: PhantomData,
+                },
+            };
+
+            store.update(&*ref_ptr, handle);
         }
     }
 }
@@ -2084,7 +2138,7 @@ where
 //  * insert_key_and_child (where I: Copy)
 impl<'t, I, S, P, const M: usize> NodeHandle<ty::Internal, borrow::Mut<'t>, I, S, P, M>
 where
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     /// Calls the given function with a mutable reference to the internal node
     ///
@@ -2094,7 +2148,7 @@ where
     /// information.
     ///
     /// [`with_mut`]: Self::with_mut
-    pub unsafe fn with_internal<R>(
+    pub(super) unsafe fn with_internal<R>(
         &mut self,
         func: impl FnOnce(&mut Internal<I, S, P, M>) -> R,
     ) -> R {
@@ -2169,7 +2223,7 @@ where
     pub unsafe fn push_key_and_child(
         &mut self,
         store: &mut resolve![P::SliceRefStore],
-        key: Key<I, S, P>,
+        key: Key<I, S, P, M>,
         mut child: NodeHandle<ty::Unknown, borrow::Owned, I, S, P, M>,
         new_subtree_size: I,
     ) {
@@ -2177,6 +2231,7 @@ where
         unsafe { weak_assert!(self.leaf().len() < self.leaf().max_len()) };
 
         let self_ptr = self.ptr;
+        let height = self.height.as_u8();
 
         let func = |internal: &mut Internal<I, S, P, M>| {
             let key_idx = internal.leaf.len as usize;
@@ -2214,7 +2269,15 @@ where
                 internal.leaf.len += 1;
 
                 // And then update the store
-                store.update(r.get_mut(), self_ptr.cast(), key_idx as u8);
+                let handle = SliceHandle {
+                    idx: key_idx as u8,
+                    node: NodeHandle {
+                        ptr: self_ptr.cast(),
+                        height,
+                        borrow: PhantomData,
+                    },
+                };
+                store.update(r.get_mut(), handle);
             };
         };
 
@@ -2253,7 +2316,7 @@ where
         &mut self,
         store: &mut resolve![P::SliceRefStore],
         key_idx: u8,
-        key: Key<I, S, P>,
+        key: Key<I, S, P, M>,
         child: NodeHandle<ty::Unknown, borrow::Owned, I, S, P, M>,
     ) -> I
     where
@@ -2267,6 +2330,7 @@ where
         }
 
         let this_ptr = self.ptr;
+        let height = self.height.as_u8();
         let pos = self
             .leaf()
             .try_key_pos(key_idx)
@@ -2319,7 +2383,15 @@ where
                 // The call to `store.update` just requires that the arguments are valid.
                 unsafe {
                     let r = &*internal.leaf.refs.get_unchecked(i as usize).assume_init_ref().get();
-                    store.update(r, this_ptr.cast(), i);
+                    let handle = SliceHandle {
+                        idx: i,
+                        node: NodeHandle {
+                            ptr: this_ptr.cast(),
+                            height,
+                            borrow: PhantomData,
+                        },
+                    };
+                    store.update(r, handle);
                 }
             }
 
@@ -2385,7 +2457,7 @@ where
 unsafe fn ensure_unique<I, S, P, const M: usize>(ptr: &mut NodePtr<I, S, P, M>, height: u8)
 where
     I: Index,
-    P: RleTreeConfig<I, S> + SupportsInsert<I, S>,
+    P: RleTreeConfig<I, S, M> + SupportsInsert<I, S, M>,
 {
     // Even though we don't *actually* own the node, we can pretend like we do for now, because
     // we'll need to call `try_drop` later, which requires `borrow::Owned`. This is safe because
@@ -2501,7 +2573,7 @@ unsafe fn shift<A: ArrayHack<Element = T>, T>(slice: &mut A, start: usize, end: 
 //  * parent
 impl<I, S, P, const M: usize> Leaf<I, S, P, M>
 where
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     /// Returns the number of keys/values in the node
     pub fn len(&self) -> u8 {
@@ -2617,7 +2689,7 @@ where
 }
 
 /// The pointer to a parent node, alongside the child's index in it
-pub struct Parent<I, S, P: RleTreeConfig<I, S>, const M: usize> {
+pub struct Parent<I, S, P: RleTreeConfig<I, S, M>, const M: usize> {
     pub ptr: NodePtr<I, S, P, M>,
     pub idx_in_parent: u8,
 }
@@ -2626,10 +2698,11 @@ pub struct Parent<I, S, P: RleTreeConfig<I, S>, const M: usize> {
 //  * child_ptrs
 impl<I, S, P, const M: usize> Internal<I, S, P, M>
 where
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     /// Returns the slice of pointers to children, used to determine what the index of a particular
     /// child is
+    #[cfg(test)]
     pub fn child_ptrs(&self) -> &[NodePtr<I, S, P, M>] {
         // We need to cast `leaf.len` before incrementing because it can - in rare cases - be equal
         // to u8::MAX
@@ -2648,11 +2721,14 @@ where
 //  * slice_size
 //  * is_hole
 //  * clone_immut
+//  * take_refid
+//  * replace_refid
+//  * redirect_to
 impl<Ty, B, I, S, P, const M: usize> SliceHandle<Ty, B, I, S, P, M>
 where
     Ty: TypeHint,
     B: borrow::AsImmut,
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     /// Converts this `SliceHandle` into one with `ty::Unknown` instead of the current type tag
     pub fn erase_type(self) -> <Self as Typed>::Unknown {
@@ -2724,6 +2800,49 @@ where
             idx: self.idx,
         }
     }
+
+    /// Removes the `RefId` associated with the slice and returns it, if there is one
+    pub fn take_refid(&self) -> resolve![P::SliceRefStore::OptionRefId] {
+        let default = <resolve![P::SliceRefStore::OptionRefId]>::default();
+        self.replace_refid(default)
+    }
+
+    /// Replaces the `RefId`, returning the old value that was there before
+    pub fn replace_refid(
+        &self,
+        new_ref: resolve![P::SliceRefStore::OptionRefId],
+    ) -> resolve![P::SliceRefStore::OptionRefId] {
+        unsafe {
+            let unsafecell = self
+                .node
+                .leaf()
+                .refs
+                .get_unchecked(self.idx as usize)
+                .assume_init_ref();
+            mem::replace(&mut *unsafecell.get(), new_ref)
+        }
+    }
+
+    /// Informs the `SliceRefStore` to redirect any references to `self` to `other`
+    pub fn redirect_to(&self, other: &Self, store: &mut resolve![P::SliceRefStore]) {
+        // SAFETY: in general, producing a reference to something in `refs` is only valid as long
+        // as we don't reentrantly call anything that would also modify the value, which we happen
+        // to know `SliceRefStore` won't do for the call to `redirect`.
+        #[rustfmt::skip]
+        let (self_id, other_id) = unsafe {
+            let sid = &mut *self.node.leaf()
+                .refs.get_unchecked(self.idx as usize)
+                .assume_init_ref()
+                .get();
+            let oid = &mut *other.node.leaf()
+                .refs.get_unchecked(other.idx as usize)
+                .assume_init_ref()
+                .get();
+            (sid, oid)
+        };
+
+        store.redirect(self_id, other_id)
+    }
 }
 
 // any type, borrow::Immut
@@ -2731,7 +2850,7 @@ where
 impl<'t, Ty, I, S, P, const M: usize> SliceHandle<Ty, borrow::Immut<'t>, I, S, P, M>
 where
     Ty: TypeHint,
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     /// Produces a reference to the inner slice, lasting for the duration of the original borrow
     ///
@@ -2766,7 +2885,7 @@ where
 impl<'t, Ty, I, S, P, const M: usize> SliceHandle<Ty, borrow::Mut<'t>, I, S, P, M>
 where
     Ty: TypeHint,
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     /// Temporarily removes the slice, taking the value
     ///
@@ -2853,51 +2972,60 @@ where
         self.fill_hole(slice);
         output
     }
-
-    /// Informs the `SliceRefStore` to redirect any references to `self` to `other`
-    pub fn redirect_to(&mut self, other: &Self, store: &mut resolve![P::SliceRefStore]) {
-        todo!()
-    }
 }
 
 // ty::Unknown, borrow::SliceRef
-//  * slice_ref_from_parts
-//  * take_refid
-//  * into_parts
+//  * borrow_slice
+//  * range
 impl<I, S, P, const M: usize> SliceHandle<ty::Unknown, borrow::SliceRef, I, S, P, M>
 where
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
-    /// Creates a slice handle for a `SliceRef` from the component parts
+    /// Produces a borrow on the slice referenced by this handle, for as long a lifetime is needed
     ///
     /// ## Safety
     ///
-    /// The arguments must have been derived from an original call to [`SliceHandle::into_parts`],
-    /// and the `SliceHandle` must not be used across modifications to the tree.
-    pub unsafe fn slice_ref_from_parts(
-        ptr: NonNull<AbstractNode<I, S, P, M>>,
-        height: u8,
-        k_idx: u8,
-    ) -> Self {
-        SliceHandle {
-            node: NodeHandle {
-                ptr,
-                height,
-                borrow: PhantomData as PhantomData<borrow::SliceRef>,
-            },
-            idx: k_idx,
+    /// The caller must ensure that -- for the lifetime `'s` -- the tree is not modified or
+    /// dropped.
+    pub unsafe fn borrow_slice<'r>(&self) -> &'r S {
+        if self.is_hole() {
+            panic_invalid_state();
         }
+
+        // SAFETY: the `get_unchecked` + `assume_init_ref` combo requires that the slice at index
+        // `self.idx` is valid and initialized. The existence of a `SliceHandle` guarantees this
+        // for its values.
+        let key_ref: &S = unsafe {
+            self.node
+                .leaf()
+                .vals
+                .get_unchecked(self.idx as usize)
+                .assume_init_ref()
+        };
+
+        // extend the lifetime of `key_ref`
+        //
+        // SAFETY: guaranteed by caller.
+        unsafe { &*(key_ref as *const S) }
     }
 
-    /// Removes the `RefId` associated with the slice and returns it, if there is one
-    pub fn take_refid(&mut self) -> resolve![P::SliceRefStore::OptionRefId] {
-        // This is perhaps the wrong abstraction here.
-        todo!()
-    }
+    /// Returns the range of indexes covered by the slice
+    pub fn range(&self) -> Range<I>
+    where
+        I: Index,
+    {
+        let mut pos = self.key_pos();
+        let size = self.slice_size();
 
-    /// Deconstructs the `SliceHandle` into its component parts, returning the pointer, height, and
-    /// key index -- in that order
-    pub fn into_parts(self) -> (NonNull<AbstractNode<I, S, P, M>>, u8, u8) {
-        (self.node.ptr, self.node.height, self.idx)
+        let mut node = self.node.borrow();
+
+        while let Ok((parent, child_idx)) = node.into_parent() {
+            // SAFETY: `child_pos` requires that `child_idx` is a valid child index, which is
+            // guaranteed because parent information is always correct when `P = AllowSliceRefs`
+            pos = pos.add_left(unsafe { parent.child_pos(child_idx) });
+            node = parent.erase_type();
+        }
+
+        pos..pos.add_right(size)
     }
 }

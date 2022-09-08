@@ -30,7 +30,7 @@ use super::{search_step, ChildOrKey, Root, DEFAULT_MIN_KEYS};
 /// [`iter_with_cursor`]: crate::RleTree::iter_with_cursor
 pub struct Iter<'t, C, I, S, P, const M: usize = DEFAULT_MIN_KEYS>
 where
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     start: I,
     end: IncludedOrExcludedBound<I>,
@@ -39,7 +39,7 @@ where
 
 struct IterState<'t, C, I, S, P, const M: usize>
 where
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     store: &'t P::SliceRefStore,
     root: NodeHandle<ty::Unknown, borrow::Immut<'t>, I, S, P, M>,
@@ -50,7 +50,7 @@ where
 
 struct IterStack<'t, I, S, P, const M: usize>
 where
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     /// Stack of all the nodes leading to `head` where the child containing `head` has a different
     /// node as its parent
@@ -64,7 +64,7 @@ where
 }
 
 #[cfg(test)]
-impl<'t, C, I, S, P: RleTreeConfig<I, S>, const M: usize> Debug for Iter<'t, C, I, S, P, M> {
+impl<'t, C, I, S, P: RleTreeConfig<I, S, M>, const M: usize> Debug for Iter<'t, C, I, S, P, M> {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         f.debug_struct("Iter")
             .field("start", self.start.fallible_debug())
@@ -75,7 +75,9 @@ impl<'t, C, I, S, P: RleTreeConfig<I, S>, const M: usize> Debug for Iter<'t, C, 
 }
 
 #[cfg(test)]
-impl<'t, C, I, S, P: RleTreeConfig<I, S>, const M: usize> Debug for IterState<'t, C, I, S, P, M> {
+impl<'t, C, I, S, P: RleTreeConfig<I, S, M>, const M: usize> Debug
+    for IterState<'t, C, I, S, P, M>
+{
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         let mut s = f.debug_struct("IterState");
         s.field("root", &self.root.ptr());
@@ -96,13 +98,13 @@ impl<'t, C, I, S, P: RleTreeConfig<I, S>, const M: usize> Debug for IterState<'t
 }
 
 #[cfg(test)]
-impl<'t, I, S, P: RleTreeConfig<I, S>, const M: usize> Debug for IterStack<'t, I, S, P, M> {
+impl<'t, I, S, P: RleTreeConfig<I, S, M>, const M: usize> Debug for IterStack<'t, I, S, P, M> {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        struct JustTheStack<'a, 't, I, S, P: RleTreeConfig<I, S>, const M: usize> {
+        struct JustTheStack<'a, 't, I, S, P: RleTreeConfig<I, S, M>, const M: usize> {
             this: &'a IterStack<'t, I, S, P, M>,
         }
 
-        impl<'a, 't, I, S, P: RleTreeConfig<I, S>, const M: usize> Debug
+        impl<'a, 't, I, S, P: RleTreeConfig<I, S, M>, const M: usize> Debug
             for JustTheStack<'a, 't, I, S, P, M>
         {
             fn fmt(&self, f: &mut Formatter) -> fmt::Result {
@@ -161,7 +163,7 @@ enum IncludedOrExcludedBound<I> {
 /// [`RleTree`]: crate::RleTree
 pub struct SliceEntry<'t, I, S, P, const M: usize = DEFAULT_MIN_KEYS>
 where
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     range: Range<I>,
     slice: SliceHandle<ty::Unknown, borrow::Immut<'t>, I, S, P, M>,
@@ -179,7 +181,7 @@ fn panic_internal_error_or_bad_index<I: Index>() -> ! {
 
 impl<'t, I, S, P, const M: usize> SliceEntry<'t, I, S, P, M>
 where
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
     I: Index,
 {
     /// Returns the range of values covered by this entry
@@ -203,7 +205,9 @@ where
 impl<'t, I, S, const M: usize> SliceEntry<'t, I, S, AllowSliceRefs, M> {
     /// Creates a new [`SliceRef`] pointing to this slice
     pub fn make_ref(&self) -> SliceRef<I, S, M> {
-        todo!()
+        // SAFETY: the `SliceHandle` here is being provided directly to the `SliceRefStore`.
+        let handle = unsafe { self.slice.clone_slice_ref() };
+        self.store.make_ref(handle)
     }
 }
 
@@ -212,7 +216,7 @@ where
     C: Cursor,
     I: Index,
     S: 't + Slice<I>,
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     /// Creates a new iterator
     ///
@@ -402,7 +406,7 @@ where
 impl<'t, I, S, P, const M: usize> IterStack<'t, I, S, P, M>
 where
     I: Index,
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     fn fwd_step(&mut self) {
         match self.head.node.into_typed() {
@@ -589,7 +593,7 @@ where
     C: Cursor,
     I: Index,
     S: 't + Slice<I>,
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     type Item = SliceEntry<'t, I, S, P, M>;
 
@@ -653,7 +657,7 @@ where
     C: Cursor,
     I: Index,
     S: 't + Slice<I>,
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     fn next_back(&mut self) -> Option<Self::Item> {
         let state = self.state.as_mut()?;
@@ -705,7 +709,7 @@ where
 /// [`drain_with_cursor`]: crate::RleTree::drain_with_cursor
 pub struct Drain<'t, C, I, S, P, const M: usize = DEFAULT_MIN_KEYS>
 where
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     range: Range<I>,
     root: Option<Root<I, S, P, M>>,
@@ -716,7 +720,7 @@ where
 
 impl<'t, C, I, S, P, const M: usize> Drain<'t, C, I, S, P, M>
 where
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     pub(super) fn new(root: &'t mut Option<Root<I, S, P, M>>, range: Range<I>, cursor: C) -> Self {
         let (tree_ref, root) = {
@@ -738,7 +742,7 @@ where
     C: Cursor,
     I: Index,
     S: 't + Slice<I>,
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     type Item = (Range<I>, S);
 
@@ -752,7 +756,7 @@ where
     C: Cursor,
     I: Index,
     S: 't + Slice<I>,
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     fn next_back(&mut self) -> Option<Self::Item> {
         todo!()

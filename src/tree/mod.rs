@@ -1,17 +1,20 @@
 //! Wrapper module containing the big-boy tree itself
 
-use crate::param::{self, AllowSliceRefs, BorrowState, RleTreeConfig, StrongCount, SupportsInsert};
+use crate::param::{
+    self, AllowSliceRefs, BorrowState, RleTreeConfig, SliceRefStore as _, StrongCount,
+    SupportsInsert,
+};
 use crate::public_traits::{Index, Slice};
 use crate::range::RangeBounds;
 use crate::{Cursor, NoCursor, PathComponent};
 use std::fmt::Debug;
-use std::mem::{self, ManuallyDrop};
+use std::mem::ManuallyDrop;
 use std::ops::Range;
 use std::panic::UnwindSafe;
 
-#[cfg(any(test, feature = "fuzz"))]
+#[cfg(test)]
 use crate::MaybeDebug;
-#[cfg(any(test, feature = "fuzz"))]
+#[cfg(test)]
 use std::fmt::{self, Formatter};
 #[cfg(any(test, feature = "fuzz"))]
 use std::ptr::NonNull;
@@ -25,9 +28,9 @@ pub(crate) mod slice_ref;
 mod tests;
 
 pub use iter::{Drain, Iter, SliceEntry};
-pub use slice_ref::SliceRef;
+pub use slice_ref::{Borrow, SliceRef};
 
-use node::{borrow, ty, ChildOrKey, NodeHandle, SliceHandle, Type};
+use node::{borrow, ty, ChildOrKey, NodeHandle, Type};
 use slice_ref::ShouldDrop;
 
 /// The default minimum number of keys in a node; default parameterization for [`RleTree`]
@@ -101,7 +104,7 @@ pub const DEFAULT_MIN_KEYS: usize = 5;
 /// [`AllowSliceRefs`]: param::AllowSliceRefs
 pub struct RleTree<I, S, P = param::NoFeatures, const M: usize = DEFAULT_MIN_KEYS>
 where
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     root: Option<Root<I, S, P, M>>,
 }
@@ -112,7 +115,7 @@ impl<I, S, P, const M: usize> UnwindSafe for RleTree<I, S, P, M>
 where
     I: UnwindSafe,
     S: UnwindSafe,
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
 }
 
@@ -120,17 +123,17 @@ where
 // exists.
 struct Root<I, S, P, const M: usize>
 where
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     handle: ManuallyDrop<NodeHandle<ty::Unknown, borrow::Owned, I, S, P, M>>,
-    refs_store: <P as RleTreeConfig<I, S>>::SliceRefStore,
-    shared_total_strong_count: <P as RleTreeConfig<I, S>>::SharedStrongCount,
+    refs_store: <P as RleTreeConfig<I, S, M>>::SliceRefStore,
+    shared_total_strong_count: <P as RleTreeConfig<I, S, M>>::SharedStrongCount,
 }
 
 #[cfg(not(feature = "nightly"))]
 impl<I, S, P, const M: usize> Drop for RleTree<I, S, P, M>
 where
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     fn drop(&mut self) {
         destruct_root(self.root.take())
@@ -140,7 +143,7 @@ where
 #[cfg(feature = "nightly")]
 unsafe impl<#[may_dangle] I, #[may_dangle] S, P, const M: usize> Drop for RleTree<I, S, P, M>
 where
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     fn drop(&mut self) {
         destruct_root(self.root.take())
@@ -148,14 +151,14 @@ where
 }
 
 #[cfg(test)]
-impl<I: Index, S, P: RleTreeConfig<I, S>, const M: usize> Debug for Root<I, S, P, M> {
+impl<I: Index, S, P: RleTreeConfig<I, S, M>, const M: usize> Debug for Root<I, S, P, M> {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        struct Nodes<'t, I, S, P: RleTreeConfig<I, S>, const M: usize> {
+        struct Nodes<'t, I, S, P: RleTreeConfig<I, S, M>, const M: usize> {
             root: NodeHandle<ty::Unknown, borrow::Immut<'t>, I, S, P, M>,
             indent: &'static str,
         }
 
-        impl<'t, I: Index, S, P: RleTreeConfig<I, S>, const M: usize> Debug for Nodes<'t, I, S, P, M> {
+        impl<'t, I: Index, S, P: RleTreeConfig<I, S, M>, const M: usize> Debug for Nodes<'t, I, S, P, M> {
             fn fmt(&self, f: &mut Formatter) -> fmt::Result {
                 f.write_str("{")?;
                 let max_child_len = 2 * M + 1;
@@ -184,7 +187,7 @@ impl<I: Index, S, P: RleTreeConfig<I, S>, const M: usize> Debug for Root<I, S, P
             }
         }
 
-        fn write_nodes<I: Index, S, P: RleTreeConfig<I, S>, const M: usize>(
+        fn write_nodes<I: Index, S, P: RleTreeConfig<I, S, M>, const M: usize>(
             node: NodeHandle<ty::Unknown, borrow::Immut, I, S, P, M>,
             path: &mut Vec<u8>,
             indent: &'static str,
@@ -240,7 +243,7 @@ impl<I: Index, S, P: RleTreeConfig<I, S>, const M: usize> Debug for Root<I, S, P
 /// [`insert_internal`]: RleTree::insert_internal
 fn destruct_root<I, S, P, const M: usize>(root: Option<Root<I, S, P, M>>)
 where
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     let mut r = match root {
         None => return,
@@ -249,10 +252,6 @@ where
             ShouldDrop::Yes => r,
         },
     };
-
-    // Drop the slice reference store so that we don't need to update references in the node
-    // destructors.
-    drop(mem::take(&mut r.refs_store));
 
     // SAFETY: We're given the `Root` by value; it's plain to see that `r.ptr` is not accessed
     // again in this function, before it goes out of scope. That's all that's required of
@@ -293,7 +292,7 @@ impl<I, S, P, const M: usize> RleTree<I, S, P, M>
 where
     I: Index,
     S: Slice<I>,
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     /// Creates a new, empty `RleTree`
     ///
@@ -320,10 +319,15 @@ where
             panic!("cannot add slice with non-positive size {:?}", size);
         }
 
+        let handle = NodeHandle::new_root(slice, size).erase_type();
+        // SAFETY: we're required to only use this for the `SliceRefStore`, which *is* what we're
+        // doing here.
+        let store_handle = unsafe { handle.clone_root_for_refs_store() };
+
         RleTree {
             root: Some(Root {
-                handle: ManuallyDrop::new(NodeHandle::new_root(slice, size).erase_type()),
-                refs_store: Default::default(),
+                handle: ManuallyDrop::new(handle),
+                refs_store: P::SliceRefStore::new(store_handle),
                 shared_total_strong_count: StrongCount::one(),
             }),
         }
@@ -466,7 +470,7 @@ impl<I, S, P, const M: usize> RleTree<I, S, P, M>
 where
     I: Index,
     S: Slice<I>,
-    P: RleTreeConfig<I, S> + SupportsInsert<I, S>,
+    P: RleTreeConfig<I, S, M> + SupportsInsert<I, S, M>,
 {
     /// Inserts the slice at position `idx`, shifting all later entries by `size`
     ///
@@ -552,25 +556,14 @@ where
         size: I,
     ) -> (C, SliceRef<I, S, M>) {
         let (cursor, inserted_slice) = self.insert_internal(cursor, idx, slice, size);
-        (cursor, self.make_ref(inserted_slice))
-    }
-
-    /// (*Internal*) Returns a reference to the slice, either duplicating an existing one or
-    /// creating a new one
-    fn make_ref(
-        &mut self,
-        slice_handle: SliceHandle<ty::Unknown, borrow::SliceRef, I, S, AllowSliceRefs, M>,
-    ) -> SliceRef<I, S, M> {
         let root = match self.root.as_ref() {
             Some(r) => r,
-            // SAFETY: The `SliceHandle` cannot exist without a root node
+            // SAFETY: insertion always results in at least a root node remaining in the tree
             None => unsafe { weak_unreachable!() },
         };
 
-        // let ref_id = self.slice_ TODO
-
-        // SliceRef::new(&root.refs_store, ref_id)
-        todo!()
+        let slice_ref = root.refs_store.make_ref(inserted_slice);
+        (cursor, slice_ref)
     }
 }
 
@@ -695,7 +688,7 @@ impl<I, S> Debug for SliceSize<I, S> {
 ///
 /// Either item in the [`ChildOrKey`] returned contains the index of the child or key containing
 /// `target`, and the start position of that child or key, relative to the base of `node`.
-fn search_step<'t, I: Index, S, P: RleTreeConfig<I, S>, const M: usize>(
+fn search_step<'t, I: Index, S, P: RleTreeConfig<I, S, M>, const M: usize>(
     node: NodeHandle<ty::Unknown, borrow::Immut<'t>, I, S, P, M>,
     hint: Option<PathComponent>,
     target: I,
@@ -812,7 +805,7 @@ unsafe fn shift_keys_auto<'t, Ty, I, S, P, const M: usize>(
 ) where
     Ty: ty::TypeHint,
     I: Index,
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     // SAFETY: guaranteed by caller
     unsafe {
@@ -835,7 +828,7 @@ unsafe fn shift_keys_increase<'t, Ty, I, S, P, const M: usize>(
 ) where
     Ty: ty::TypeHint,
     I: Index,
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     // SAFETY: guaranteed by caller
     unsafe { shift_keys::<Ty, I, S, P, M, true>(node, opts) }
@@ -852,7 +845,7 @@ unsafe fn shift_keys_decrease<'t, Ty, I, S, P, const M: usize>(
 ) where
     Ty: ty::TypeHint,
     I: Index,
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     // SAFETY: guaranteed by caller
     unsafe { shift_keys::<Ty, I, S, P, M, false>(node, opts) }
@@ -872,7 +865,7 @@ unsafe fn shift_keys<'t, Ty, I, S, P, const M: usize, const IS_INCREASE: bool>(
 ) where
     Ty: ty::TypeHint,
     I: Index,
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     // SAFETY: guaranteed by caller
     unsafe { weak_assert!(opts.from <= node.leaf().len()) };
@@ -982,7 +975,7 @@ macro_rules! valid_assert_eq {
 impl<I, S, P, const M: usize> RleTree<I, S, P, M>
 where
     I: Index,
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     /// (*Test-only*) Validates the tree, panicking if the indexes don't add up.
     ///

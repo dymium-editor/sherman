@@ -1,6 +1,8 @@
 //! Internal insertion implementation
 
-use crate::param::{BorrowState, RleTreeConfig, StrongCount, SupportsInsert};
+use crate::param::{
+    self, BorrowState, RleTreeConfig, SliceRefStore as _, StrongCount, SupportsInsert,
+};
 use crate::{Cursor, Index, PathComponent, RleTree, Slice};
 use std::cmp::Ordering;
 use std::mem::{self, ManuallyDrop};
@@ -20,7 +22,7 @@ impl<I, S, P, const M: usize> RleTree<I, S, P, M>
 where
     I: Index,
     S: Slice<I>,
-    P: RleTreeConfig<I, S> + SupportsInsert<I, S>,
+    P: RleTreeConfig<I, S, M> + SupportsInsert<I, S, M>,
 {
     /// (*Internal*) Abstraction over the core insertion algorithm
     pub(super) fn insert_internal<'t, C: Cursor>(
@@ -82,17 +84,25 @@ where
             // matches with the `Release` of any dropped references
             unsafe { root.handle.borrow_mut() }
         } else {
+            // SAFETY: `shallow_clone` requires that `P = AllowCow`, which must betrue if the
+            // strong count is not unqiue; all of ther `P: RleTreeConfig` have always-unique strong
+            // counts.
+            let handle = unsafe { root.handle.shallow_clone() };
+
+            // SAFETY: `clone_root_for_refs_store` requires that we only use it for `refs_store`
+            let refs_store_root = unsafe { handle.clone_root_for_refs_store() };
+
             // There's another reference to *somewhere* in the tree -- we'll pessimistically
             // assume that we need to clone (this will usually be true)
             shallow_copy_store = Some(Root {
                 // SAFETY: `shallow_clone` requires that `P = AllowCow`, which must betrue if the
                 // strong count is not unqiue; all of ther `P: RleTreeConfig` have always-unique
                 // strong counts.
-                handle: ManuallyDrop::new(unsafe { root.handle.shallow_clone() }),
+                handle: ManuallyDrop::new(handle),
                 // If there were slice references, we'd run into weird issues here. But this branch
                 // can't be reached unless `P` is `AllowCow`, which has `SliceRefStore = ()`, so
                 // there aren't any.
-                refs_store: Default::default(),
+                refs_store: param::SliceRefStore::new(refs_store_root),
                 shared_total_strong_count: root.shared_total_strong_count.increment(),
             });
             let root_ptr = &mut shallow_copy_store.as_mut().unwrap().handle;
@@ -233,8 +243,15 @@ where
         // before or after replacing from a shallow copy because shallow copies only exist with COW
         // functionality, and explicit borrow state only exists with slice references (which is
         // incompatible with COW stuff)
-        match self.root.as_ref() {
-            Some(r) => r.refs_store.release_mutable(),
+        match self.root.as_mut() {
+            Some(r) => {
+                // Make sure that the `SliceRefStore`'s root is up to date:
+                //
+                // SAFETY: we're only using `copied_handle` for the `SliceRefStore`
+                r.refs_store
+                    .set_root(Some(unsafe { r.handle.clone_root_for_refs_store() }));
+                r.refs_store.release_mutable();
+            }
             // SAFETY: We originally checekd that `self.root` is `Some(_)` up above, and while
             // insertion *can* remove up to one value, that value can never be the only value in
             // the tree -- so `self.root` must still be `Some(_)`
@@ -252,7 +269,7 @@ where
 struct PreInsertTraversalState<'t, C, I, S, P, const M: usize>
 where
     C: Cursor,
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     /// If the provided cursor has not provided a bad hint yet, the remaining items in its iterator
     cursor_iter: Option<<C as Cursor>::PathIter>,
@@ -271,7 +288,7 @@ type InsertSearchResult<'t, I, S, P, const M: usize> =
 
 /// (*Internal*) Component of an [`InsertSearchResult`] specific to inserting *between* keys in a
 /// leaf
-struct LeafInsert<'t, I, S, P: RleTreeConfig<I, S>, const M: usize> {
+struct LeafInsert<'t, I, S, P: RleTreeConfig<I, S, M>, const M: usize> {
     /// The leaf node that the value should be inserted into
     node: NodeHandle<ty::Leaf, borrow::Mut<'t>, I, S, P, M>,
     /// The keys to the immediate left and right of the insertion point
@@ -288,7 +305,7 @@ struct LeafInsert<'t, I, S, P: RleTreeConfig<I, S>, const M: usize> {
 /// middle of an existing key
 ///
 /// In this case, the key must be split in order to perform the insertion.
-struct SplitKeyInsert<'t, I, S, P: RleTreeConfig<I, S>, const M: usize> {
+struct SplitKeyInsert<'t, I, S, P: RleTreeConfig<I, S, M>, const M: usize> {
     /// A handle on the key to insert the value into
     handle: SliceHandle<ty::Unknown, borrow::Mut<'t>, I, S, P, M>,
     /// The index *within* the key to perform the insertion
@@ -305,7 +322,7 @@ struct SplitKeyInsert<'t, I, S, P: RleTreeConfig<I, S>, const M: usize> {
 /// find the next left or next right key.
 ///
 /// [`S::MAY_JOIN`]: Slice::MAY_JOIN
-struct AdjacentKeys<'b, I, S, P: RleTreeConfig<I, S>, const M: usize> {
+struct AdjacentKeys<'b, I, S, P: RleTreeConfig<I, S, M>, const M: usize> {
     lhs: Option<SliceHandle<ty::Unknown, borrow::Mut<'b>, I, S, P, M>>,
     rhs: Option<SliceHandle<ty::Unknown, borrow::Mut<'b>, I, S, P, M>>,
 }
@@ -314,12 +331,12 @@ struct AdjacentKeys<'b, I, S, P: RleTreeConfig<I, S>, const M: usize> {
 /// and we need to "bubble" the new midpoint and right-hand side up to the parent
 struct BubbledInsertState<'t, C, I, S, P, const M: usize>
 where
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     /// The existing node that `rhs` was split off from
     lhs: NodeHandle<ty::Unknown, borrow::Mut<'t>, I, S, P, M>,
     /// The key between `lhs` and `rhs`
-    key: node::Key<I, S, P>,
+    key: node::Key<I, S, P, M>,
     /// Size of slice in `key`
     key_size: I,
     /// The newly-created node, to the right of `key`
@@ -350,7 +367,7 @@ where
 }
 
 /// (*Internal*) An inserted [`SliceHandle`] and where to find it ; for [`BubbledInsertState`]
-struct BubbledInsertion<I, S, P: RleTreeConfig<I, S>, const M: usize> {
+struct BubbledInsertion<I, S, P: RleTreeConfig<I, S, M>, const M: usize> {
     /// Flag for which child the bubbled insertion is in
     ///
     /// This is tracked so that we can accurately update the cursor as we go up the tree.
@@ -365,7 +382,7 @@ struct BubbledInsertion<I, S, P: RleTreeConfig<I, S>, const M: usize> {
 /// [`insert_internal`]: RleTree::insert_internal
 struct PostInsertTraversalState<'t, C, I, S, P, const M: usize>
 where
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     /// Handle to the slice that was inserted
     ///
@@ -437,7 +454,7 @@ where
 /// handle their own post-insert traversals
 enum PostInsertTraversalResult<'t, C, I, S, P, const M: usize>
 where
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     /// Traversal has not yet gone through the root (although it *may* be this field's `node`), and
     /// so should continue
@@ -460,7 +477,7 @@ where
         /// The current root node, which will become the left-hand child in the new root
         lhs: NodeHandle<ty::Unknown, borrow::Mut<'t>, I, S, P, M>,
         /// Key to be inserted between `lhs` and `rhs`
-        key: node::Key<I, S, P>,
+        key: node::Key<I, S, P, M>,
         key_size: I,
         /// New, right-hand node
         rhs: NodeHandle<ty::Unknown, borrow::Owned, I, S, P, M>,
@@ -473,7 +490,7 @@ where
 impl<'t, C, I, S, P, const M: usize> Debug for PreInsertTraversalState<'t, C, I, S, P, M>
 where
     C: Cursor,
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         let mut s = f.debug_struct("PreInsertTraversalState");
@@ -494,7 +511,7 @@ where
 #[cfg(test)]
 impl<'t, I, S, P, const M: usize> Debug for LeafInsert<'t, I, S, P, M>
 where
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         f.debug_struct("LeafInsert")
@@ -508,7 +525,7 @@ where
 #[cfg(test)]
 impl<'t, I, S, P, const M: usize> Debug for SplitKeyInsert<'t, I, S, P, M>
 where
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         f.debug_struct("SplitKeyInsert")
@@ -521,7 +538,7 @@ where
 #[cfg(test)]
 impl<'b, I, S, P, const M: usize> Debug for AdjacentKeys<'b, I, S, P, M>
 where
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         f.debug_struct("AdjacentKeys")
@@ -534,7 +551,7 @@ where
 #[cfg(test)]
 impl<'t, C, I, S, P, const M: usize> Debug for BubbledInsertState<'t, C, I, S, P, M>
 where
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         f.debug_struct("BubbledInsertState")
@@ -549,7 +566,7 @@ where
 }
 
 #[cfg(test)]
-impl<I, S, P: RleTreeConfig<I, S>, const M: usize> Debug for BubbledInsertion<I, S, P, M> {
+impl<I, S, P: RleTreeConfig<I, S, M>, const M: usize> Debug for BubbledInsertion<I, S, P, M> {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         f.debug_struct("BubbledInsertion")
             .field("side", &self.side)
@@ -561,7 +578,7 @@ impl<I, S, P: RleTreeConfig<I, S>, const M: usize> Debug for BubbledInsertion<I,
 #[cfg(test)]
 impl<'t, C, I, S, P, const M: usize> Debug for PostInsertTraversalState<'t, C, I, S, P, M>
 where
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         let (idx_name, idx, node) = match &self.child_or_key {
@@ -582,7 +599,7 @@ where
 #[cfg(test)]
 impl<'t, C, I, S, P, const M: usize> Debug for PostInsertTraversalResult<'t, C, I, S, P, M>
 where
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match self {
@@ -617,7 +634,7 @@ where
     C: Cursor,
     I: Index,
     S: Slice<I>,
-    P: SupportsInsert<I, S> + RleTreeConfig<I, S>,
+    P: SupportsInsert<I, S, M> + RleTreeConfig<I, S, M>,
 {
     /// Performs a single step of a downward search for an insertion point
     fn do_search_step(mut self) -> Result<InsertSearchResult<'t, I, S, P, M>, Self> {
@@ -717,7 +734,7 @@ impl<I, S, P, const M: usize> RleTree<I, S, P, M>
 where
     I: Index,
     S: Slice<I>,
-    P: RleTreeConfig<I, S> + SupportsInsert<I, S>,
+    P: RleTreeConfig<I, S, M> + SupportsInsert<I, S, M>,
 {
     /// (*Internal*) Tries to insert the slice by joining with either adjacent key, returning
     /// `Err(slice)` joining fails
@@ -725,7 +742,7 @@ where
     /// If joining succeeds, the insertion is processed upwards until all structural changes to the
     /// tree are resolved, and then the [`PostInsertTraversalState`] is returned.
     fn do_insert_try_join<'t, C: Cursor>(
-        store: &mut <P as RleTreeConfig<I, S>>::SliceRefStore,
+        store: &mut <P as RleTreeConfig<I, S, M>>::SliceRefStore,
         slice: S,
         slice_size: I,
         adjacent_keys: AdjacentKeys<'t, I, S, P, M>,
@@ -1828,11 +1845,11 @@ where
     C: Cursor,
     I: Index,
     S: Slice<I>,
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     fn do_upward_step(
         mut self,
-        store: &mut <P as RleTreeConfig<I, S>>::SliceRefStore,
+        store: &mut <P as RleTreeConfig<I, S, M>>::SliceRefStore,
         mut shift_lhs: Option<BubbleLhs<I>>,
     ) -> Result<PostInsertTraversalResult<'t, C, I, S, P, M>, Self> {
         let lhs_size = self.lhs.leaf().subtree_size();
@@ -2270,7 +2287,7 @@ where
     C: Cursor,
     I: Index,
     S: Slice<I>,
-    P: RleTreeConfig<I, S>,
+    P: RleTreeConfig<I, S, M>,
 {
     fn do_upward_step(mut self) -> PostInsertTraversalResult<'t, C, I, S, P, M> {
         // The first part of the traversal step starts with repositioning all of the keys after

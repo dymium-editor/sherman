@@ -74,7 +74,7 @@ mod tree;
 
 pub use cursor::{BoundedCursor, Cursor, NoCursor, PathComponent};
 pub use public_traits::{DirectionalAdd, DirectionalSub, Index, Slice, Zero};
-pub use tree::{Drain, Iter, RleTree, SliceEntry, SliceRef, DEFAULT_MIN_KEYS};
+pub use tree::{Borrow, Drain, Iter, RleTree, SliceEntry, SliceRef, DEFAULT_MIN_KEYS};
 
 /// Helper implementation of [`Slice`] for *actual* run-length encoding - a run of identical values
 ///

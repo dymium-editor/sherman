@@ -516,7 +516,7 @@ where
 }
 
 /// Ongoing state for executing commands to an [`RleTree`] and mock implementation
-pub struct RunnerState<I, S, P: RleTreeConfig<I, S>, const M: usize> {
+pub struct RunnerState<I, S, P: RleTreeConfig<I, S, M>, const M: usize> {
     trees: Vec<Option<RleTree<I, S, P, M>>>,
 }
 
@@ -524,7 +524,7 @@ impl<I, S, P, const M: usize> RunnerState<I, S, P, M>
 where
     I: UnwindSafe + sherman::Index,
     S: UnwindSafe + sherman::Slice<I> + Debug + Clone + PartialEq,
-    P: RleTreeConfig<I, S> + param::SupportsInsert<I, S>,
+    P: RleTreeConfig<I, S, M> + param::SupportsInsert<I, S, M>,
 {
     /// Creates a new, blank `RunnerState` to run a series of commands
     pub fn init() -> Self {

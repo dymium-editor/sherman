@@ -1,5 +1,6 @@
 //! Wrapper module for [`RecycleVec`], used for slice references
 
+use std::cell::Cell;
 use std::fmt::{self, Debug, Formatter};
 use std::mem;
 use std::num::NonZeroUsize;
@@ -19,6 +20,7 @@ pub struct RecycleVec<T> {
 //
 // The main invariant of an `EntryId` is that its existence guarantees the entry it references is a
 // `Value`.
+#[derive(PartialEq, Eq)]
 pub struct EntryId {
     idx_plus_one: NonZeroUsize,
 }
@@ -49,7 +51,7 @@ enum Entry<T> {
 }
 
 struct Value<T> {
-    ref_count: NonZeroUsize,
+    ref_count: Cell<NonZeroUsize>,
     inner: T,
 }
 
@@ -93,13 +95,13 @@ impl<T> RecycleVec<T> {
 
         // Temporarily extract the value, so that we can return the inner `T` if we need to.
         // Otherwise, we'll put the value back.
-        let mut val = match mem::replace(&mut self.vals[id.idx()], dummy_empty) {
+        let val = match mem::replace(&mut self.vals[id.idx()], dummy_empty) {
             Entry::Value(v) => v,
             // SAFETY: Because the `EntryId` exists, this entry is not a link.
             Entry::Link(_) => unsafe { weak_unreachable!() },
         };
 
-        match NonZeroUsize::new(val.ref_count.get() - 1) {
+        match NonZeroUsize::new(val.ref_count.get().get() - 1) {
             // We're done with this value; add it to the front of the empty values list
             None => {
                 self.head_empty = Some(LinkId {
@@ -109,7 +111,7 @@ impl<T> RecycleVec<T> {
                 Some(val.inner)
             }
             Some(c) => {
-                val.ref_count = c;
+                val.ref_count.set(c);
                 self.vals[id.idx()] = Entry::Value(val);
                 mem::forget(id);
                 None
@@ -117,24 +119,15 @@ impl<T> RecycleVec<T> {
         }
     }
 
-    /// Returns the current number of references to the given entry
-    pub fn ref_count(&self, id: &EntryId) -> NonZeroUsize {
-        match &self.vals[id.idx()] {
-            Entry::Value(v) => v.ref_count,
-            // SAFETY: Because the `EntryId` exists, this entry is not a link.
-            Entry::Link(_) => unsafe { weak_unreachable!() },
-        }
-    }
-
     /// Clones the `EntryId`, increasing its ref count
-    pub fn clone(&mut self, id: &EntryId) -> EntryId {
-        let rc = match &mut self.vals[id.idx()] {
-            Entry::Value(v) => &mut v.ref_count,
+    pub fn clone(&self, id: &EntryId) -> EntryId {
+        let rc = match &self.vals[id.idx()] {
+            Entry::Value(v) => &v.ref_count,
             // SAFETY: Because the `EntryId` exists, this entry is not a link.
             Entry::Link(_) => unsafe { weak_unreachable!() },
         };
 
-        *rc = rc.checked_add(1).unwrap();
+        rc.set(rc.get().checked_add(1).unwrap());
         EntryId {
             idx_plus_one: id.idx_plus_one,
         }
@@ -149,10 +142,10 @@ impl<T> RecycleVec<T> {
         }
     }
 
-    /// Sets the value
-    pub fn set(&mut self, id: &EntryId, val: T) {
+    /// Replaces the entry, returning the previous value
+    pub fn replace(&mut self, id: &EntryId, val: T) -> T {
         match &mut self.vals[id.idx()] {
-            Entry::Value(v) => v.inner = val,
+            Entry::Value(v) => mem::replace(&mut v.inner, val),
             // SAFETY: Because the `EntryId` exists, this entry is not a link.
             Entry::Link(_) => unsafe { weak_unreachable!() },
         }
@@ -200,7 +193,7 @@ impl<T> Value<T> {
     /// Creates a new `Value` at the given index, also returning the [`EntryId`] referencing it
     fn new(val: T, idx_plus_one: NonZeroUsize) -> (Self, EntryId) {
         let v = Value {
-            ref_count: NonZeroUsize::new(1).unwrap(),
+            ref_count: Cell::new(NonZeroUsize::new(1).unwrap()),
             inner: val,
         };
         let e_id = EntryId { idx_plus_one };
