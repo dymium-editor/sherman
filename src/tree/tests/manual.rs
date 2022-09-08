@@ -1,4 +1,5 @@
-use crate::{param::NoFeatures, Constant, RleTree};
+use crate::param::{AllowSliceRefs, NoFeatures};
+use crate::{Constant, RleTree};
 
 #[test]
 fn basic_insert() {
@@ -93,4 +94,13 @@ fn basic_iter() {
     let result: Vec<_> = tree.iter(..).map(|e| (e.range(), e.slice().0)).collect();
 
     assert_eq!(result, expected);
+}
+
+#[test]
+fn basic_slice_ref() {
+    let mut tree: RleTree<u8, Constant<char>, AllowSliceRefs> = RleTree::new_empty();
+    let r0 = tree.insert_ref(0, Constant('a'), 5);
+    tree.insert(2, Constant('b'), 3);
+    assert_eq!(r0.range(), 0..2);
+    assert_eq!(&*r0.borrow_slice(), &Constant('a'));
 }

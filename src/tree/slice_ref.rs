@@ -521,7 +521,10 @@ impl<I, S, const M: usize> SliceRef<I, S, M> {
         });
 
         match initial_result {
-            Ok(handle_ref) => return Some(handle_ref),
+            Ok(handle_ref) => {
+                self.id.set(Some(this_id));
+                return Some(handle_ref);
+            }
             Err(_) if redirected => (),
             Err(_) => {
                 // The value was removed, but we still have a `RefId` pointing to its slot. We
