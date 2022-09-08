@@ -1,9 +1,11 @@
 //! Wrapper module for [`RecycleVec`], used for slice references
 
 use std::cell::Cell;
-use std::fmt::{self, Debug, Formatter};
 use std::mem;
 use std::num::NonZeroUsize;
+
+#[cfg(test)]
+use std::fmt::{self, Debug, Formatter};
 
 pub struct RecycleVec<T> {
     vals: Vec<Entry<T>>,
@@ -25,17 +27,21 @@ pub struct EntryId {
     idx_plus_one: NonZeroUsize,
 }
 
+// Helper struct for using a value's hex formatting for `Debug`
+#[cfg(test)]
+struct DebugHex<T>(T);
+
+#[cfg(test)]
+impl<T: fmt::LowerHex> Debug for DebugHex<T> {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+#[cfg(test)]
 impl Debug for EntryId {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        struct Hex<T>(T);
-
-        impl<T: fmt::LowerHex> Debug for Hex<T> {
-            fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-                self.0.fmt(f)
-            }
-        }
-
-        f.debug_tuple("EntryId").field(&Hex(self.idx())).finish()
+        DebugHex(self.idx()).fmt(f)
     }
 }
 
@@ -60,6 +66,68 @@ impl<T> Default for RecycleVec<T> {
         RecycleVec {
             vals: Vec::new(),
             head_empty: None,
+        }
+    }
+}
+
+#[cfg(test)]
+impl<T: Debug> Debug for RecycleVec<T> {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        struct E<'a, T> {
+            entry: &'a Entry<T>,
+            refcount_pad: usize,
+        }
+
+        impl<'a, T: Debug> Debug for E<'a, T> {
+            fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+                match self.entry {
+                    Entry::Link(link) => {
+                        let link_idx = link.map(|l| DebugHex(l.idx_plus_one.get() - 1));
+                        f.write_fmt(format_args!("Link -> {link_idx:?}"))
+                    }
+                    Entry::Value(val) => {
+                        let refcount = val.ref_count.get();
+                        f.write_fmt(format_args!(
+                            "Value[refs={refcount:>pad$}]: {:?}",
+                            val.inner,
+                            pad = self.refcount_pad,
+                        ))
+                    }
+                }
+            }
+        }
+
+        let max_refcount = self
+            .vals
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Value(v) => Some(v.ref_count.get().get()),
+                Entry::Link(_) => None,
+            })
+            .max()
+            .unwrap_or(0);
+
+        let idx_pad = self.vals.len().saturating_sub(1).to_string().len();
+        let refcount_pad = max_refcount.to_string().len();
+
+        f.write_str("[")?;
+        let indent = match f.alternate() {
+            true => "        ",
+            false => "    ",
+        };
+
+        for (idx, entry) in self.vals.iter().enumerate() {
+            let e = E {
+                entry,
+                refcount_pad,
+            };
+            f.write_fmt(format_args!("\n{indent}{idx:#<idx_pad$x}: {e:?}"))?;
+        }
+
+        if !self.vals.is_empty() {
+            f.write_str("\n]")
+        } else {
+            f.write_str("]")
         }
     }
 }

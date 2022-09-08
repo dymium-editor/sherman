@@ -15,6 +15,9 @@ use std::ops::Deref;
 use std::ops::Range;
 use std::ptr::NonNull;
 
+#[cfg(test)]
+use std::fmt::Debug;
+
 use super::node::{borrow, ty, NodeHandle, SliceHandle};
 use super::DEFAULT_MIN_KEYS;
 use crate::param::{self, AllowSliceRefs};
@@ -41,6 +44,16 @@ pub struct SliceRef<I, S, const M: usize = DEFAULT_MIN_KEYS> {
     inner: NonNull<InnerStore<I, S, M>>,
     id: Cell<Option<RefId>>,
     marker: PhantomData<InnerStore<I, S, M>>,
+}
+
+#[cfg(test)]
+impl<I, S, const M: usize> Debug for SliceRef<I, S, M> {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        let id = self.id.replace(None);
+        let res = f.debug_struct("SliceRef").field("id", &id).finish();
+        self.id.set(id);
+        res
+    }
 }
 
 /// Unique identifier for a slice reference, corresponding to an index in the internal vector
@@ -108,6 +121,49 @@ pub enum BorrowState {
     Dropping,
     /// The tree has been fully dropped, along with the [`SliceRefStore`]
     Dropped,
+}
+
+#[cfg(test)]
+impl<I, S, const M: usize> Debug for SliceRefStore<I, S, M> {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        let inner = self.inner();
+
+        let root = match inner.root.take() {
+            Some(handle) => {
+                let ptr = handle.ptr();
+                inner.root.set(Some(handle));
+                Some(ptr)
+            }
+            None => None,
+        };
+
+        let refs_guard = inner.refs.borrow();
+
+        f.debug_struct("SliceRefStore")
+            .field("borrow", &inner.borrow.get())
+            .field("weak_count", &inner.weak_count.get())
+            .field("root", &root)
+            .field("refs", &refs_guard)
+            .finish()
+    }
+}
+
+#[cfg(test)]
+impl<I, S, const M: usize> Debug for StoredSliceRef<I, S, M> {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        match self {
+            StoredSliceRef::Removed => f.write_str("<Removed>"),
+            StoredSliceRef::Handle(h) => match h {
+                Some(handle) => {
+                    let ptr = handle.node.ptr();
+                    let idx = handle.idx;
+                    f.write_fmt(format_args!("Handle(Some(@{ptr:p}, idx = {idx}))"))
+                }
+                None => f.write_str("Handle(None)"),
+            },
+            StoredSliceRef::Redirect(id) => f.write_fmt(format_args!("Redirect -> {id:?}")),
+        }
+    }
 }
 
 /// Error from failing to acquire a borrow
@@ -699,6 +755,26 @@ struct TemporaryBorrow<'r, I, S, const M: usize> {
         Option<cell::Ref<'r, SliceHandle<ty::Unknown, borrow::SliceRef, I, S, AllowSliceRefs, M>>>,
     inner: &'r InnerStore<I, S, M>,
     ownership_transferred: bool,
+}
+
+#[cfg(test)]
+impl<'r, I, S, const M: usize> Debug for TemporaryBorrow<'r, I, S, M> {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        struct H(NonNull<()>, u8);
+
+        impl Debug for H {
+            fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+                f.write_fmt(format_args!("@{:p}, idx = {:?}", self.0, self.1))
+            }
+        }
+
+        let handle = self.handle.as_ref().map(|h| H(h.node.ptr().cast(), h.idx));
+
+        f.debug_struct("TemporaryBorrow")
+            .field("handle", &handle)
+            .field("ownership_transferred", &self.ownership_transferred)
+            .finish()
+    }
 }
 
 impl<'r, I, S, const M: usize> TemporaryBorrow<'r, I, S, M> {

@@ -227,6 +227,8 @@ impl<I: Index, S, P: RleTreeConfig<I, S, M>, const M: usize> Debug for Root<I, S
                 "shared_total_strong_count",
                 &self.shared_total_strong_count.count(),
             );
+        } else if std::mem::size_of::<P::SliceRefStore>() != 0 {
+            s.field("refs_store", &self.refs_store.fallible_debug());
         }
         s.field("nodes", &nodes).finish()
     }
