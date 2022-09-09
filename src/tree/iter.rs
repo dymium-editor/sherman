@@ -1,10 +1,10 @@
 //! Wrapper module for [`RleTree`](crate::RleTree) iterator types -- [`Iter`], [`Drain`], and
 //! related types
 
-use crate::param::{AllowSliceRefs, RleTreeConfig};
+use crate::param::RleTreeConfig;
 use crate::public_traits::{Index, Slice};
 use crate::range::{EndBound, RangeBounds, StartBound};
-use crate::{Cursor, SliceRef};
+use crate::Cursor;
 use std::any::TypeId;
 use std::fmt::Debug;
 use std::ops::Range;
@@ -16,7 +16,7 @@ use crate::MaybeDebug;
 use std::fmt::{self, Formatter};
 
 use super::node::{borrow, ty, NodeHandle, SliceHandle, Type};
-use super::{search_step, ChildOrKey, Root, DEFAULT_MIN_KEYS};
+use super::{search_step, ChildOrKey, Root, SliceEntry, DEFAULT_MIN_KEYS};
 
 /// An iterator over a range of slices and their positions in an [`RleTree`]
 ///
@@ -184,87 +184,12 @@ enum IncludedOrExcludedBound<I> {
     Excluded(I),
 }
 
-/// Information about a single slice in an [`RleTree`], yeilded by [`Iter`]
-///
-/// Conceptually, this type is not too different from `(Range<I>, &'t S)`, but the methods provide
-/// some additional functionality that wouldn't be provided by a simpler type.
-///
-/// More information is available in the methods themselves.
-///
-/// [`RleTree`]: crate::RleTree
-pub struct SliceEntry<'t, I, S, P, const M: usize = DEFAULT_MIN_KEYS>
-where
-    P: RleTreeConfig<I, S, M>,
-{
-    range: Range<I>,
-    slice: SliceHandle<ty::Unknown, borrow::Immut<'t>, I, S, P, M>,
-    store: &'t P::SliceRefStore,
-}
-
-impl<'t, I: UnwindSafe + RefUnwindSafe, S: RefUnwindSafe, P, const M: usize> UnwindSafe
-    for SliceEntry<'t, I, S, P, M>
-where
-    P: RleTreeConfig<I, S, M>,
-{
-}
-
-impl<'t, I: RefUnwindSafe, S: RefUnwindSafe, P, const M: usize> RefUnwindSafe
-    for SliceEntry<'t, I, S, P, M>
-where
-    P: RleTreeConfig<I, S, M>,
-{
-}
-
-unsafe impl<'t, I: Send + Sync, S: Sync, P: Sync, const M: usize> Send
-    for SliceEntry<'t, I, S, P, M>
-where
-    P: RleTreeConfig<I, S, M>,
-{
-}
-
-unsafe impl<'t, I: Sync, S: Sync, P: Sync, const M: usize> Sync for SliceEntry<'t, I, S, P, M> where
-    P: RleTreeConfig<I, S, M>
-{
-}
-
 #[track_caller]
 fn panic_internal_error_or_bad_index<I: Index>() -> ! {
     if crate::public_traits::perfect_index_impls().contains(&TypeId::of::<I>()) {
         panic!("internal error")
     } else {
         panic!("internal error or bad `Index` implementation")
-    }
-}
-
-impl<'t, I, S, P, const M: usize> SliceEntry<'t, I, S, P, M>
-where
-    P: RleTreeConfig<I, S, M>,
-    I: Index,
-{
-    /// Returns the range of values covered by this entry
-    pub fn range(&self) -> Range<I> {
-        self.range.clone()
-    }
-
-    /// Returns the size of the range of vales covered by this entry
-    ///
-    /// This is essentially a convenience method roughly equivalent to `self.range().len()`.
-    pub fn size(&self) -> I {
-        self.range.end.sub_right(self.range.start)
-    }
-
-    /// Returns a reference to the slice for this entry
-    pub fn slice(&self) -> &'t S {
-        self.slice.into_ref()
-    }
-}
-
-impl<'t, I, S, const M: usize> SliceEntry<'t, I, S, AllowSliceRefs, M> {
-    /// Creates a new [`SliceRef`] pointing to this slice
-    pub fn make_ref(&self) -> SliceRef<I, S, M> {
-        // SAFETY: the `SliceHandle` here is being provided directly to the `SliceRefStore`.
-        let handle = unsafe { self.slice.clone_slice_ref() };
-        self.store.make_ref(handle)
     }
 }
 
@@ -701,7 +626,8 @@ where
             None
         } else {
             Some(SliceEntry {
-                range: next_start..fwd.end_pos,
+                range_start: next_start,
+                range_end: fwd.end_pos,
                 slice: fwd.head,
                 store: state.store,
             })
@@ -745,7 +671,8 @@ where
             let start = bkwd.end_pos.sub_right(bkwd.head.slice_size());
 
             Some(SliceEntry {
-                range: start..bkwd.end_pos,
+                range_start: start,
+                range_end: bkwd.end_pos,
                 slice: bkwd.head,
                 store: state.store,
             })

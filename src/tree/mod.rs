@@ -20,6 +20,7 @@ use std::fmt::{self, Formatter};
 use std::ptr::NonNull;
 
 pub(crate) mod cow;
+mod entry;
 mod insert;
 mod iter;
 mod node;
@@ -27,7 +28,8 @@ pub(crate) mod slice_ref;
 #[cfg(test)]
 mod tests;
 
-pub use iter::{Drain, Iter, SliceEntry};
+pub use entry::SliceEntry;
+pub use iter::{Drain, Iter};
 pub use slice_ref::{Borrow, SliceRef};
 
 use node::{borrow, ty, ChildOrKey, NodeHandle, Type};
@@ -371,6 +373,82 @@ where
         match self.root.as_ref() {
             Some(root) => root.handle.leaf().subtree_size(),
             None => I::ZERO,
+        }
+    }
+
+    /// Returns an object with information about the slice containing the index
+    ///
+    /// Through the returned [`SliceEntry`], both the slice `S` and the range of values covered
+    /// `Range<I> can be retrieved.
+    ///
+    /// **See also:** [`get_with_cursor`](Self::get_with_cursor)
+    ///
+    /// ## Panics
+    ///
+    /// This method will panic if `idx` is out of bounds -- i.e., if it is less than zero or
+    /// greater than `self.size()`.
+    //
+    // FIXME: add `SliceEntry::cursor`.
+    pub fn get(&self, idx: I) -> SliceEntry<I, S, P, M> {
+        self.get_with_cursor(NoCursor, idx)
+    }
+
+    /// Returns an object with information about the slice containing the index, using a provided
+    /// [`Cursor`] as a path hint
+    ///
+    /// For more information, refer to [`get`](Self::get).
+    pub fn get_with_cursor<C: Cursor>(&self, cursor: C, idx: I) -> SliceEntry<I, S, P, M> {
+        if idx < I::ZERO {
+            panic!("index {idx:?} out of bounds, less than zero");
+        } else if idx >= self.size() {
+            panic!("index {idx:?} out of bounds for size {:?}", self.size());
+        }
+
+        let root = self
+            .root
+            .as_ref()
+            .expect("`self.root` should be `Some` if `0 < idx < size`");
+
+        let mut node = root.handle.borrow();
+        let mut cursor_iter = Some(cursor.into_path());
+        let mut target = idx;
+
+        loop {
+            let hint = cursor_iter.as_mut().and_then(|it| it.next());
+            let search_result = search_step(node, hint, target);
+
+            let hint_was_good = matches!(
+                (search_result, hint),
+                (ChildOrKey::Child((c_idx, _)), Some(h)) if c_idx == h.child_idx
+            );
+            if !hint_was_good {
+                cursor_iter = None;
+            }
+
+            match search_result {
+                ChildOrKey::Key((k_idx, k_start)) => {
+                    let slice = unsafe { node.into_slice_handle(k_idx) };
+                    let diff_from_base_to_target = target.sub_left(k_start);
+                    let range_start = idx.sub_right(diff_from_base_to_target);
+                    let range_end = range_start.add_right(slice.slice_size());
+
+                    return SliceEntry {
+                        range_start,
+                        range_end,
+                        slice,
+                        store: &root.refs_store,
+                    };
+                }
+                ChildOrKey::Child((c_idx, c_start)) => {
+                    target = target.sub_left(c_start);
+                    node = match node.into_typed() {
+                        Type::Leaf(_) => unreachable!(),
+                        // SAFETY: `search_step` guarantees that - if a `Child` is returned - the
+                        // index associated with it will be a valid child index.
+                        Type::Internal(node) => unsafe { node.into_child(c_idx) },
+                    };
+                }
+            }
         }
     }
 
