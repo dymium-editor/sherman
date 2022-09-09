@@ -221,6 +221,8 @@ pub enum ShouldDrop {
 ///
 /// If any existing `Borrow`s on it are live, dropping an `RleTree` will not actually take effect
 /// until the last `Borrow` itself is dropped.
+///
+/// [`map`]: Self::map
 //
 // Existence of a `Ref` guarantees that the `borrow` is `Immutable { .. }`, except for certain
 // conditions *created* during its destructor
@@ -628,6 +630,7 @@ impl<I, S, const M: usize> SliceRef<I, S, M> {
     /// For more information, refer to [`is_valid`].
     ///
     /// [`is_valid`]: Self::is_valid
+    /// [`RleTree`]: crate::RleTree
     pub fn try_is_valid(&self) -> Option<bool> {
         match self.try_temporary_borrow() {
             Ok(b) => Some(b.handle.is_some()),
