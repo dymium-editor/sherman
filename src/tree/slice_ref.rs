@@ -13,6 +13,7 @@ use std::mem;
 use std::num::NonZeroUsize;
 use std::ops::Deref;
 use std::ops::Range;
+use std::panic::{RefUnwindSafe, UnwindSafe};
 use std::ptr::NonNull;
 
 #[cfg(test)]
@@ -54,6 +55,16 @@ impl<I, S, const M: usize> Debug for SliceRef<I, S, M> {
         self.id.set(id);
         res
     }
+}
+
+impl<I: UnwindSafe + RefUnwindSafe, S: RefUnwindSafe, const M: usize> UnwindSafe
+    for SliceRef<I, S, M>
+{
+}
+
+impl<I: UnwindSafe + RefUnwindSafe, S: RefUnwindSafe, const M: usize> RefUnwindSafe
+    for SliceRef<I, S, M>
+{
 }
 
 /// Unique identifier for a slice reference, corresponding to an index in the internal vector
@@ -228,6 +239,9 @@ pub struct Borrow<'a, T> {
     /// `drop_if_zero = true`, so we need to drop the tree.
     drop_fn: unsafe fn(NonNull<()>),
 }
+
+impl<'a, T: RefUnwindSafe> UnwindSafe for Borrow<'a, T> {}
+impl<'a, T: RefUnwindSafe> RefUnwindSafe for Borrow<'a, T> {}
 
 ///////////////////////////////////////////////////////
 // Internal `SliceRefStore` API (plus `param` impls) //

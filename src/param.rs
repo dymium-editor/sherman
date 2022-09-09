@@ -20,21 +20,29 @@
 //!
 //! [`RleTree`]: crate::RleTree
 
+use std::marker::PhantomData;
+
 use crate::tree::slice_ref::{self, BorrowFailure, RawRoot, RawSliceRef, ShouldDrop};
 
 /// Marker type to not enable any features for the [`RleTree`](crate::RleTree) (*default*)
-pub enum NoFeatures {}
+pub struct NoFeatures(PhantomData<()>);
 
 /// Marker type to allow clone-on-write capabilities for an [`RleTree`](crate::RleTree)
-pub enum AllowCow {}
+pub struct AllowCow(PhantomData<()>);
 
 /// Marker type to allow slice references in the [`RleTree`](crate::RleTree)
-pub enum AllowSliceRefs {}
+///
+/// **Note:** Trees parameterized by this type do not implement `Send` or `Sync`; supporting
+/// mutli-threaded slice references would be significantly more costly and we have not yet found a
+/// use case for them.
+pub struct AllowSliceRefs(PhantomData<std::rc::Rc<()>>);
 
 /// Trait that [`RleTree`] parameterizations are required to implement
 ///
 /// This trait is made public to help with error messages and for your curiosity. It cannot be
 /// implemented outside of this crate.
+///
+/// [`RleTree`]: crate::RleTree
 pub trait RleTreeConfig<I, S, const M: usize>: Sized {
     /// A type bound you can't satisfy, here to make sure you can't implement this trait
     #[doc(hidden)]

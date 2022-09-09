@@ -8,6 +8,7 @@ use crate::{Cursor, SliceRef};
 use std::any::TypeId;
 use std::fmt::Debug;
 use std::ops::Range;
+use std::panic::{RefUnwindSafe, UnwindSafe};
 
 #[cfg(test)]
 use crate::MaybeDebug;
@@ -35,6 +36,36 @@ where
     start: I,
     end: IncludedOrExcludedBound<I>,
     state: Option<IterState<'t, C, I, S, P, M>>,
+}
+
+impl<'t, C: UnwindSafe, I: UnwindSafe + RefUnwindSafe, S: RefUnwindSafe, P, const M: usize>
+    UnwindSafe for Iter<'t, C, I, S, P, M>
+where
+    P: RleTreeConfig<I, S, M>,
+{
+}
+
+// Bounds for `RefUnwindSafe` are much less strict, and represent only the things that we might
+// *theoretically* provide access to. I.e. not `S`, but perhaps `C` or `I` (from the bounds)
+impl<'t, C: RefUnwindSafe, I: RefUnwindSafe, S, P, const M: usize> RefUnwindSafe
+    for Iter<'t, C, I, S, P, M>
+where
+    P: RleTreeConfig<I, S, M>,
+{
+}
+
+// Bounds for `Send`/`Sync` are a little complicated. We have to consider that this is *kind of*
+// like a `&RleTree`, but also stores some copied `I` from it.
+unsafe impl<'t, C: Send, I: Send + Sync, S: Sync, P: Send, const M: usize> Send
+    for Iter<'t, C, I, S, P, M>
+where
+    P: RleTreeConfig<I, S, M>,
+{
+}
+
+unsafe impl<'t, C: Sync, I: Sync, S: Sync, P: Sync, const M: usize> Sync for Iter<'t, C, I, S, P, M> where
+    P: RleTreeConfig<I, S, M>
+{
 }
 
 struct IterState<'t, C, I, S, P, const M: usize>
@@ -168,6 +199,32 @@ where
     range: Range<I>,
     slice: SliceHandle<ty::Unknown, borrow::Immut<'t>, I, S, P, M>,
     store: &'t P::SliceRefStore,
+}
+
+impl<'t, I: UnwindSafe + RefUnwindSafe, S: RefUnwindSafe, P, const M: usize> UnwindSafe
+    for SliceEntry<'t, I, S, P, M>
+where
+    P: RleTreeConfig<I, S, M>,
+{
+}
+
+impl<'t, I: RefUnwindSafe, S: RefUnwindSafe, P, const M: usize> RefUnwindSafe
+    for SliceEntry<'t, I, S, P, M>
+where
+    P: RleTreeConfig<I, S, M>,
+{
+}
+
+unsafe impl<'t, I: Send + Sync, S: Sync, P: Sync, const M: usize> Send
+    for SliceEntry<'t, I, S, P, M>
+where
+    P: RleTreeConfig<I, S, M>,
+{
+}
+
+unsafe impl<'t, I: Sync, S: Sync, P: Sync, const M: usize> Sync for SliceEntry<'t, I, S, P, M> where
+    P: RleTreeConfig<I, S, M>
+{
 }
 
 #[track_caller]

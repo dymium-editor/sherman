@@ -10,7 +10,7 @@ use crate::{Cursor, NoCursor, PathComponent};
 use std::fmt::Debug;
 use std::mem::ManuallyDrop;
 use std::ops::Range;
-use std::panic::UnwindSafe;
+use std::panic::{RefUnwindSafe, UnwindSafe};
 
 #[cfg(test)]
 use crate::MaybeDebug;
@@ -109,13 +109,44 @@ where
     root: Option<Root<I, S, P, M>>,
 }
 
-// FIXME: This should be more precise, specifically around the interactions with `RefUnwindSafe`
-// and `AllowSliceRefs` / `AllowCow`
-impl<I, S, P, const M: usize> UnwindSafe for RleTree<I, S, P, M>
-where
-    I: UnwindSafe,
-    S: UnwindSafe,
-    P: RleTreeConfig<I, S, M>,
+////////////////////////
+// Marker trait impls //
+////////////////////////
+//
+// We want to implement these explicitly (or not) for `RleTree` so that error messages refer
+// directly to the parameterizations of `RleTree` instead of e.g., if we had implemented these only
+// once, for `{Node,Slice}Handle`
+//
+// To briefly explain the reasoning here:
+//
+// In general, the factors that would prevent us implementing any of the marker traits below would
+// come from various kinds of interior mutability. For `NoFeatures`, we don't have any, so the
+// tl;dr is that we're good to implement all of `[Ref]UnwindSafe` and `Send`/`Sync`. For
+// `AllowCow`, the interior mutability that we *do* have is solely around the `Arc`s or
+// `AtomicUsize`s for trackin reference counts, which are both `Send + Sync`, and should be fine
+// from `[Ref]UnwindSafe`.
+//
+// The tricky one is `AllowSliceRefs`. With `SliceRef`s, we cannot be `Send` or `Sync`, because the
+// shared ownership is managed by `Cell` and `RefCell`. They *can* be `UnwindSafe` or
+// `RefUnwindSafe` because the interior mutability won't cause panics to mess up *our* invariants,
+// and there isn't interior mutability exposed to user-defined code.
+impl<I: UnwindSafe, S: UnwindSafe, P, const M: usize> UnwindSafe for RleTree<I, S, P, M> where
+    P: RleTreeConfig<I, S, M>
+{
+}
+
+impl<I: RefUnwindSafe, S: RefUnwindSafe, P, const M: usize> RefUnwindSafe for RleTree<I, S, P, M> where
+    P: RleTreeConfig<I, S, M>
+{
+}
+
+unsafe impl<I: Send, S: Send, P: Send, const M: usize> Send for RleTree<I, S, P, M> where
+    P: RleTreeConfig<I, S, M>
+{
+}
+
+unsafe impl<I: Sync, S: Sync, P: Sync, const M: usize> Sync for RleTree<I, S, P, M> where
+    P: RleTreeConfig<I, S, M>
 {
 }
 

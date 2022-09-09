@@ -162,45 +162,6 @@ where
     }
 }
 
-// In order to safely implement Send/Sync for the main RleTree (and other related items), it's
-// easiest to just implement it for the root *pointer* and have all of the other abstractions in
-// `Root` restrict it as needed
-#[rustfmt::skip]
-unsafe impl<T: TypeHint, B, I, S, P, const M: usize> Send for NodeHandle<T, B, I, S, P, M>
-where
-    I: Send,
-    S: Send,
-    P: RleTreeConfig<I, S, M>,
-    P::SliceRefStore: Send,
-    resolve![P::SliceRefStore::OptionRefId]: Send {}
-
-#[rustfmt::skip]
-unsafe impl<T: TypeHint, B, I, S, P, const M: usize> Sync for NodeHandle<T, B, I, S, P, M>
-where
-    I: Sync,
-    S: Sync,
-    P: RleTreeConfig<I, S, M>,
-    P::SliceRefStore: Sync,
-    resolve![P::SliceRefStore::OptionRefId]: Sync {}
-
-#[rustfmt::skip]
-unsafe impl<T: TypeHint, B, I, S, P, const M: usize> Send for SliceHandle<T, B, I, S, P, M>
-where
-    I: Send,
-    S: Send,
-    P: RleTreeConfig<I, S, M>,
-    P::SliceRefStore: Send,
-    resolve![P::SliceRefStore::OptionRefId]: Send {}
-
-#[rustfmt::skip]
-unsafe impl<T: TypeHint, B, I, S, P, const M: usize> Sync for SliceHandle<T, B, I, S, P, M>
-where
-    I: Sync,
-    S: Sync,
-    P: RleTreeConfig<I, S, M>,
-    P::SliceRefStore: Sync,
-    resolve![P::SliceRefStore::OptionRefId]: Sync {}
-
 /////////////////////////////////////////////////////
 // impl Copy for suitable NodeHandles/SliceHandles //
 /////////////////////////////////////////////////////
