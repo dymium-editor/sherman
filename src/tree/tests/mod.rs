@@ -13,3 +13,7 @@ mod basic;
 mod cow;
 /// Manually-written test cases
 mod manual;
+/// Fuzz tests for `SliceRef`-enabled trees
+///
+/// Generated from the `slice_ref_basic_slices` fuzz target.
+mod slice_ref;

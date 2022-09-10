@@ -343,13 +343,7 @@ impl<I, S, const M: usize> SliceRefStore<I, S, M> {
             new_id
         };
 
-        inner.weak_count.set(
-            inner
-                .weak_count
-                .get()
-                .checked_add(1)
-                .expect("there should be fewer than usize::MAX concurrent `SliceRef`s"),
-        );
+        bump_weak_count(&inner.weak_count);
 
         SliceRef {
             inner: self.inner,
@@ -470,6 +464,15 @@ impl<I, S, const M: usize> Drop for SliceRefStore<I, S, M> {
 ///////////////////////////
 // Public `SliceRef` API //
 ///////////////////////////
+
+#[track_caller]
+fn bump_weak_count(count: &Cell<usize>) {
+    let new_count = count
+        .get()
+        .checked_add(1)
+        .expect("there should be fewer than usize::MAX concurrent `SliceRef`s");
+    count.set(new_count);
+}
 
 impl<I, S, const M: usize> SliceRef<I, S, M> {
     /// Produces a reference to the `InnerStore`
@@ -802,6 +805,7 @@ impl<I, S, const M: usize> Clone for SliceRef<I, S, M> {
                 None => None,
                 Some(r) => {
                     let refs = r.borrow();
+                    bump_weak_count(&self.inner().weak_count);
                     let new_id = refs.clone(&this_id);
                     self.id.set(Some(this_id));
                     Some(new_id)
