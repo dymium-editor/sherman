@@ -282,7 +282,21 @@ impl<I, S, const M: usize> param::BorrowState for SliceRefStore<I, S, M> {
     fn try_acquire_drop(&self) -> ShouldDrop {
         let borrow = &self.inner().borrow;
         match borrow.get() {
-            BorrowState::Mutable => unreachable!("cannot drop while mutably borrowed"),
+            // On the face of it, we shouldn't ever encounter an attempt to drop while we're
+            // mutably borrowed. But because mutable borrows of the `SliceRefStore` aren't guarded,
+            // and instead have to just rely on it being properly reset at the end of the
+            // insertion, we can end up with a tree that's still *marked* as mutably borrowed when
+            // it's dropped, even though the mutable borrow has expired.
+            //
+            // So until GATs are stable and we can instead make `acquire_mutable` return a guard,
+            // we'll have this bandaid here to ignore these false(ish) positives.
+            BorrowState::Mutable => match std::thread::panicking() {
+                false => unreachable!("cannot drop while mutably borrowed"),
+                true => {
+                    borrow.set(BorrowState::Dropping);
+                    ShouldDrop::Yes
+                }
+            },
             BorrowState::Dropped
             | BorrowState::Dropping
             | BorrowState::Immutable {
