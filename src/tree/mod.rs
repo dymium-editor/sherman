@@ -20,6 +20,7 @@ use std::fmt::{self, Formatter};
 use std::ptr::NonNull;
 
 pub(crate) mod cow;
+mod drain;
 mod entry;
 mod insert;
 mod iter;
@@ -28,8 +29,9 @@ pub(crate) mod slice_ref;
 #[cfg(test)]
 mod tests;
 
+pub use drain::Drain;
 pub use entry::SliceEntry;
-pub use iter::{Drain, Iter};
+pub use iter::Iter;
 pub use slice_ref::{Borrow, SliceRef};
 
 use node::{borrow, ty, ChildOrKey, NodeHandle, Type};

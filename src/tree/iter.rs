@@ -1,5 +1,5 @@
-//! Wrapper module for [`RleTree`](crate::RleTree) iterator types -- [`Iter`], [`Drain`], and
-//! related types
+//! Wrapper module for [`RleTree`](crate::RleTree)'s borrowing iterator -- [`Iter`] and related
+//! types
 
 use crate::param::RleTreeConfig;
 use crate::public_traits::{Index, Slice};
@@ -7,7 +7,6 @@ use crate::range::{EndBound, RangeBounds, StartBound};
 use crate::Cursor;
 use std::any::TypeId;
 use std::fmt::Debug;
-use std::ops::Range;
 use std::panic::{RefUnwindSafe, UnwindSafe};
 
 #[cfg(test)]
@@ -16,7 +15,7 @@ use crate::MaybeDebug;
 use std::fmt::{self, Formatter};
 
 use super::node::{borrow, ty, NodeHandle, SliceHandle, Type};
-use super::{search_step, ChildOrKey, Root, SliceEntry, DEFAULT_MIN_KEYS};
+use super::{search_step, ChildOrKey, SliceEntry, DEFAULT_MIN_KEYS};
 
 /// An iterator over a range of slices and their positions in an [`RleTree`]
 ///
@@ -677,72 +676,5 @@ where
                 store: state.store,
             })
         }
-    }
-}
-
-/// A destructive iterator over a range in an [`RleTree`]
-///
-/// This iterator is double-ended, and yields `(Range<I>, S)` tuples. On drop, the iterator
-/// finishes removing all remaining items in the range.
-///
-/// This type is produced by the [`drain`] or [`drain_with_cursor`] methods on [`RleTree`]. Please
-/// refer to either of those methods for more information.
-///
-/// [`RleTree`]: crate::RleTree
-/// [`drain`]: crate::RleTree::drain
-/// [`drain_with_cursor`]: crate::RleTree::drain_with_cursor
-pub struct Drain<'t, C, I, S, P, const M: usize = DEFAULT_MIN_KEYS>
-where
-    P: RleTreeConfig<I, S, M>,
-{
-    range: Range<I>,
-    root: Option<Root<I, S, P, M>>,
-    initial_cursor: Option<C>,
-    // The entire tree gets stored here, so that the
-    tree_ref: &'t mut Option<Root<I, S, P, M>>,
-}
-
-impl<'t, C, I, S, P, const M: usize> Drain<'t, C, I, S, P, M>
-where
-    P: RleTreeConfig<I, S, M>,
-{
-    pub(super) fn new(root: &'t mut Option<Root<I, S, P, M>>, range: Range<I>, cursor: C) -> Self {
-        let (tree_ref, root) = {
-            let r = root.take();
-            (root, r)
-        };
-
-        Drain {
-            range,
-            root,
-            initial_cursor: Some(cursor),
-            tree_ref,
-        }
-    }
-}
-
-impl<'t, C, I, S, P, const M: usize> Iterator for Drain<'t, C, I, S, P, M>
-where
-    C: Cursor,
-    I: Index,
-    S: 't + Slice<I>,
-    P: RleTreeConfig<I, S, M>,
-{
-    type Item = (Range<I>, S);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        todo!()
-    }
-}
-
-impl<'t, C, I, S, P, const M: usize> DoubleEndedIterator for Drain<'t, C, I, S, P, M>
-where
-    C: Cursor,
-    I: Index,
-    S: 't + Slice<I>,
-    P: RleTreeConfig<I, S, M>,
-{
-    fn next_back(&mut self) -> Option<Self::Item> {
-        todo!()
     }
 }
