@@ -512,6 +512,17 @@ impl<I, S, const M: usize> SliceRef<I, S, M> {
         })
     }
 
+    // Like `borrow_refs`, but doesn't check that we have permissions to access the tree
+    fn get_refs_without_borrow(&self) -> Option<&RefCell<RecycleVec<StoredSliceRef<I, S, M>>>> {
+        let inner = self.inner();
+        match inner.borrow.get() {
+            BorrowState::NotBorrowed | BorrowState::Immutable { .. } | BorrowState::Mutable => {
+                Some(&inner.refs)
+            }
+            BorrowState::Dropping | BorrowState::Dropped => None,
+        }
+    }
+
     fn collapse_refs<'r>(
         &self,
         refs: &'r RefCell<RecycleVec<StoredSliceRef<I, S, M>>>,
@@ -607,36 +618,40 @@ impl<I, S, const M: usize> SliceRef<I, S, M> {
     /// accessed
     ///
     /// This method primarily exists to allow checking that a series of calls to other methods
-    /// won't panic, or for debug assertions.
+    /// won't panic, or for debug assertions. It should be used alongside [`can_borrow`].
     ///
     /// **Note:** If `slice_ref.is_valid()` returns `true`, it is only guaranteed to still be true
     /// until the next mutation to the tree. If `is_valid` returns `false` once, then it will not
     /// ever be found valid again.
     ///
-    /// ## Panics
+    /// **See also:** [`can_borrow`]
     ///
-    /// This method *can* panic if called while the tree it references is currently being mutated.
-    /// For a fallible version of this function, see: [`try_is_valid`](Self::try_is_valid).
+    /// [`can_borrow]: Self::can_borrow
+    /// [`RleTree`]: crate::RleTree
+    /// [`Slice::try_join`]: crate::Slice::try_join
     pub fn is_valid(&self) -> bool {
-        match self.try_is_valid() {
-            Some(is_valid) => is_valid,
-            None => panic!(""),
-        }
+        let refs = match self.get_refs_without_borrow() {
+            Some(r) => r,
+            None => return false,
+        };
+
+        self.collapse_refs(refs).is_some()
     }
 
-    /// Fallible version of [`is_valid`] that returns `None` if the base [`RleTree`] is currently
-    /// mutably borrowed
+    /// Returns whether this reference is currently able to access anything in the tree it refers
+    /// to
     ///
-    /// For more information, refer to [`is_valid`].
+    /// This method returns `false` if the tree is mutably borrowed or has been dropped, and `true`
+    /// otherwise. It exists to allow checking that a series of calls to infallible methods won't
+    /// panic, and should be used alongside [`is_valid`]
+    ///
+    /// **See also:** [`is_valid`].
     ///
     /// [`is_valid`]: Self::is_valid
-    /// [`RleTree`]: crate::RleTree
-    pub fn try_is_valid(&self) -> Option<bool> {
-        match self.try_temporary_borrow() {
-            Ok(b) => Some(b.handle.is_some()),
-            Err(BorrowFailure::CannotGetMutAlreadyBorrowed) => unreachable!(),
-            Err(BorrowFailure::CannotGetImmutAlreadyDropped) => Some(false),
-            Err(BorrowFailure::CannotGetImmutAlreadyMutablyBorrowed) => None,
+    pub fn can_borrow(&self) -> bool {
+        match self.inner().borrow.get() {
+            BorrowState::NotBorrowed | BorrowState::Immutable { .. } => true,
+            BorrowState::Mutable | BorrowState::Dropping | BorrowState::Dropped => false,
         }
     }
 
@@ -680,9 +695,12 @@ impl<I, S, const M: usize> SliceRef<I, S, M> {
     ///
     /// ## Panics
     ///
-    /// This method will panic if the slice reference is no longer [valid](Self::is_valid). For a
-    /// fallible version of this method, see: [`try_borrow_slice`].
+    /// This method will panic if the slice reference is no longer [valid] or the tree
+    /// [cannot be borrowed] right now. For a fallible version of this method, see:
+    /// [`try_borrow_slice`].
     ///
+    /// [valid]: Self::is_valid
+    /// [cannot be borrowed]: Self::can_borrow
     /// [`try_borrow_slice`]: Self::try_borrow_slice
     pub fn borrow_slice(&self) -> Borrow<S> {
         let panic_msg = match self.borrow_slice_internal() {
@@ -695,7 +713,9 @@ impl<I, S, const M: usize> SliceRef<I, S, M> {
     }
 
     /// Returns a borrow on the slice referred to by this `SliceRef`, returning `None` if the
-    /// reference isn't valid
+    /// reference isn't valid or can't be borrowed right now
+    ///
+    /// This is a fallible version of [`borrow_slice`](Self::borrow_slice).
     pub fn try_borrow_slice(&self) -> Option<Borrow<S>> {
         match self.borrow_slice_internal() {
             Ok(Some(b)) => Some(b),
@@ -722,9 +742,12 @@ impl<I, S, const M: usize> SliceRef<I, S, M> {
     ///
     /// ## Panics
     ///
-    /// This method will panic if the slice reference is no longer [valid](Self::is_valid). For a
-    /// fallible version of this method, see: [`try_range`].
+    /// This method will panic if the slice reference is no longer [valid] or the tree
+    /// [cannot be borrowed] right now. For a fallible version of this method, see:
+    /// [`try_range`].
     ///
+    /// [valid]: Self::is_valid
+    /// [cannot be borrowed]: Self::can_borrow
     /// [`try_range`]: Self::try_range
     pub fn range(&self) -> Range<I>
     where
@@ -739,7 +762,8 @@ impl<I, S, const M: usize> SliceRef<I, S, M> {
         panic!("{panic_msg}");
     }
 
-    /// Returns the range of values covered by this slice, if the reference is still valid
+    /// Returns the range of values covered by this slice, or `None` if the reference isn't valid
+    /// or can't be borrowed right now
     ///
     /// This is a fallible version of [`range`](Self::range).
     pub fn try_range(&self) -> Option<Range<I>>
@@ -765,6 +789,30 @@ impl<I, S, const M: usize> SliceRef<I, S, M> {
     {
         let b = self.try_temporary_borrow()?;
         Ok(b.handle.as_ref().map(|h| h.range()))
+    }
+}
+
+/// Cloning a `SliceRef` -- even an invalid one -- is always possible, and will never panic
+impl<I, S, const M: usize> Clone for SliceRef<I, S, M> {
+    fn clone(&self) -> Self {
+        let id = self
+            .id
+            .take()
+            .and_then(|this_id| match self.get_refs_without_borrow() {
+                None => None,
+                Some(r) => {
+                    let refs = r.borrow();
+                    let new_id = refs.clone(&this_id);
+                    self.id.set(Some(this_id));
+                    Some(new_id)
+                }
+            });
+
+        SliceRef {
+            inner: self.inner,
+            id: Cell::new(id),
+            marker: PhantomData,
+        }
     }
 }
 
