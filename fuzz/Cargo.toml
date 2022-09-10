@@ -25,6 +25,12 @@ test = false
 doc = false
 
 [[bin]]
+name = "slice_ref_basic_slices"
+path = "fuzz_targets/slice_ref_basic_slices.rs"
+test = false
+doc = false
+
+[[bin]]
 name = "cow_basic_slices"
 path = "fuzz_targets/cow_basic_slices.rs"
 test = false
