@@ -825,6 +825,130 @@ fn search_step<'t, I: Index, S, P: RleTreeConfig<I, S, M>, const M: usize>(
     }
 }
 
+macro_rules! define_node_box {
+    (
+        $(#[$attrs:meta])*
+        $vis:vis struct $name:ident<$borrow:path, ...> { ... }
+
+        $(impl {
+            $($methods:item)*
+        })?
+
+        impl Drop {
+            fn drop(&mut $drop_this:ident) {
+                $($drop_body:tt)*
+            }
+        }
+    ) => {
+        $(#[$attrs])*
+        $vis struct $name<Ty: node::ty::TypeHint, I, S, P: RleTreeConfig<I, S, M>, const M: usize> {
+            node: ManuallyDrop<NodeHandle<Ty, $borrow, I, S, P, M>>,
+        }
+
+        #[cfg(test)]
+        impl<Ty, I, S, P, const M: usize> Debug for $name<Ty, I, S, P, M>
+        where
+            Ty: node::ty::TypeHint,
+            P: RleTreeConfig<I, S, M>,
+        {
+            fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+                Debug::fmt(&self.node, f)
+            }
+        }
+
+        #[allow(dead_code)]
+        impl<Ty, I, S, P, const M: usize> $name<Ty, I, S, P, M>
+        where
+            Ty: node::ty::TypeHint,
+            P: RleTreeConfig<I, S, M>,
+        {
+            #[doc = concat!("Creates a new `", stringify!($name), "` to store the handle")]
+            fn new(node: NodeHandle<Ty, $borrow, I, S, P, M>) -> Self {
+                Self {
+                    node: ManuallyDrop::new(node)
+                }
+            }
+
+            #[doc = concat!(
+                "Extracts the `Nodehandle` out of the `",
+                stringify!($name),
+                "`, without running its destructor"
+            )]
+            fn take(self) -> NodeHandle<Ty, $borrow, I, S, P, M> {
+                let mut this = ManuallyDrop::new(self);
+                // SAFETY: `take` requires that the `ManuallyDrop` is never used again, which is
+                // guaranteed by putting `self` into a new `ManuallyDrop` so that its destructor is
+                // not run
+                unsafe { ManuallyDrop::take(&mut this.node) }
+            }
+
+            #[doc = concat!("Returns a type-erased version of the `", stringify!($name), "`")]
+            fn erase_type(self) -> $name<ty::Unknown, I, S, P, M> {
+                $name::new(self.take().erase_type())
+            }
+
+            /// Returns the result of calling [`as_immut`] on the inner `NodeHandle`
+            ///
+            /// [`as_immut`]: NodeHandle::as_immut
+            fn as_ref(&self) -> &NodeHandle<Ty, borrow::Immut, I, S, P, M> {
+                self.node.as_immut()
+            }
+
+            $($($methods)*)?
+        }
+
+        impl<Ty, I, S, P, const M: usize> Drop for $name<Ty, I, S, P, M>
+        where
+            Ty: node::ty::TypeHint,
+            P: RleTreeConfig<I, S, M>,
+        {
+            fn drop(&mut self) {
+                #[allow(unused_mut)]
+                let mut $drop_this = self;
+                $($drop_body)*
+            }
+        }
+    };
+}
+
+define_node_box! {
+    struct NodeBox<borrow::UniqueOwned, ...> { ... }
+
+    impl {
+        fn as_mut(&mut self) -> &mut NodeHandle<Ty, borrow::Mut, I, S, P, M> {
+            self.node.as_mut()
+        }
+    }
+
+    impl Drop {
+        fn drop(&mut this) {
+            // SAFETY: `take` requires that the `ManuallyDrop` is never used again, which is
+            // guaranteed because this is the destructor.
+            let node = unsafe { ManuallyDrop::take(&mut this.node) };
+            // Note: we do not need to handle updating slice references because the tree will stay
+            // marked as mutably borrowed until it's dropped, preventing access through the stored
+            // `SliceHandle`s
+            node.erase_type().into_drop().do_drop();
+        }
+    }
+}
+
+define_node_box! {
+    struct SharedNodeBox<borrow::Owned, ...> { ... }
+
+    impl Drop {
+        fn drop(&mut this) {
+            // SAFETY: `take` requires that the `ManuallyDrop` is never used again, which is
+            // guaranteed because this is the destructor.
+            let node = unsafe { ManuallyDrop::take(&mut this.node) };
+
+            if let Some(handle) = node.erase_type().try_drop() {
+                handle.do_drop();
+            }
+        }
+    }
+}
+
 /// (*Internal*) Helper struct for [`shift_keys`], so that the parameters are named and we can
 /// provide a bit more documentation
 struct ShiftKeys<I> {

@@ -306,9 +306,11 @@ pub(super) mod borrow {
     /// that they don't produce aliasing issues. `miri` (i.e. Stacked Borrows) only accepts it
     /// because the entire thing uses raw pointers.
     pub struct Mut<'a>(PhantomData<&'a mut ()>);
-    /// Borrow that's used only for dropping the tree, produced by [`NodeHandle::try_drop`]
+    /// Borrow that's used only for dropping the tree, produced by [`NodeHandle::try_drop`] or
+    /// [`NodeHandle::into_drop`]
     ///
     /// [`NodeHandle::try_drop`]: super::NodeHandle::try_drop
+    /// [`NodeHandle::into_drop`]: super::NodeHandle::into_drop
     pub struct Dropping;
 
     /// Marker trait for borrow types that are not [`Owned`], [`UniqueOwned`], or [`Dropping`]
@@ -1556,12 +1558,25 @@ where
 }
 
 // ty::Unknown, borrow::UniqueOwned
+//  * into_drop
 //  * erase_unique
 //  * make_new_parent (where I: Index)
 impl<I, S, P, const M: usize> NodeHandle<ty::Unknown, borrow::UniqueOwned, I, S, P, M>
 where
     P: RleTreeConfig<I, S, M>,
 {
+    /// Converts the `UniqueOwned` borrow into a dropping one, using the existing knowledge
+    /// that the reference is unique
+    pub fn into_drop(self) -> NodeHandle<ty::Unknown, borrow::Dropping, I, S, P, M> {
+        // SAFETY: guaranteed by the methods that produce `UniqueOwned`
+        unsafe { weak_assert!(self.leaf().strong_count.is_unique()) };
+        NodeHandle {
+            ptr: self.ptr,
+            height: self.height,
+            borrow: PhantomData,
+        }
+    }
+
     /// "Erases" the uniqueness from this type, converting its borrow from a [`UniqueOwned`] to an
     /// [`Owned`]
     ///

@@ -5,7 +5,7 @@ use crate::{Cursor, Index, PathComponent, RleTree, Slice};
 use std::cmp::Ordering;
 
 use super::node::{self, borrow, ty, ChildOrKey, NodeHandle, SliceHandle, Type};
-use super::{search_step, Side, SliceSize};
+use super::{search_step, NodeBox, SharedNodeBox, Side, SliceSize};
 use super::{shift_keys_auto, shift_keys_decrease, shift_keys_increase, ShiftKeys};
 
 #[cfg(test)]
@@ -171,7 +171,7 @@ where
                     // SAFETY: `make_new_parent` requires that `owned_root` and `rhs` not have any
                     // parent already and are at the same height, which is guaranteed by `NewRoot`
                     unsafe {
-                        owned_root.make_new_parent(&mut root.refs_store, key, key_size, rhs);
+                        owned_root.make_new_parent(&mut root.refs_store, key, key_size, rhs.take());
                     }
                     let insertion = insertion.unwrap_or_else(|| unsafe {
                         root.handle.borrow().into_slice_handle(0).clone_slice_ref()
@@ -287,7 +287,7 @@ where
     /// them.
     ///
     /// The height of `rhs` is *always* equal to the height of `lhs`.
-    rhs: NodeHandle<ty::Unknown, borrow::UniqueOwned, I, S, P, M>,
+    rhs: NodeBox<ty::Unknown, I, S, P, M>,
 
     /// Total size of the node that was split into `lhs` and `rhs`, before we inserted anything or
     /// split it
@@ -422,7 +422,7 @@ where
         key: node::Key<I, S, P, M>,
         key_size: I,
         /// New, right-hand node
-        rhs: NodeHandle<ty::Unknown, borrow::UniqueOwned, I, S, P, M>,
+        rhs: NodeBox<ty::Unknown, I, S, P, M>,
         /// If the insertion is not `key`, then a handle on the inserted slice
         insertion: Option<SliceHandle<ty::Unknown, borrow::SliceRef, I, S, P, M>>,
     },
@@ -1136,10 +1136,11 @@ where
 
         // SAFETY: `split` requires that `midpoint_idx` is properly within the bounds of the node,
         // which we guarantee by the logic above, because `max_len = 2 * M`
-        let (midpoint_key, mut rhs) = unsafe { node.split(midpoint_idx, store) };
+        let (midpoint_key, rhs) = unsafe { node.split(midpoint_idx, store) };
+        let mut rhs = NodeBox::new(rhs);
 
         let old_node_size = node.leaf().subtree_size();
-        let rhs_start = rhs.leaf().try_key_pos(0).unwrap_or(old_node_size);
+        let rhs_start = rhs.as_ref().leaf().try_key_pos(0).unwrap_or(old_node_size);
         let midpoint_size;
 
         // Handle `override_lhs_size` for cases around the midpoint -- it's easier to handle here,
@@ -1173,8 +1174,7 @@ where
         // possible to get away with only updating these once, but that's *really* complicated.
         //
         // SAFETY: `shift_keys_decrease` requires that `from <= rhs.leaf().len()`, which is always
-        // true, and `rhs.as_mut()` requires unique access, which it has because `rhs` was just
-        // created.
+        // true.
         unsafe {
             let opts = ShiftKeys {
                 from: 0,
@@ -1418,7 +1418,8 @@ where
 
         // SAFETY: `split` requires `0 < node.leaf().len()`, which is guaranteed by the assertion
         // above that `node.leaf().len() == 1`.
-        let (midpoint_key, mut rhs) = unsafe { node.split(0, store) };
+        let (midpoint_key, rhs) = unsafe { node.split(0, store) };
+        let mut rhs = NodeBox::new(rhs);
 
         // Currently, both `node` and `rhs` have the wrong subtree size (should be zero). We need
         // to fix this because that's what'll be used as the positions of the keys we insert:
@@ -1793,7 +1794,7 @@ where
         let lhs_size = self.lhs.leaf().subtree_size();
         let new_total_size = lhs_size
             .add_right(self.key_size)
-            .add_right(self.rhs.leaf().subtree_size());
+            .add_right(self.rhs.as_ref().leaf().subtree_size());
 
         let (mut parent, lhs_child_idx) = match self.lhs.into_parent() {
             Ok((p, idx)) => (p, idx),
@@ -1859,7 +1860,7 @@ where
             // The call to `set_single_key_pos` requires that `lhs_child_idx <
             // parent.leaf().len()`, which is guaranteed after `insert_key_and_child`.
             unsafe {
-                let self_rhs = self.rhs.erase_unique();
+                let self_rhs = self.rhs.take().erase_unique();
                 parent.insert_key_and_child(store, lhs_child_idx, self.key, self_rhs);
                 let midpoint_pos = lhs_child_pos.add_right(lhs_size);
                 parent.set_single_key_pos(lhs_child_idx, midpoint_pos);
@@ -1931,7 +1932,8 @@ where
         // SAFETY: `split` requires that `midpoint_idx` is within the bounds of the node, which
         // we guarantee above, knowing that `parent.leaf().len() == parent.leaf().max_len()`,
         // which is equal to `2 * M` (and `M >= 1`).
-        let (midpoint_key, mut rhs) = unsafe { parent.split(midpoint_idx, store) };
+        let (midpoint_key, rhs) = unsafe { parent.split(midpoint_idx, store) };
+        let mut rhs = NodeBox::new(rhs);
         parent.set_subtree_size(midpoint_key.pos);
 
         // We want to find `rhs_start` (i.e. the position of the first child in `rhs`), but there's
@@ -1942,13 +1944,13 @@ where
         //    `self.lhs`, so its size has been changed. We have to use `self.old_size` instead for
         //    the size of that first child.
         let rhs_start = {
-            let first_key_pos = match rhs.leaf().try_key_pos(0) {
+            let first_key_pos = match rhs.as_ref().leaf().try_key_pos(0) {
                 Some(p) => p,
                 // SAFETY: see note above. If `M > 1`, then all configurations require at least 1
                 // key in `rhs` to get `len >= M` by the end of this function; we're adding at most
                 // one key to it.
                 None if M > 1 => unsafe { weak_unreachable!() },
-                None => rhs.leaf().subtree_size(),
+                None => rhs.as_ref().leaf().subtree_size(),
             };
 
             let first_child_size = if new_key_idx == M as u8 || new_key_idx == M as u8 + 1 {
@@ -1956,7 +1958,7 @@ where
             } else {
                 // SAFETY: `child` requires a valid child index. Internal nodes must always have at
                 // least one child, so `0` is valid.
-                unsafe { rhs.borrow().child(0).leaf().subtree_size() }
+                unsafe { rhs.as_ref().child(0).leaf().subtree_size() }
             };
             first_key_pos.sub_right(first_child_size)
         };
@@ -2050,7 +2052,7 @@ where
             // require that `new_key_idx <= insert_into.leaf().len()`, which is guaranteed by the
             // values we chose for `midpoint_idx` and our comparison with `M` above.
             unsafe {
-                let self_rhs = self.rhs.erase_unique();
+                let self_rhs = self.rhs.take().erase_unique();
                 let _ = insert_into.insert_key_and_child(store, new_key_idx, self.key, self_rhs);
                 insert_into.set_single_key_pos(new_key_idx, key_pos);
 
@@ -2141,14 +2143,17 @@ where
             }
 
             // Replace the leftmost child of `rhs`.
-            let new_first_child_size = self.rhs.leaf().subtree_size();
+            let new_first_child_size = self.rhs.as_ref().leaf().subtree_size();
             // SAFETY: `replace_first_child` requires that `self.rhs` is at the correct height to
             // be a child of `parent`. This is guaranteed by `self.rhs` being at the same height as
             // `self.lhs`, because `parent` *is* the parent of `self.lhs`. `as_mut` requires unique
             // access, which is guaranteed because we just created it. `replace_first_child`
             // requires unique access to `self.rhs`, which is guaranteed for the same reason.
-            let old_first_child = unsafe { rhs.as_mut().replace_first_child(self.rhs) };
+            let old_first_child = unsafe { rhs.as_mut().replace_first_child(self.rhs.take()) };
             let old_first_child_size = old_first_child.leaf().subtree_size();
+
+            // Make sure it'll drop if the arithmetic operations below fail
+            let old_first_child = SharedNodeBox::new(old_first_child);
 
             // Add the key and child to the left-hand node (`parent`)
             let lhs_size = parent.leaf().subtree_size();
@@ -2160,7 +2165,8 @@ where
             // capacity, which we know is true because `parent.leaf().len() == M - 1` is less than
             // the capacity of `2 * M`.
             unsafe {
-                parent.push_key_and_child(store, midpoint_key, old_first_child, new_lhs_size);
+                let child = old_first_child.take();
+                parent.push_key_and_child(store, midpoint_key, child, new_lhs_size);
             }
 
             // We haven't yet updated the positions in `rhs`, so they're still relative the base of
@@ -2168,7 +2174,7 @@ where
             // `rhs_start` and shift everything, as we did above.
 
             // SAFETY: `rhs.leaf().len()` is still >= 1
-            let first_rhs_key_pos = unsafe { rhs.leaf().key_pos(0) };
+            let first_rhs_key_pos = unsafe { rhs.as_ref().leaf().key_pos(0) };
 
             // We need to shift the values, but it's entirely possible that the increase in size
             // from `self.rhs` (which may contain the insertion) is larger than the current start
