@@ -257,10 +257,22 @@ pub(super) mod ty {
     /// change when we switch height types
     #[derive(Copy, Clone)]
     #[repr(transparent)]
-    pub struct ZeroU8(pub(super) u8);
+    pub struct ZeroU8(u8);
+
+    impl ZeroU8 {
+        pub fn new() -> Self {
+            ZeroU8(0)
+        }
+
+        pub fn get(&self) -> u8 {
+            // SAFETY: the value's always zero.
+            unsafe { weak_assert!(self.0 == 0) };
+            self.0
+        }
+    }
 
     impl Height for u8 { fn as_u8(&self) -> u8 { *self } }
-    impl Height for ZeroU8 { fn as_u8(&self) -> u8 { 0 } }
+    impl Height for ZeroU8 { fn as_u8(&self) -> u8 { self.get() } }
     impl Height for NonZeroU8 { fn as_u8(&self) -> u8 { self.get() } }
 }
 
@@ -854,7 +866,7 @@ where
         match NonZeroU8::new(self.height.as_u8()) {
             None => Type::Leaf(NodeHandle {
                 ptr: self.ptr,
-                height: ty::ZeroU8(0),
+                height: ty::ZeroU8::new(),
                 borrow: PhantomData,
             }),
             Some(h) => Type::Internal(NodeHandle {
@@ -1631,7 +1643,7 @@ where
 
         NodeHandle {
             ptr: alloc_aligned(leaf).cast(),
-            height: ty::ZeroU8(0),
+            height: ty::ZeroU8::new(),
             borrow: PhantomData,
         }
     }
