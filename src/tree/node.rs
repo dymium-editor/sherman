@@ -110,6 +110,7 @@ where
 }
 
 /// Handle on a *particular* slice in a node
+#[repr(C)]
 pub struct SliceHandle<Ty, B, I, S, P, const M: usize>
 where
     Ty: TypeHint,
