@@ -464,6 +464,11 @@ impl<I, S, const M: usize> Drop for SliceRefStore<I, S, M> {
         };
 
         inner.borrow.set(new_state);
+
+        // drop(ish) the inner contents. `false` because the tree's already handled by our caller,
+        // in `destruct_root`
+        inner.drop(false);
+
         // If everything has been *completely* dropped, and there's no weak references left (in the
         // form of `SliceRef`s), then we can deallocate the backing allocation.
         if matches!(new_state, BorrowState::Dropped if inner.weak_count.get() == 0) {
