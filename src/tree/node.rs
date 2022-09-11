@@ -34,8 +34,6 @@ use std::slice;
 use crate::MaybeDebug;
 #[cfg(test)]
 use std::fmt::{self, Debug, Formatter};
-#[cfg(test)]
-use std::mem::size_of;
 
 use crate::const_math_hack::{self as hack, ArrayHack};
 use crate::param::{self, RleTreeConfig, SliceRefStore, StrongCount, SupportsInsert};
@@ -284,22 +282,52 @@ pub(super) mod borrow {
     use crate::param::{RleTreeConfig, SupportsInsert};
     use std::marker::PhantomData;
 
+    /// An "owned" handle on a node and the subtree rooted at that node.
+    ///
+    /// Owned handles never have a parent, except during very temporary extractions, like in
+    /// [`replace_first_child`]. They also may have shared ownership if COW is enabled;
+    /// [`UniqueOwned`] guarantees unique ownership.
+    ///
+    /// [`replace_first_child`]: super::NodeHandle::replace_first_child
     pub struct Owned;
+    /// Like `Owned`, but guarantees that the node does not have any shallow clones pointing to it
+    ///
+    /// Allows one-way conversion into [`Owned`] through the [`erase_unqiue`] method.
+    pub struct UniqueOwned;
+    /// Borrow for use solely by a [`SliceRef`](crate::SliceRef). Essentially like a `'static`
+    /// immutable borrow
     pub struct SliceRef;
+    /// Immutable borrow
     pub struct Immut<'a>(PhantomData<&'a ()>);
+    /// Mutable borrow on a node and all of its ancestors up the tree.
+    ///
+    /// Can only be produced by a [`UniqueOwned`], but multiple coexisting `Mut` borrows are
+    /// explicitly permitted -- even to the same leaf, and it is up to the implementor to ensure
+    /// that they don't produce aliasing issues. `miri` (i.e. Stacked Borrows) only accepts it
+    /// because the entire thing uses raw pointers.
     pub struct Mut<'a>(PhantomData<&'a mut ()>);
+    /// Borrow that's used only for dropping the tree, produced by [`NodeHandle::try_drop`]
+    ///
+    /// [`NodeHandle::try_drop`]: super::NodeHandle::try_drop
     pub struct Dropping;
+
+    /// Marker trait for borrow types that are not [`Owned`], [`UniqueOwned`], or [`Dropping`]
+    pub trait NotOwned {}
+    impl NotOwned for SliceRef {}
+    impl<'a> NotOwned for Immut<'a> {}
+    impl<'a> NotOwned for Mut<'a> {}
 
     /// Marker for borrow types that can be immutably borrowed
     pub trait AsImmut {}
     impl AsImmut for Owned {}
+    impl AsImmut for UniqueOwned {}
     impl AsImmut for SliceRef {}
     impl<'a> AsImmut for Mut<'a> {}
     impl<'a> AsImmut for Immut<'a> {}
 
     /// Marker for borrow types that can be mutably borrowed
     pub trait AsMut {}
-    impl AsMut for Owned {}
+    impl AsMut for UniqueOwned {}
     impl AsMut for Dropping {}
     impl<'a> AsMut for Mut<'a> {}
 
@@ -634,7 +662,7 @@ impl<I, S, P: RleTreeConfig<I, S, M>, const M: usize> Leaf<I, S, P, M> {
             }
         }
 
-        if size_of::<resolve![P::StrongCount]>() != 0 {
+        if P::COW {
             s.field("strong_count", self.strong_count.fallible_debug());
         }
 
@@ -771,7 +799,7 @@ where
 //  * typed_mut
 //  * erase_type
 //  * into_parent
-//  * into_slice_handle (where B: borrow::Ref)
+//  * into_slice_handle (where B: borrow::NotOwned)
 //  * try_child_size (where I: Copy)
 //  * shallow_clone (where I: Index, P: SupportsInsert)
 //  * increase_strong_count_and_clone
@@ -824,15 +852,7 @@ where
     }
 
     /// Produces a mutable handle for the node, borrowing the handle for its duration
-    ///
-    /// ## Safety
-    ///
-    /// This method is unsound unless the following are guaranteed:
-    ///
-    /// * `self` has unqiue owned access to the contents (this may not be true with COW features)
-    /// * there are no other immutable borrows on anything reachable by the node (other
-    ///   `NodeHandle`s *are* permitted, however)
-    pub unsafe fn borrow_mut<'h>(&'h mut self) -> NodeHandle<Ty, borrow::Mut<'h>, I, S, P, M>
+    pub fn borrow_mut<'h>(&'h mut self) -> NodeHandle<Ty, borrow::Mut<'h>, I, S, P, M>
     where
         B: borrow::AsMut,
     {
@@ -844,15 +864,7 @@ where
     }
 
     /// Casts a mutable reference to the `NodeHandle` into one with a mutable borrow
-    ///
-    /// ## Safety
-    ///
-    /// This method is unsound unless the following are guaranteed:
-    ///
-    /// * `self` has unqiue owned access to the contents (this may not be true with COW features)
-    /// * there are no other immutable borrows on anything reachable by the node (other
-    ///   `NodeHandle`s *are* permitted, however)
-    pub unsafe fn as_mut<'h>(&'h mut self) -> &'h mut NodeHandle<Ty, borrow::Mut<'h>, I, S, P, M>
+    pub fn as_mut<'h>(&'h mut self) -> &'h mut NodeHandle<Ty, borrow::Mut<'h>, I, S, P, M>
     where
         B: borrow::AsMut,
     {
@@ -946,7 +958,10 @@ where
     ///
     /// The provided `key_idx` *must* be less than [`self.leaf().len()`](Leaf::len). If not, the
     /// immediate result will be UB.
-    pub unsafe fn into_slice_handle(self, key_idx: u8) -> SliceHandle<Ty, B, I, S, P, M> {
+    pub unsafe fn into_slice_handle(self, key_idx: u8) -> SliceHandle<Ty, B, I, S, P, M>
+    where
+        B: borrow::NotOwned,
+    {
         // SAFETY: Guaranteed by the safety requirements for this method
         unsafe { weak_assert!(key_idx < self.leaf().len) };
         SliceHandle {
@@ -957,7 +972,10 @@ where
 
     /// Returns this node's parent, alongside the child index that `self` was. If this node has no
     /// parent, this method returns `Err(self)`.
-    pub fn into_parent(self) -> Result<(NodeHandle<ty::Internal, B, I, S, P, M>, u8), Self> {
+    pub fn into_parent(self) -> Result<(NodeHandle<ty::Internal, B, I, S, P, M>, u8), Self>
+    where
+        B: borrow::NotOwned,
+    {
         let Parent { ptr, idx_in_parent } = match self.leaf().parent() {
             Some(p) => p,
             None => return Err(self),
@@ -1122,7 +1140,7 @@ impl<I, S, P: RleTreeConfig<I, S, M>, const M: usize> Debug for Key<I, S, P, M> 
         let mut s = f.debug_struct("Key");
         s.field("pos", self.pos.fallible_debug())
             .field("slice", self.slice.fallible_debug());
-        if mem::size_of::<resolve![P::SliceRefStore::OptionRefId]>() != 0 {
+        if P::SLICE_REFS {
             s.field("ref_id", self.ref_id.fallible_debug());
         }
         s.finish()
@@ -1152,7 +1170,7 @@ where
     /// It must, of course, also be safe to produce the `&mut Leaf`, although this safety is
     /// already guaranteed by the methods on handles with `borrow::Mut`.
     ///
-    /// `func` is explicitly allowed to panic.
+    /// It is safe for `func` tly allowed to panic.
     ///
     /// [`RefId`]: super::slice_ref::RefId
     pub(super) unsafe fn with_mut<R>(
@@ -1262,7 +1280,10 @@ where
         &mut self,
         midpoint_idx: u8,
         store: &mut resolve![P::SliceRefStore],
-    ) -> (Key<I, S, P, M>, NodeHandle<Ty, borrow::Owned, I, S, P, M>)
+    ) -> (
+        Key<I, S, P, M>,
+        NodeHandle<Ty, borrow::UniqueOwned, I, S, P, M>,
+    )
     where
         I: Copy,
     {
@@ -1376,7 +1397,7 @@ where
                 let mut handle = NodeHandle {
                     ptr: new_ptr.cast(),
                     height,
-                    borrow: PhantomData as PhantomData<borrow::Owned>,
+                    borrow: PhantomData as PhantomData<borrow::UniqueOwned>,
                 };
 
                 // Update the length of the new node now that everything's been moved
@@ -1443,7 +1464,7 @@ where
                 let mut handle = NodeHandle {
                     ptr: new_ptr.cast(),
                     height,
-                    borrow: PhantomData as PhantomData<borrow::Owned>,
+                    borrow: PhantomData as PhantomData<borrow::UniqueOwned>,
                 };
 
                 // Update the length of the new node now that everything's been moved
@@ -1460,7 +1481,8 @@ where
 
 // ty::Unknown, borrow::Owned
 //  * try_drop
-//  * make_new_parent (where I: Index)
+//  * make_unique (where I: Index, P: SupportsInsert)
+//  * as_mut_if_unique
 //  * clone_root_for_refs_store
 impl<I, S, P, const M: usize> NodeHandle<ty::Unknown, borrow::Owned, I, S, P, M>
 where
@@ -1486,6 +1508,73 @@ where
         }
     }
 
+    /// Overwrites the existing pointer with one to a unique copy of this node (if it's not already
+    /// unique), and returns a `UniqueOwned` reference to it
+    pub fn make_unique(&mut self) -> &mut NodeHandle<ty::Unknown, borrow::UniqueOwned, I, S, P, M>
+    where
+        I: Index,
+        P: RleTreeConfig<I, S, M> + SupportsInsert<I, S, M>,
+    {
+        // SAFETY: `ensure_unique` requires that `**self.ptr` is a valid node at the height we say
+        // it is
+        unsafe { ensure_unique(&mut self.ptr, self.height) };
+        // SAFETY: we're casting the borrow from `Owned` to `UniqueOwned`, which is valid because
+        // (a) we just made sure it's unique and (b) the layout of `NodeHandle` is not affected by
+        // the borrow used (because it's `#[repr(C)]` and the borrow is in a `PhantomData`)
+        unsafe {
+            let this = self as *mut NodeHandle<ty::Unknown, borrow::Owned, I, S, P, M>;
+            let uniq = this as *mut NodeHandle<ty::Unknown, borrow::UniqueOwned, I, S, P, M>;
+            &mut *uniq
+        }
+    }
+
+    /// Converts the reference into one with a mutable borrow, only if our handle on this node is
+    /// unique
+    pub fn as_mut_if_unique(
+        &mut self,
+    ) -> Option<&mut NodeHandle<ty::Unknown, borrow::Mut, I, S, P, M>> {
+        if self.leaf().strong_count.is_unique() {
+            // SAFETY: we're casting the reference here, essentially the same manner as
+            // `make_unique`. The layout is invariant under different borrow types, and we're good
+            // to provide a `Mut` borrow for the same reason that it's sound for `UniqueOwned` to
+            // provide `as_mut`.
+            Some(unsafe { &mut *(self as *mut _ as *mut _) })
+        } else {
+            None
+        }
+    }
+
+    /// Produces a clone of the root pointer, for use only within the `SliceRefStore`
+    ///
+    /// ## Safety
+    ///
+    /// The returned `Owned` handle can only be used inside the `SliceRefStore` attached to the
+    /// tree, with all appropriate care taken to avoid double-drops and such.
+    pub unsafe fn clone_root_for_refs_store(&self) -> Self {
+        NodeHandle { ..*self }
+    }
+}
+
+// ty::Unknown, borrow::UniqueOwned
+//  * erase_unique
+//  * make_new_parent (where I: Index)
+impl<I, S, P, const M: usize> NodeHandle<ty::Unknown, borrow::UniqueOwned, I, S, P, M>
+where
+    P: RleTreeConfig<I, S, M>,
+{
+    /// "Erases" the uniqueness from this type, converting its borrow from a [`UniqueOwned`] to an
+    /// [`Owned`]
+    ///
+    /// [`UniqueOwned`]: borrow::UniqueOwned
+    /// [`Owned`]: borrow::Owned
+    pub fn erase_unique(self) -> NodeHandle<ty::Unknown, borrow::Owned, I, S, P, M> {
+        NodeHandle {
+            ptr: self.ptr,
+            height: self.height,
+            borrow: PhantomData,
+        }
+    }
+
     /// Overwrites `self` with the result of creating a new parent node containing `self`, `key`,
     /// and `rhs`
     ///
@@ -1493,8 +1582,7 @@ where
     ///
     /// ## Safety
     ///
-    /// `self` and `rhs` must not have an existing parent node, and must have the same height. The
-    /// caller must also have unqiue access to `self` and `rhs`.
+    /// `self` and `rhs` must not have an existing parent node, and must have the same height
     pub unsafe fn make_new_parent(
         &mut self,
         store: &mut resolve![P::SliceRefStore],
@@ -1601,19 +1689,9 @@ where
             borrow: PhantomData,
         };
     }
-
-    /// Produces a clone of the root pointer, for use only within the `SliceRefStore`
-    ///
-    /// ## Safety
-    ///
-    /// The returned `Owned` handle can only be used inside the `SliceRefStore` attached to the
-    /// tree, with all appropriate care taken to avoid double-drops and such.
-    pub unsafe fn clone_root_for_refs_store(&self) -> Self {
-        NodeHandle { ..*self }
-    }
 }
 
-// ty::Leaf, borrow::Owned
+// ty::Leaf, borrow::UniqueOwned
 //  * new_root
 impl<I, S, P, const M: usize> NodeHandle<ty::Leaf, borrow::Owned, I, S, P, M>
 where
@@ -1777,7 +1855,7 @@ where
 //  * child_size (where I: Copy)
 //  * child_pos (where I: Index)
 //  * child
-//  * into_child
+//  * into_child (where B: borrow::SupportsInsertIfMut)
 //  * typed_ptr
 impl<B, I, S, P, const M: usize> NodeHandle<ty::Internal, B, I, S, P, M>
 where
@@ -2143,7 +2221,7 @@ where
     /// child.
     pub unsafe fn replace_first_child(
         &mut self,
-        mut child: NodeHandle<ty::Unknown, borrow::Owned, I, S, P, M>,
+        mut child: NodeHandle<ty::Unknown, borrow::UniqueOwned, I, S, P, M>,
     ) -> NodeHandle<ty::Unknown, borrow::Owned, I, S, P, M> {
         let child_height = self.height.as_u8() - 1;
 
@@ -2155,8 +2233,8 @@ where
         let mut func = |internal: &mut Internal<I, S, P, M>| {
             // set the child's parent information to `self`:
             //
-            // SAFETY: the caller guarantees the unique access required for `as_mut`. `with_mut`
-            // requires that we don't call any user-defined code, which we aren't.
+            // SAFETY: `with_mut` requires that we don't call any user-defined code, which we
+            // aren't.
             unsafe {
                 child.as_mut().with_mut(|leaf| {
                     leaf.parent = Some(this_ptr);
@@ -2213,12 +2291,12 @@ where
             let key_pos = mem::replace(&mut internal.leaf.total_size, new_subtree_size);
 
             // Change `child` to use `self` as the parent, if we have unique access
-            if child.leaf().strong_count.is_unique() {
+            if let Some(uniq) = child.as_mut_if_unique() {
                 // SAFETY: `as_mut` requires unique access, which is guaranteed because `child` is
                 // `Owned` and we've verified that the handle is unique. `with_mut` requires that
                 // we don't call any user-defined code, which we aren't.
                 unsafe {
-                    child.as_mut().with_mut(|leaf| {
+                    uniq.with_mut(|leaf| {
                         leaf.parent = Some(self_ptr);
                         leaf.idx_in_parent.write(child_idx as u8);
                     });
@@ -2694,6 +2772,7 @@ where
 //  * key_pos
 //  * slice_size
 //  * is_hole
+//  * clone_slice_ref
 //  * clone_immut
 //  * take_refid
 //  * replace_refid

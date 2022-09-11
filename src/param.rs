@@ -51,6 +51,9 @@ pub trait RleTreeConfig<I, S, const M: usize>: Sized {
     /// Marker for whether `Self` is `AllowCow`.
     const COW: bool;
 
+    /// Marker for whether `Self` is `AllowSliceRefs`.
+    const SLICE_REFS: bool;
+
     /// If clone-on-write capabilities are enabled, we need a way to track the number of pointers
     /// to an individual node. If COW isn't enabled, then there's no point in taking up that space
     ///
@@ -60,10 +63,6 @@ pub trait RleTreeConfig<I, S, const M: usize>: Sized {
     /// [`Rc`]: std::rc::Rc
     /// [`Arc`]: std::sync::Arc
     type StrongCount: StrongCount;
-
-    /// A "strong count" that can be shared between multiple objects -- an `Arc<()>` (if provided),
-    /// with the strong count taken directly from the `Arc`
-    type SharedStrongCount: StrongCount;
 
     /// If slice references are enabled, we keep a big vector mapping from `SliceRefId`s to
     /// pointers to the nodes (i.e. allocations) containing the slice
@@ -211,8 +210,8 @@ pub trait BorrowState: sealed::YouCantImplementThis {
 impl<I, S, const M: usize> RleTreeConfig<I, S, M> for NoFeatures {
     type YouCantImplementThis = sealed::TypeYouCantSee;
     const COW: bool = false;
+    const SLICE_REFS: bool = false;
     type StrongCount = ();
-    type SharedStrongCount = ();
     type SliceRefStore = ();
 }
 
@@ -220,8 +219,8 @@ impl<I, S, const M: usize> RleTreeConfig<I, S, M> for AllowCow {
     type YouCantImplementThis = <NoFeatures as RleTreeConfig<I, S, M>>::YouCantImplementThis;
 
     const COW: bool = true;
+    const SLICE_REFS: bool = false;
     type StrongCount = std::sync::atomic::AtomicUsize;
-    type SharedStrongCount = std::sync::Arc<()>;
 
     type SliceRefStore = ();
 }
@@ -230,8 +229,8 @@ impl<I, S, const M: usize> RleTreeConfig<I, S, M> for AllowSliceRefs {
     type YouCantImplementThis = <NoFeatures as RleTreeConfig<I, S, M>>::YouCantImplementThis;
 
     const COW: bool = false;
+    const SLICE_REFS: bool = true;
     type StrongCount = ();
-    type SharedStrongCount = ();
 
     type SliceRefStore = slice_ref::SliceRefStore<I, S, M>;
 }

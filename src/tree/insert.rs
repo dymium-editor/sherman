@@ -1,14 +1,11 @@
 //! Internal insertion implementation
 
-use crate::param::{
-    self, BorrowState, RleTreeConfig, SliceRefStore as _, StrongCount, SupportsInsert,
-};
+use crate::param::{BorrowState, RleTreeConfig, SliceRefStore as _, SupportsInsert};
 use crate::{Cursor, Index, PathComponent, RleTree, Slice};
 use std::cmp::Ordering;
-use std::mem::{self, ManuallyDrop};
 
 use super::node::{self, borrow, ty, ChildOrKey, NodeHandle, SliceHandle, Type};
-use super::{destruct_root, search_step, Root, Side, SliceSize};
+use super::{search_step, Side, SliceSize};
 use super::{shift_keys_auto, shift_keys_decrease, shift_keys_increase, ShiftKeys};
 
 #[cfg(test)]
@@ -53,13 +50,13 @@ where
             // create a fresh tree and return:
             None => {
                 *self = Self::new(slice, size);
-                let root_ptr = &mut self.root.as_mut().unwrap().handle;
+                let root_ptr = &self.root.as_mut().unwrap().handle;
                 // SAFETY: We just created the root, so there can't be any conflicts to worry
                 // about. The returned handle is already known to have the same lifetime as `self`.
                 // `key_idx = 1` is also safe to pass, because the root is guaranteed to have a
                 // single entry.
                 let value_handle =
-                    unsafe { root_ptr.borrow_mut().into_slice_handle(0).clone_slice_ref() };
+                    unsafe { root_ptr.borrow().into_slice_handle(0).clone_slice_ref() };
                 return (Cursor::new_empty(), value_handle);
             }
         };
@@ -69,54 +66,18 @@ where
             panic!("{conflict}");
         }
 
-        // And if COW is enabled, we'll need to make sure we have a fresh reference to each part of
-        // the tree
-        //
-        // We don't need to do this if there's only one pointer to the entire tree, but if there's
-        // at least one other shallow copy of the tree, we need to make our own. This type exists
-        // as a separate copy that we can make changes to.
-        let mut shallow_copy_store: Option<Root<I, S, P, M>> = None;
-
-        let mut root_node = if root.shared_total_strong_count.is_unique() {
-            // SAFETY: we know there aren't any other borrows on the tree (from acquire_mutable)
-            // above, and there can't be more than one strong count -- it's us, so there's can't
-            // have been a new one added in between `c.load()` and now. The `Acquire` ordering
-            // matches with the `Release` of any dropped references
-            unsafe { root.handle.borrow_mut() }
-        } else {
-            // SAFETY: `shallow_clone` requires that `P = AllowCow`, which must betrue if the
-            // strong count is not unqiue; all of ther `P: RleTreeConfig` have always-unique strong
-            // counts.
-            let handle = unsafe { root.handle.shallow_clone() };
-
-            // SAFETY: `clone_root_for_refs_store` requires that we only use it for `refs_store`
-            let refs_store_root = unsafe { handle.clone_root_for_refs_store() };
-
-            // There's another reference to *somewhere* in the tree -- we'll pessimistically
-            // assume that we need to clone (this will usually be true)
-            shallow_copy_store = Some(Root {
-                // SAFETY: `shallow_clone` requires that `P = AllowCow`, which must betrue if the
-                // strong count is not unqiue; all of ther `P: RleTreeConfig` have always-unique
-                // strong counts.
-                handle: ManuallyDrop::new(handle),
-                // If there were slice references, we'd run into weird issues here. But this branch
-                // can't be reached unless `P` is `AllowCow`, which has `SliceRefStore = ()`, so
-                // there aren't any.
-                refs_store: param::SliceRefStore::new(refs_store_root),
-                shared_total_strong_count: root.shared_total_strong_count.increment(),
-            });
-            let root_ptr = &mut shallow_copy_store.as_mut().unwrap().handle;
-            // SAFETY: We just created this; it can't have any conflicting borrows/references.
-            unsafe { root_ptr.borrow_mut() }
-        };
+        // If COW is enabled, we need to make sure we have a fresh reference to each part of the
+        // tree, as we're going down. This is handled by each successive call to `into_child`
+        // for the mutable handles, so all we *actually* have to do is make sure that the
+        // uniqueness starts at the root.
+        let owned_root = root.handle.make_unique();
 
         // With clone on write, we often have unreliable parent pointers. One piece of this is that
         // it *may* be possible for our root node to have an existing parent pointer. This
         // shouldn't *really* happen, but we should have this here until it's proven that it can't
         // happen.
         if P::COW {
-            // SAFETY: `borrow_mut` requires unique access. We guaranteed that above.
-            unsafe { root_node.borrow_mut().remove_parent() };
+            owned_root.borrow_mut().remove_parent();
         }
 
         // Now on to the body of the insertion algorithm: continually dropping down the tree until
@@ -126,7 +87,7 @@ where
         let mut downward_search_state: PreInsertTraversalState<C, I, S, P, M> =
             PreInsertTraversalState {
                 cursor_iter: Some(cursor.into_path()),
-                node: root_node,
+                node: owned_root.borrow_mut(),
                 target: idx,
                 adjacent_keys: AdjacentKeys {
                     lhs: None,
@@ -203,25 +164,14 @@ where
                     insertion,
                 } => {
                     // we need to get rid of `lhs` first, so that we've released the borrow when we
-                    // access the root.
+                    // access the root
                     let lhs_ptr = lhs.ptr();
-                    let root = match shallow_copy_store.as_mut() {
-                        Some(r) => r,
-                        // Remember: far above in the function, we set `Some(root) = &mut self.root`
-                        // handling the `None` case by returning.
-                        None => root,
-                    };
+                    debug_assert!(owned_root.ptr() == lhs_ptr);
 
-                    debug_assert!(root.handle.ptr() == lhs_ptr);
-
-                    // SAFETY: `make_new_parent` requires that `root.handle` and `rhs` not have any
-                    // parent already, which is guaranteed by `NewRoot`. It also requires that we
-                    // have unique access to `root.handle` and `rhs`, which is guaranteed by
-                    // `NewRoot` for `rhs`, and our operations at the beginning of this function
-                    // for `root.handle`.
+                    // SAFETY: `make_new_parent` requires that `owned_root` and `rhs` not have any
+                    // parent already and are at the same height, which is guaranteed by `NewRoot`
                     unsafe {
-                        root.handle
-                            .make_new_parent(&mut root.refs_store, key, key_size, rhs);
+                        owned_root.make_new_parent(&mut root.refs_store, key, key_size, rhs);
                     }
                     let insertion = insertion.unwrap_or_else(|| unsafe {
                         root.handle.borrow().into_slice_handle(0).clone_slice_ref()
@@ -230,14 +180,6 @@ where
                 }
             }
         };
-
-        // And now, we do need to move `shallow_copy_store` into `self`, if it was used. It's
-        // possible that other copies have sinced dropped the remaining references to `self`, so we
-        // have to pessimistically perform a full drop.
-        if let Some(copy) = shallow_copy_store {
-            let old_root = mem::replace(&mut self.root, Some(copy));
-            destruct_root(old_root);
-        }
 
         // Release the mutable borrow we originally acquired. It doesn't matter whether we do this
         // before or after replacing from a shallow copy because shallow copies only exist with COW
@@ -345,7 +287,7 @@ where
     /// them.
     ///
     /// The height of `rhs` is *always* equal to the height of `lhs`.
-    rhs: NodeHandle<ty::Unknown, borrow::Owned, I, S, P, M>,
+    rhs: NodeHandle<ty::Unknown, borrow::UniqueOwned, I, S, P, M>,
 
     /// Total size of the node that was split into `lhs` and `rhs`, before we inserted anything or
     /// split it
@@ -480,7 +422,7 @@ where
         key: node::Key<I, S, P, M>,
         key_size: I,
         /// New, right-hand node
-        rhs: NodeHandle<ty::Unknown, borrow::Owned, I, S, P, M>,
+        rhs: NodeHandle<ty::Unknown, borrow::UniqueOwned, I, S, P, M>,
         /// If the insertion is not `key`, then a handle on the inserted slice
         insertion: Option<SliceHandle<ty::Unknown, borrow::SliceRef, I, S, P, M>>,
     },
@@ -1344,14 +1286,11 @@ where
             }
             Ok(side) => {
                 let insert_into = match side {
-                    // SAFETY: `as_mut` requires unqiue access; we're reborrowing with existing
-                    // unique access.
-                    Side::Left => unsafe { node.as_mut() },
+                    Side::Left => node.as_mut(),
                     Side::Right => {
                         // Adjust the insert position to be relative to the right-hand node
                         new_key_idx -= midpoint_idx + 1;
-                        // SAFETY: `as_mut` requires unique access; `rhs` was just created.
-                        unsafe { rhs.as_mut() }
+                        rhs.as_mut()
                     }
                 };
 
@@ -1484,8 +1423,7 @@ where
         // Currently, both `node` and `rhs` have the wrong subtree size (should be zero). We need
         // to fix this because that's what'll be used as the positions of the keys we insert:
         node.set_subtree_size(I::ZERO);
-        // SAFETY: `as_mut` requires unique access, which is guaranteed because we just created it.
-        unsafe { rhs.as_mut().set_subtree_size(I::ZERO) };
+        rhs.as_mut().set_subtree_size(I::ZERO);
 
         let fst_key = node::Key {
             pos: I::ZERO, // doesn't matter; won't be used
@@ -1921,7 +1859,8 @@ where
             // The call to `set_single_key_pos` requires that `lhs_child_idx <
             // parent.leaf().len()`, which is guaranteed after `insert_key_and_child`.
             unsafe {
-                parent.insert_key_and_child(store, lhs_child_idx, self.key, self.rhs);
+                let self_rhs = self.rhs.erase_unique();
+                parent.insert_key_and_child(store, lhs_child_idx, self.key, self_rhs);
                 let midpoint_pos = lhs_child_pos.add_right(lhs_size);
                 parent.set_single_key_pos(lhs_child_idx, midpoint_pos);
             };
@@ -2072,8 +2011,7 @@ where
             }
 
             let (side, insert_into) = if new_key_idx < M as u8 {
-                // SAFETY: `as_mut` requires unique access; we're reborrowing and already have it.
-                (Side::Left, unsafe { parent.as_mut() })
+                (Side::Left, parent.as_mut())
             } else {
                 // Adjust the position of `slice` to be relative to the right-hand node
                 new_key_idx -= M as u8 + 1;
@@ -2083,8 +2021,7 @@ where
                     s.pos = s.pos.sub_left(rhs_start);
                 }
 
-                // SAFETY: `as_mut` requires unique access; `rhs` was just created.
-                (Side::Right, unsafe { rhs.as_mut() })
+                (Side::Right, rhs.as_mut())
             };
 
             let (lhs_child_pos, shift_pos, mut old_size, mut new_size) = match shift_lhs {
@@ -2113,7 +2050,8 @@ where
             // require that `new_key_idx <= insert_into.leaf().len()`, which is guaranteed by the
             // values we chose for `midpoint_idx` and our comparison with `M` above.
             unsafe {
-                let _ = insert_into.insert_key_and_child(store, new_key_idx, self.key, self.rhs);
+                let self_rhs = self.rhs.erase_unique();
+                let _ = insert_into.insert_key_and_child(store, new_key_idx, self.key, self_rhs);
                 insert_into.set_single_key_pos(new_key_idx, key_pos);
 
                 let opts = ShiftKeys {

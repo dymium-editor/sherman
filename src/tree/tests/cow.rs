@@ -9,7 +9,7 @@ fn auto_fuzz_1_simple_diverge_insert() {
     tree_0.insert(1, Constant('T'), 62);
     tree_0.insert(58, Constant('A'), 1);
     tree_0.insert(45, Constant('K'), 1);
-    let mut tree_1 = tree_0.shallow_clone();
+    let mut tree_1 = tree_0.clone();
     tree_0.insert(1, Constant('A'), 1);
     tree_1.insert(101, Constant('B'), 27);
     tree_0.validate();
@@ -24,18 +24,18 @@ fn auto_fuzz_2_override_parent_pointer_when_already_unique() {
     tree_0.insert(0, Constant('I'), 78);
     tree_0.insert(2, Constant('N'), 1);
     tree_0.insert(0, Constant('B'), 58);
-    let mut tree_1 = tree_0.shallow_clone();
+    let mut tree_1 = tree_0.clone();
     assert!(std::panic::catch_unwind(move || { tree_1.insert(189, Constant('B'), 1) }).is_err());
     tree_0.insert(1, Constant('B'), 1);
     tree_0.insert(1, Constant('I'), 1);
     tree_0.insert(1, Constant('B'), 3);
     tree_0.insert(58, Constant('A'), 73);
     tree_0.insert(78, Constant('B'), 36);
-    let mut tree_2 = tree_0.shallow_clone();
+    let mut tree_2 = tree_0.clone();
     tree_0.insert(1, Constant('B'), 1);
     tree_2.insert(1, Constant('B'), 4);
     assert!(std::panic::catch_unwind(move || { tree_2.insert(189, Constant('H'), 72) }).is_err());
-    let mut tree_3 = tree_0.shallow_clone();
+    let mut tree_3 = tree_0.clone();
     assert!(std::panic::catch_unwind(move || { tree_3.insert(189, Constant('H'), 189) }).is_err());
     assert!(std::panic::catch_unwind(move || { tree_0.insert(189, Constant('H'), 128) }).is_err());
 }
@@ -116,24 +116,24 @@ fn auto_fuzz_3_iter_over_child_with_bad_parent_index() {
             assert_eq!(item.slice(), &Constant('A'));
         }
     }
-    let mut tree_1 = tree_0.shallow_clone();
+    let mut tree_1 = tree_0.clone();
     assert!(std::panic::catch_unwind(move || { tree_0.insert(170, Constant('O'), 170) }).is_err());
-    let mut tree_2 = tree_1.shallow_clone();
-    let mut tree_3 = tree_1.shallow_clone();
-    let mut tree_4 = tree_3.shallow_clone();
-    let mut tree_5 = tree_3.shallow_clone();
+    let mut tree_2 = tree_1.clone();
+    let mut tree_3 = tree_1.clone();
+    let mut tree_4 = tree_3.clone();
+    let mut tree_5 = tree_3.clone();
     drop(tree_1);
     assert!(std::panic::catch_unwind(move || { tree_2.insert(249, Constant('O'), 170) }).is_err());
     drop(tree_4);
-    let mut tree_6 = tree_5.shallow_clone();
-    let mut tree_7 = tree_6.shallow_clone();
+    let mut tree_6 = tree_5.clone();
+    let mut tree_7 = tree_6.clone();
     tree_5.insert(1, Constant('B'), 1);
     tree_5.insert(1, Constant('B'), 1);
     tree_5.insert(1, Constant('B'), 1);
     tree_5.insert(1, Constant('B'), 1);
     assert!(std::panic::catch_unwind(move || { tree_5.insert(1, Constant('A'), 0) }).is_err());
     assert!(std::panic::catch_unwind(move || { tree_3.insert(1, Constant('T'), 65) }).is_err());
-    let mut tree_8 = tree_7.shallow_clone();
+    let mut tree_8 = tree_7.clone();
     assert!(std::panic::catch_unwind(move || { tree_6.insert(1, Constant('W'), 57) }).is_err());
     assert!(std::panic::catch_unwind(move || { tree_8.insert(49, Constant('C'), 49) }).is_err());
     tree_7.insert(78, Constant('Y'), 1);
@@ -146,19 +146,19 @@ fn auto_fuzz_3_iter_over_child_with_bad_parent_index() {
             assert_eq!(item.slice(), &Constant('C'));
         }
     }
-    let mut tree_9 = tree_7.shallow_clone();
+    let mut tree_9 = tree_7.clone();
     assert!(std::panic::catch_unwind(move || { tree_9.insert(1, Constant('O'), 170) }).is_err());
-    let mut tree_10 = tree_7.shallow_clone();
-    let mut tree_11 = tree_7.shallow_clone();
-    let mut tree_12 = tree_11.shallow_clone();
-    let mut tree_13 = tree_7.shallow_clone();
-    let mut tree_14 = tree_11.shallow_clone();
-    let mut tree_15 = tree_11.shallow_clone();
-    let mut tree_16 = tree_15.shallow_clone();
+    let mut tree_10 = tree_7.clone();
+    let mut tree_11 = tree_7.clone();
+    let mut tree_12 = tree_11.clone();
+    let mut tree_13 = tree_7.clone();
+    let mut tree_14 = tree_11.clone();
+    let mut tree_15 = tree_11.clone();
+    let mut tree_16 = tree_15.clone();
     drop(tree_13);
     tree_11.insert(187, Constant('A'), 1);
     assert!(std::panic::catch_unwind(move || { tree_10.insert(170, Constant('O'), 170) }).is_err());
-    let mut tree_17 = tree_14.shallow_clone();
+    let mut tree_17 = tree_14.clone();
     assert!(std::panic::catch_unwind(move || {
         let _ = tree_7.iter(11..=0);
     })

@@ -2,7 +2,6 @@
 
 use crate::param;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
 
 #[rustfmt::skip]
 impl param::StrongCount for () {
@@ -14,7 +13,6 @@ impl param::StrongCount for () {
 }
 
 impl param::sealed::YouCantImplementThis for AtomicUsize {}
-impl param::sealed::YouCantImplementThis for Arc<()> {}
 
 impl param::StrongCount for AtomicUsize {
     fn count(&self) -> usize {
@@ -60,29 +58,5 @@ impl param::StrongCount for AtomicUsize {
         }
 
         is_now_zero
-    }
-}
-
-impl param::StrongCount for Arc<()> {
-    fn count(&self) -> usize {
-        Arc::strong_count(self)
-    }
-
-    fn one() -> Self {
-        Arc::new(())
-    }
-
-    fn is_unique(&self) -> bool {
-        Arc::strong_count(self) == 1
-    }
-
-    fn increment(&self) -> Self {
-        Arc::clone(self)
-    }
-
-    fn decrement(&self) -> bool {
-        unsafe {
-            weak_unreachable!("tried to call unsupported StrongCount::decrement method on Arc<()>");
-        }
     }
 }

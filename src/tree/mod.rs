@@ -1,8 +1,7 @@
 //! Wrapper module containing the big-boy tree itself
 
 use crate::param::{
-    self, AllowSliceRefs, BorrowState, RleTreeConfig, SliceRefStore as _, StrongCount,
-    SupportsInsert,
+    self, AllowSliceRefs, BorrowState, RleTreeConfig, SliceRefStore as _, SupportsInsert,
 };
 use crate::public_traits::{Index, Slice};
 use crate::range::RangeBounds;
@@ -162,7 +161,6 @@ where
 {
     handle: ManuallyDrop<NodeHandle<ty::Unknown, borrow::Owned, I, S, P, M>>,
     refs_store: <P as RleTreeConfig<I, S, M>>::SliceRefStore,
-    shared_total_strong_count: <P as RleTreeConfig<I, S, M>>::SharedStrongCount,
 }
 
 #[cfg(not(feature = "nightly"))]
@@ -255,14 +253,8 @@ impl<I: Index, S, P: RleTreeConfig<I, S, M>, const M: usize> Debug for Root<I, S
             root: self.handle.borrow(),
             indent,
         };
-        // FIXME: Add SliceRefStore to this if size_of::<P::SliceRefStore>() != 0
         let mut s = f.debug_struct("Root");
-        if P::COW {
-            s.field(
-                "shared_total_strong_count",
-                &self.shared_total_strong_count.count(),
-            );
-        } else if std::mem::size_of::<P::SliceRefStore>() != 0 {
+        if P::SLICE_REFS {
             s.field("refs_store", &self.refs_store.fallible_debug());
         }
         s.field("nodes", &nodes).finish()
@@ -297,13 +289,6 @@ where
     if let Some(handle) = p.try_drop() {
         handle.do_drop();
     }
-
-    // Only now do we drop the tree-wide strong count - doing it earlier could run into race
-    // conditions.
-    //
-    // This is either an `Arc<()>` or nothing, and `Arc` doesn't support `decrement` because it
-    // doesn't make any sense.
-    drop(r.shared_total_strong_count);
 }
 
 /// (*Internal*) Checks that the value of `M` provided for a `RleTree` is within the allowed bounds
@@ -365,7 +350,6 @@ where
             root: Some(Root {
                 handle: ManuallyDrop::new(handle),
                 refs_store: P::SliceRefStore::new(store_handle),
-                shared_total_strong_count: StrongCount::one(),
             }),
         }
     }
@@ -680,15 +664,8 @@ where
     }
 }
 
-/// `Clone` is only implemented directly for trees without additional features
-///
-/// For cloning a COW-enabled tree, refer to [`shallow_clone`] and [`deep_clone`]. For a tree with
-/// slice references, refer to [`clone_with_refs`] and [`clone_without_refs`].
-///
-/// [`shallow_clone`]: Self::shallow_clone
-/// [`deep_clone`]: Self::deep_clone
-/// [`clone_with_refs`]: Self::clone_with_refs
-/// [`clone_without_refs`]: Self::clone_without_refs
+/// `Clone` is implemented for trees with no features and those with COW enabled, with COW-enabled
+/// trees performing a cheap, shallow clone
 impl<I, S, const M: usize> Clone for RleTree<I, S, param::NoFeatures, M>
 where
     I: Clone,
@@ -699,14 +676,10 @@ where
     }
 }
 
-impl<I: Index, S: Clone, const M: usize> RleTree<I, S, param::AllowCow, M> {
-    /// Creates a shallow clone of the tree, sharing nodes until they or their children are
-    /// modified
-    ///
-    /// ## Examples
-    ///
-    /// FIXME
-    pub fn shallow_clone(&self) -> Self {
+/// `Clone` is implemented for trees with no features and those with COW enabled, with COW-enabled
+/// trees performing a cheap, shallow clone
+impl<I, S: Clone, const M: usize> Clone for RleTree<I, S, param::AllowCow, M> {
+    fn clone(&self) -> Self {
         match self.root.as_ref() {
             None => RleTree { root: None },
             Some(root) => {
@@ -719,37 +692,10 @@ impl<I: Index, S: Clone, const M: usize> RleTree<I, S, param::AllowCow, M> {
                         handle: ManuallyDrop::new(handle),
                         // refs_store will be empty because this is a COW-enabled tree
                         refs_store: Default::default(),
-                        shared_total_strong_count: root.shared_total_strong_count.increment(),
                     }),
                 }
             }
         }
-    }
-
-    /// Creates a deep clone of the tree, creating fresh copies of every node
-    ///
-    /// For sets of shallow clone'd `RleTree`s that have significantly diverged, fully separating
-    /// them with a deep clone can signal to the implementation that they're no longer related, and
-    /// so the reference count on the tree itself is reset to one. Insertion, for example, can be
-    /// unnecessarily costly otherwise (creating copies of all nodes down to the insertion, and
-    /// then removing the old ones).
-    ///
-    /// This method essentially exists to allow more optimal behavior, and will not be necessary in
-    /// the future (we *will* improve the [`insert`] implementation). However, this method will still
-    /// be kept around because there are subtle semantic differences between a shallow and deep
-    /// clone that are still sometimes useful.
-    ///
-    /// ## Examples
-    ///
-    /// FIXME
-    ///
-    /// [`insert`]: Self::insert
-    pub fn deep_clone(&self) -> Self
-    where
-        I: Clone,
-        S: Clone,
-    {
-        todo!()
     }
 }
 

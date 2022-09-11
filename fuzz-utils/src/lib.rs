@@ -299,7 +299,7 @@ impl<I: Debug, S: Debug> Debug for CowCommand<I, S> {
         match self {
             Self::Basic(c) => c.fmt(f),
             Self::ShallowClone { src_id, new_id } => f.write_fmt(format_args!(
-                "    let mut tree_{new_id} = tree_{src_id}.shallow_clone();\n",
+                "    let mut tree_{new_id} = tree_{src_id}.clone();\n",
             )),
             Self::DropTree { id } => f.write_fmt(format_args!("    drop(tree_{id});\n")),
         }
@@ -991,7 +991,7 @@ where
             CowCommand::Basic(c) => self.run_basic_cmd(c),
             CowCommand::ShallowClone { src_id, .. } => {
                 let old_tree = self.trees[src_id.0].take().unwrap();
-                let new_tree = old_tree.shallow_clone();
+                let new_tree = old_tree.clone();
                 old_tree.validate();
                 new_tree.validate();
 
