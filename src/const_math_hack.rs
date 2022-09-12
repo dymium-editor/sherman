@@ -6,7 +6,8 @@
 //! The basic unit of interaction in this module is the [`ArrayHack`] trait, which has some
 //! documentation explaining what's going on.
 
-use std::mem::size_of;
+use std::mem::{self, size_of, MaybeUninit};
+use std::ptr;
 use std::slice;
 
 /// Struct that represents an array with length `L::LEN + R::LEN`
@@ -161,4 +162,199 @@ where
 unsafe impl<A: ArrayHack, const M: usize> ArrayHack for Mul<A, M> {
     const LEN: usize = A::LEN * M;
     type Element = A::Element;
+}
+
+/// Trait for mapping `ArrayHack` arrays from one type to another
+///
+/// The method `map_array` is roughly similar to the standard library's `map` method on arrays, but
+/// does not have the same possibility of relatively poor stack performance.
+///
+/// Internally, we use a [`GradualInitArray`]-[`GradualUninitArray`] pair to manage the conversion.
+pub unsafe trait MappedArray<E>: ArrayHack {
+    type Mapped: ArrayHack<Element = E>;
+
+    /// Produces a new [`ArrayHack`] array of the same length
+    fn map_array<F: FnMut(Self::Element) -> E>(self, mut f: F) -> Self::Mapped {
+        let mut uninit = GradualUninitArray::new(self);
+        let mut init = GradualInitArray::new();
+
+        for _ in 0..Self::LEN {
+            unsafe { init.push_unchecked(f(uninit.take_unchecked())) };
+        }
+
+        mem::forget(uninit);
+        unsafe { init.into_init_unchecked() }
+    }
+}
+
+unsafe impl<T, S, const N: usize> MappedArray<S> for [T; N] {
+    type Mapped = [S; N];
+}
+
+unsafe impl<T, S, L, R> MappedArray<S> for Add<L, R>
+where
+    L: MappedArray<S, Element = T>,
+    R: MappedArray<S, Element = T>,
+{
+    type Mapped = Add<<L as MappedArray<S>>::Mapped, <R as MappedArray<S>>::Mapped>;
+}
+
+unsafe impl<A: MappedArray<E>, E, const M: usize> MappedArray<E> for Mul<A, M> {
+    type Mapped = Mul<<A as MappedArray<E>>::Mapped, M>;
+}
+
+/// Helper type for gradually initializing an [`ArrayHack`] array
+pub struct GradualInitArray<A: ArrayHack> {
+    // need `ArrayHack` bound so we can have it in `Drop`
+    array: MaybeUninit<A>,
+    len: usize,
+}
+
+impl<A: ArrayHack> GradualInitArray<A> {
+    /// Creates a new, completely uninitialized array
+    pub fn new() -> Self {
+        GradualInitArray {
+            array: MaybeUninit::uninit(),
+            len: 0,
+        }
+    }
+
+    /// Initializes the next value in the array
+    ///
+    /// ## Panics
+    ///
+    /// This method panics if the array has already been fully initialized; i.e. if `A::LEN` calls
+    /// to `push` or [`push_unchecked`] have already been made.
+    ///
+    /// [`push_unchecked`]: Self::push_unchecked
+    #[allow(unused)]
+    pub fn push(&mut self, val: A::Element) {
+        assert!(self.len < A::LEN);
+        // SAFETY: guaranteed by the assertion
+        unsafe { self.push_unchecked(val) };
+    }
+
+    /// Initializes the next value in the array, without checking that there is room
+    ///
+    /// ## Safety
+    ///
+    /// There cannot have been `A::LEN` prior calls to [`push`] or `push_unchecked` before this
+    /// function.
+    ///
+    /// [`push`]: Self::push
+    pub unsafe fn push_unchecked(&mut self, val: A::Element) {
+        // SAFETY: guaranteed by caller
+        unsafe { weak_assert!(self.len < A::LEN) };
+        let idx = self.len;
+        // SAFETY: `get_mut_ptr_unchecked` is satisfied by `idx = len < A::LEN`, and `write` is
+        // valid because the pointer points to a well-aligned element within the array
+        unsafe { A::get_mut_ptr_unchecked(self.array.as_mut_ptr(), idx).write(val) };
+        self.len += 1;
+    }
+
+    /// Converts the `GradualInitArray` into the initialized inner array, if it has been completely
+    /// initialized
+    ///
+    /// ## Panics
+    ///
+    /// This method panics if there have not been *exactly* `A::LEN` prior calls to [`push`] or
+    /// [`push_unchecked`] made.
+    ///
+    /// [`push`]: Self::push
+    /// [`push_unchecked`]: Self::push_unchecked
+    #[allow(unused)]
+    pub fn into_init(self) -> A {
+        assert!(self.len == A::LEN);
+        // SAFETY: guaranteed by the assertion
+        unsafe { self.into_init_unchecked() }
+    }
+
+    /// Converts the `GradualInitArray` into the initialized inner array, without checking whether
+    /// it has been completely initialized
+    ///
+    /// ## Safety
+    ///
+    /// There must have been exactly `A::LEN` prior calls to [`push`] or [`push_unchecked`] made.
+    ///
+    /// [`push`]: Self::push
+    /// [`push_unchecked`]: Self::push_unchecked
+    pub unsafe fn into_init_unchecked(mut self) -> A {
+        // SAFETY: guaranteed by caller
+        unsafe { weak_assert!(self.len == A::LEN) };
+
+        // Overwrite the length first so that we don't try to drop any values after we've moved
+        // them out of the array
+        self.len = 0;
+
+        // SAFETY: because `self.len` was `A::LEN`, all the elements of the array were initialized.
+        // Because `ArrayHack` guarantees that `A` has nothing more than its elements, we know that
+        // the array is now initialized
+        unsafe { self.array.assume_init_read() }
+    }
+}
+
+impl<A: ArrayHack> Drop for GradualInitArray<A> {
+    fn drop(&mut self) {
+        unsafe {
+            let base_ptr: *mut A::Element = self.array.as_mut_ptr() as _;
+            let slice: &mut [A::Element] = slice::from_raw_parts_mut(base_ptr, self.len);
+            ptr::drop_in_place(slice as *mut [A::Element]);
+        }
+    }
+}
+
+/// Helper type for gradually taking values out of an [`ArrayHack`] array
+pub struct GradualUninitArray<A: ArrayHack> {
+    // need the `ArrayHack` bound to have it in `Drop`
+    array: MaybeUninit<A>,
+    next: usize,
+}
+
+impl<A: ArrayHack> GradualUninitArray<A> {
+    /// Creates a new, fully initialized array to read from
+    pub fn new(array: A) -> Self {
+        GradualUninitArray {
+            array: MaybeUninit::new(array),
+            next: 0,
+        }
+    }
+
+    /// Takes the next value, going from the start to the end of the array
+    ///
+    /// ## Panics
+    ///
+    /// This method panics if all of the elements have already been taken -- i.e., if `A::LEN`
+    /// calls to `take` or [`take_unchecked`] have been made.
+    ///
+    /// [`take_unchecked`]: Self::take_unchecked
+    #[allow(unused)]
+    pub fn take(&mut self) -> A::Element {
+        assert!(self.next < A::LEN);
+        // SAFETY: guaranteed by the assertion
+        unsafe { self.take_unchecked() }
+    }
+
+    /// Takes the next value, going from the start to the end of the array, without checking if
+    /// there are any values left
+    ///
+    /// ## Safety
+    ///
+    /// There cannot have been `A::LEN` prior calls to [`take`] or `take_unchecked`.
+    ///
+    /// [`take`]: Self::take
+    pub unsafe fn take_unchecked(&mut self) -> A::Element {
+        let idx = self.next;
+        self.next += 1;
+        unsafe { A::get_mut_ptr_unchecked(self.array.as_mut_ptr(), idx).read() }
+    }
+}
+
+impl<A: ArrayHack> Drop for GradualUninitArray<A> {
+    fn drop(&mut self) {
+        unsafe {
+            let start_ptr = A::get_mut_ptr_unchecked(self.array.as_mut_ptr(), self.next);
+            let slice = slice::from_raw_parts_mut(start_ptr, A::LEN - self.next);
+            ptr::drop_in_place(slice as *mut [A::Element]);
+        }
+    }
 }
