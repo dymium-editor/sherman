@@ -175,11 +175,15 @@ pub unsafe trait MappedArray<E>: ArrayHack {
 
     /// Produces a new [`ArrayHack`] array of the same length
     fn map_array<F: FnMut(Self::Element) -> E>(self, mut f: F) -> Self::Mapped {
+        self.map_array_with_index(|_i, e| f(e))
+    }
+
+    fn map_array_with_index<F: FnMut(usize, Self::Element) -> E>(self, mut f: F) -> Self::Mapped {
         let mut uninit = GradualUninitArray::new(self);
         let mut init = GradualInitArray::new();
 
-        for _ in 0..Self::LEN {
-            unsafe { init.push_unchecked(f(uninit.take_unchecked())) };
+        for i in 0..Self::LEN {
+            unsafe { init.push_unchecked(f(i, uninit.take_unchecked())) };
         }
 
         mem::forget(uninit);
@@ -250,6 +254,25 @@ impl<A: ArrayHack> GradualInitArray<A> {
         // valid because the pointer points to a well-aligned element within the array
         unsafe { A::get_mut_ptr_unchecked(self.array.as_mut_ptr(), idx).write(val) };
         self.len += 1;
+    }
+
+    /// Converts the partially initialized array into one of the same length, where
+    /// each element is wrapped in a `MaybeUninit`
+    ///
+    /// The first `n` elements, where `n` is the number of calls that have been made to [`push`] or
+    /// [`push_unchecked`], are guaranteed to be initialized.
+    ///
+    /// [`push`]: Self::push
+    /// [`push_unchecked`]: Self::push_unchecked
+    pub fn into_uninit(mut self) -> <A as MappedArray<MaybeUninit<A::Element>>>::Mapped
+    where
+        A: MappedArray<MaybeUninit<<A as ArrayHack>::Element>>,
+    {
+        // Overwrite the length so calling the destructor is fine
+        self.len = 0;
+
+        // Sickos: yes... ha ha ha... YES!
+        unsafe { std::mem::transmute_copy(&self.array) }
     }
 
     /// Converts the `GradualInitArray` into the initialized inner array, if it has been completely

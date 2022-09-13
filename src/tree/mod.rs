@@ -668,11 +668,19 @@ where
 /// trees performing a cheap, shallow clone
 impl<I, S, const M: usize> Clone for RleTree<I, S, param::NoFeatures, M>
 where
-    I: Clone,
+    I: Copy,
     S: Clone,
 {
     fn clone(&self) -> Self {
-        todo!()
+        match self.root.as_ref() {
+            None => RleTree { root: None },
+            Some(root) => RleTree {
+                root: Some(Root {
+                    handle: ManuallyDrop::new(root.handle.as_immut().deep_clone().erase_unique()),
+                    refs_store: Default::default(),
+                }),
+            },
+        }
     }
 }
 
@@ -696,16 +704,6 @@ impl<I, S: Clone, const M: usize> Clone for RleTree<I, S, param::AllowCow, M> {
                 }
             }
         }
-    }
-}
-
-impl<I: Clone, S: Clone, const M: usize> RleTree<I, S, param::AllowSliceRefs, M> {
-    pub fn clone_with_refs(&self) -> Self {
-        todo!()
-    }
-
-    pub fn clone_without_refs(&self) -> Self {
-        todo!()
     }
 }
 

@@ -104,3 +104,19 @@ fn basic_slice_ref() {
     assert_eq!(r0.range(), 0..2);
     assert_eq!(&*r0.borrow_slice(), &Constant('a'));
 }
+
+#[test]
+fn basic_deep_clone() {
+    let mut tree: RleTree<u8, Constant<char>, NoFeatures> = RleTree::new_empty();
+    tree.insert(0, Constant('a'), 4);
+    tree.insert(0, Constant('b'), 2);
+    tree.insert(6, Constant('c'), 3);
+    tree.insert(6, Constant('d'), 3);
+    tree.insert(6, Constant('e'), 3);
+    tree.insert(6, Constant('f'), 3);
+    tree.insert(6, Constant('g'), 3);
+    tree.validate();
+
+    let copied_tree = tree.clone();
+    copied_tree.validate();
+}

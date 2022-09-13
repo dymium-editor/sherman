@@ -35,7 +35,8 @@ use crate::MaybeDebug;
 #[cfg(test)]
 use std::fmt::{self, Debug, Formatter};
 
-use crate::const_math_hack::{self as hack, ArrayHack};
+use super::NodeBox;
+use crate::const_math_hack::{self as hack, ArrayHack, GradualInitArray, MappedArray};
 use crate::param::{self, RleTreeConfig, SliceRefStore, StrongCount, SupportsInsert};
 use crate::public_traits::Index;
 
@@ -1041,43 +1042,32 @@ where
             Some(p) => (Some(p.ptr), MaybeUninit::new(p.idx_in_parent)),
         };
 
-        let mut new_leaf: Leaf<I, S, P, M> = Leaf {
+        // Copy all of the slices
+        let mut vals: GradualInitArray<KeyArray<S, M>> = GradualInitArray::new();
+        for i in 0..this_leaf.len() as usize {
+            // SAFETY: `i < this_leaf.len` guarantees it's within bounds and initialized. Within
+            // bounds means we won't have written off the end of `vals` as well. The call to
+            // `P::clone_slice` requires that `P = AllowCow`, which is guaranteed by the caller
+            unsafe {
+                let this_val = this_leaf.vals.get_unchecked(i).assume_init_ref();
+                let new_val = P::clone_slice(this_val);
+                vals.push_unchecked(new_val);
+            }
+        }
+
+        let new_leaf: Leaf<I, S, P, M> = Leaf {
             parent,
             idx_in_parent,
             holes: [None; 2],
-            len: 0,
+            len: this_leaf.len,
             strong_count: P::StrongCount::one(),
             keys: this_leaf.keys,
-            vals: KeyArray::new(),
+            vals: vals.into_uninit(),
+            // Note: `P::SliceRefStore::OptionRefId` is zero-sized for `param::AllowCow`, so we can
+            // leave the entire array uninitialized.
             refs: KeyArray::new(),
-            total_size: self.leaf().subtree_size(),
+            total_size: this_leaf.subtree_size(),
         };
-
-        // With `parent`, `idx_in_parent`, `holes`, `strong_count`, and `total_size` properly
-        // instantiated, we only have `vals`/`refs`/`len` left (plus the child pointers, if
-        // this is an internal node). Let's look at each of these briefly:
-        //  * `vals` -- must be cloned with `SupportsInsert::clone_slice`
-        //  * `refs` -- `P::SliceRefStore::OptionRefId` is zero-sized for `param::AllowCow`, so we
-        //     can leave the entire array uninitialized.
-        //  * `child_ptrs` (if internal) -- can be copied, but strong counts must be incremented
-        //  * `len` -- will be set equal to `self.leaf().len`
-
-        for i in 0..this_leaf.len {
-            // SAFETY: the calls to various `get_unchecked` => `assume_init_ref` broadly require
-            // that `i < this_leaf.len` and that `this_leaf.len <= KeyArray<_, M>::LEN`. The first
-            // is guaranteed by the range above, and the second is always true. The call to
-            // `P::clone_slice` requires that `P = AllowCow`, which is guaranteed by the caller.
-            unsafe {
-                let this_val = this_leaf.vals.get_unchecked(i as usize).assume_init_ref();
-                let new_val = P::clone_slice(this_val);
-                new_leaf.vals.get_mut_unchecked(i as usize).write(new_val);
-            }
-            // set `len` as we go so that -- if `clone_slice` panics -- we drop everything that's
-            // already been initialized.
-            new_leaf.len = i + 1;
-        }
-
-        // Everything but `child_ptrs` is now initialized
 
         match self.typed_ref() {
             Type::Leaf(_) => NodeHandle {
@@ -1125,6 +1115,122 @@ where
             ptr: self.ptr,
             height: self.height,
             borrow: PhantomData,
+        }
+    }
+}
+
+// any type, borrow::Immut, param::NoFeatures
+//  * deep_clone (where I: Copy, S: Clone)
+impl<'t, Ty, I, S, const M: usize> NodeHandle<Ty, borrow::Immut<'t>, I, S, param::NoFeatures, M>
+where
+    Ty: TypeHint,
+{
+    /// Creates a deep clone of the node, cloning it and performing a deep clone of all of its
+    /// children
+    pub fn deep_clone(&self) -> NodeHandle<Ty, borrow::UniqueOwned, I, S, param::NoFeatures, M>
+    where
+        I: Copy,
+        S: Clone,
+    {
+        let this_leaf = self.leaf();
+
+        if this_leaf.has_holes() {
+            panic_invalid_state();
+        }
+
+        // Copy all of the slices
+        let mut vals: GradualInitArray<KeyArray<S, M>> = GradualInitArray::new();
+        for i in 0..this_leaf.len() as usize {
+            // SAFETY: `i < this_leaf.len` guarantees it's within bounds and initialized. Within
+            // bounds means we won't have written off the end of `vals` as well.
+            unsafe {
+                let val = this_leaf.vals.get_unchecked(i).assume_init_ref().clone();
+                vals.push_unchecked(val);
+            }
+        }
+
+        let new_leaf: Leaf<I, S, param::NoFeatures, M> = Leaf {
+            parent: None,
+            idx_in_parent: MaybeUninit::uninit(),
+            holes: [None; 2],
+            len: this_leaf.len,
+            strong_count: (),
+            keys: this_leaf.keys,
+            vals: vals.into_uninit(),
+            // Note: We can leave `refs` uninitialized because `param::NoFeatures` has
+            // `OptionRefId = ()`, so the total size of `refs` is zero.
+            refs: KeyArray::new(),
+            total_size: this_leaf.subtree_size(),
+        };
+
+        match self.typed_ref() {
+            Type::Leaf(_) => NodeHandle {
+                ptr: alloc_aligned(new_leaf).cast::<AbstractNode<I, S, param::NoFeatures, M>>(),
+                height: self.height,
+                borrow: PhantomData,
+            },
+            Type::Internal(this) => {
+                let mut child_ptrs: GradualInitArray<
+                    ChildArray<NodeBox<ty::Unknown, I, S, param::NoFeatures, M>, M>,
+                > = GradualInitArray::new();
+
+                for i in 0..=this_leaf.len {
+                    // SAFETY: `i <= this_leaf.len` guarantees it's within bounds and initiaized.
+                    // Within bounds means we won't write off the end of `child_ptrs` as well.
+                    unsafe {
+                        let mut child = NodeBox::new(this.child(i).deep_clone());
+                        child.as_mut().with_mut(|leaf| {
+                            let _ = leaf.idx_in_parent.write(i);
+                        });
+                        child_ptrs.push_unchecked(child);
+                    }
+                }
+
+                let new_internal = Internal {
+                    leaf: new_leaf,
+                    child_ptrs: child_ptrs.into_uninit().map_array_with_index(|i, p| {
+                        if i as u8 <= this_leaf.len {
+                            // SAFETY: the bound `i <= this_leaf.len` means `p` is initialized
+                            unsafe { MaybeUninit::new(p.assume_init().take().ptr) }
+                        } else {
+                            MaybeUninit::uninit()
+                        }
+                    }),
+                };
+
+                // Before we return, we have to overwite the parent pointers in all of this node's
+                // children.
+                let mut handle: NodeHandle<ty::Internal, borrow::UniqueOwned, _, _, _, M> =
+                    NodeHandle {
+                        ptr: alloc_aligned(new_internal)
+                            .cast::<AbstractNode<I, S, param::NoFeatures, M>>(),
+                        // SAFETY: `self.height` is known to be non-zero because we already found
+                        // that this is an internal node
+                        height: unsafe { NonZeroU8::new_unchecked(self.height.as_u8()) },
+                        borrow: PhantomData,
+                    };
+
+                let new_ptr = handle.ptr;
+
+                unsafe {
+                    handle.as_mut().with_internal(|internal| {
+                        for i in 0..=this_leaf.len {
+                            let p = internal
+                                .child_ptrs
+                                .get_mut_unchecked(i as usize)
+                                .assume_init_mut();
+                            let leaf_mut = p.cast::<Leaf<I, S, param::NoFeatures, M>>().as_mut();
+                            leaf_mut.parent = Some(new_ptr);
+                        }
+                    });
+                }
+
+                NodeHandle {
+                    ptr: handle.ptr,
+                    height: self.height,
+                    borrow: PhantomData,
+                }
+            }
         }
     }
 }
