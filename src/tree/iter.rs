@@ -14,7 +14,10 @@ use crate::MaybeDebug;
 use std::fmt::{self, Formatter};
 
 use super::node::{borrow, ty, NodeHandle, SliceHandle, Type};
-use super::{search_step, ChildOrKey, SliceEntry, DEFAULT_MIN_KEYS};
+use super::{
+    bounded_search_step, panic_internal_error_or_bad_index, ChildOrKey, SliceEntry,
+    DEFAULT_MIN_KEYS,
+};
 
 /// An iterator over a range of slices and their positions in an [`RleTree`]
 ///
@@ -32,7 +35,8 @@ where
     P: RleTreeConfig<I, S, M>,
 {
     start: I,
-    end: IncludedOrExcludedBound<I>,
+    end: I,
+    end_bound_is_exclusive: bool,
     state: Option<IterState<'t, C, I, S, P, M>>,
 }
 
@@ -176,21 +180,6 @@ impl<'t, I, S, P: RleTreeConfig<I, S, M>, const M: usize> Debug for IterStack<'t
     }
 }
 
-#[derive(Debug, Copy, Clone)]
-enum IncludedOrExcludedBound<I> {
-    Included(I),
-    Excluded(I),
-}
-
-#[track_caller]
-fn panic_internal_error_or_bad_index<I: Index>() -> ! {
-    if I::TRUSTED {
-        panic!("internal error");
-    } else {
-        panic!("internal error or bad `Index` implementation");
-    }
-}
-
 impl<'t, C, I, S, P, const M: usize> Iter<'t, C, I, S, P, M>
 where
     C: Cursor,
@@ -221,13 +210,15 @@ where
             StartBound::Unbounded => I::ZERO,
         };
 
-        let (end, strict_end) = match end_bound {
-            EndBound::Included(i) => (IncludedOrExcludedBound::Included(i), EndBound::Included(i)),
-            EndBound::Excluded(i) => (IncludedOrExcludedBound::Excluded(i), EndBound::Excluded(i)),
-            EndBound::Unbounded => (
-                IncludedOrExcludedBound::Excluded(tree_size),
-                EndBound::Excluded(tree_size),
-            ),
+        let (end, end_bound_is_exclusive) = match end_bound {
+            EndBound::Included(i) => (i, false),
+            EndBound::Excluded(i) => (i, true),
+            EndBound::Unbounded => (tree_size, true),
+        };
+
+        let strict_end = match end_bound_is_exclusive {
+            true => EndBound::Excluded(end),
+            false => EndBound::Included(end),
         };
 
         if range.starts_after_end() {
@@ -242,18 +233,14 @@ where
 
         // Special case for empty iterators, so we don't attempt to traverse the tree when we won't
         // end up with anything.
-        let bounded_end_bound = match end {
-            IncludedOrExcludedBound::Included(i) => EndBound::Included(i),
-            IncludedOrExcludedBound::Excluded(i) => EndBound::Excluded(i),
-        };
-
-        if (StartBound::Included(start), bounded_end_bound).is_empty_naive() {
+        if (StartBound::Included(start), strict_end).is_empty_naive() {
             root = None;
         }
 
         Iter {
             start,
             end,
+            end_bound_is_exclusive,
             state: root.map(|(root, store)| IterState {
                 store,
                 root,
@@ -267,80 +254,18 @@ where
     fn make_stack(
         root: NodeHandle<ty::Unknown, borrow::Immut<'t>, I, S, P, M>,
         cursor: Option<C>,
-        target: IncludedOrExcludedBound<I>,
+        mut target: I,
+        excluded: bool,
     ) -> IterStack<'t, I, S, P, M> {
         let mut stack = Vec::new();
         let mut cursor = cursor.map(|c| c.into_path());
         let mut head_node = root;
         let mut head_pos = I::ZERO;
-        let (mut target, excluded) = match target {
-            IncludedOrExcludedBound::Included(i) => (i, false),
-            IncludedOrExcludedBound::Excluded(i) => (i, true),
-        };
 
         // Search downward with the cursor
         loop {
             let hint = cursor.as_mut().and_then(|c| c.next());
-
-            let result = if target != head_node.leaf().subtree_size() {
-                match search_step(head_node, hint, target) {
-                    ChildOrKey::Key((k_idx, k_pos)) if excluded && k_pos == target => {
-                        match head_node.into_typed() {
-                            Type::Leaf(n) => {
-                                if k_idx == 0 {
-                                    panic_internal_error_or_bad_index::<I>();
-                                }
-
-                                // SAFETY: key indexes returned from `search_step` are guaranteed
-                                // to be in bounds; we checked above that `k_idx != 0`, so
-                                // subtracting one won't overlflow: `k_idx - 1` is still in bounds.
-                                let lhs_k_pos = unsafe { n.leaf().key_pos(k_idx - 1) };
-                                ChildOrKey::Key((k_idx - 1, lhs_k_pos))
-                            }
-                            Type::Internal(n) => {
-                                let c_idx = k_idx;
-                                // SAFETY: key indexes returned from `search_step` are guaranteed
-                                // to be in bounds, so a child at the same index (i.e. to its left)
-                                // will also be valid.
-                                let c_pos = k_pos.sub_right(unsafe { n.child_size(c_idx) });
-                                ChildOrKey::Child((c_idx, c_pos))
-                            }
-                        }
-                    }
-                    ChildOrKey::Child((c_idx, c_pos)) if excluded && c_pos == target => {
-                        if c_idx == 0 {
-                            panic_internal_error_or_bad_index::<I>();
-                        }
-
-                        let k_idx = c_idx - 1;
-                        // SAFETY: child indexes returned from `search_step` are guaranteed to be
-                        // valid children, so the key to their left (at `c_idx - 1`) is a valid key
-                        let k_pos = unsafe { head_node.leaf().key_pos(k_idx) };
-                        ChildOrKey::Key((k_idx, k_pos))
-                    }
-                    res => res,
-                }
-            } else {
-                let len = head_node.leaf().len();
-
-                // Use the key or child immediately to the left.
-                match head_node.into_typed() {
-                    Type::Leaf(_) => {
-                        let i = len - 1;
-                        // SAFETY: `len` is guaranteed to be `>= 1`, so `len - 1` can't overflow,
-                        // and key indexes must be `< len`.
-                        let p = unsafe { head_node.leaf().key_pos(i) };
-                        ChildOrKey::Key((i, p))
-                    }
-                    Type::Internal(node) => {
-                        // The child immediately left of the key has the same index
-                        let c_idx = len;
-                        // SAFETY: the index `len` is always a valid child index
-                        let c_pos = unsafe { node.child_pos(c_idx) };
-                        ChildOrKey::Child((c_idx, c_pos))
-                    }
-                }
-            };
+            let result = bounded_search_step(head_node, hint, target, excluded);
 
             match result {
                 ChildOrKey::Key((k_idx, k_pos)) => {
@@ -361,8 +286,8 @@ where
                         Type::Internal(n) => n,
                     };
 
-                    // SAFETY: `search_step` and our processing above guarantee that `c_idx` is a
-                    // valid child index.
+                    // SAFETY: `bounded_search_step` guarantees that `c_idx` is a valid child
+                    // index.
                     let child = unsafe { node.into_child(c_idx) };
                     // If we have COW enabled, and the child's parent is not this node, we need to
                     // add `head_node` to the stack.
@@ -587,16 +512,11 @@ where
                 // Update `fwd` to the next entry:
                 let next_start = fwd.end_pos;
                 // ... but first, check that it'll be within bounds:
-                match self.end {
-                    IncludedOrExcludedBound::Included(i) if i < next_start => {
-                        self.state = None;
-                        return None;
-                    }
-                    IncludedOrExcludedBound::Excluded(i) if i <= next_start => {
-                        self.state = None;
-                        return None;
-                    }
-                    _ => (),
+                if (self.end_bound_is_exclusive && self.end <= next_start)
+                    || (!self.end_bound_is_exclusive && self.end < next_start)
+                {
+                    self.state = None;
+                    return None;
                 }
 
                 fwd.fwd_step();
@@ -604,11 +524,7 @@ where
                 (fwd, next_start)
             }
             None => {
-                let s = Self::make_stack(
-                    state.root,
-                    state.cursor.take(),
-                    IncludedOrExcludedBound::Included(self.start),
-                );
+                let s = Self::make_stack(state.root, state.cursor.take(), self.start, false);
 
                 // We can't use `self.start` for the start position because it might be in the
                 // middle of a slice
@@ -657,7 +573,12 @@ where
                 bkwd
             }
             None => {
-                let s = Self::make_stack(state.root, state.cursor.take(), self.end);
+                let s = Self::make_stack(
+                    state.root,
+                    state.cursor.take(),
+                    self.end,
+                    self.end_bound_is_exclusive,
+                );
 
                 state.bkwd.insert(s)
             }

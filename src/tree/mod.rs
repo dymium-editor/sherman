@@ -823,6 +823,78 @@ fn search_step<'t, I: Index, S, P: RleTreeConfig<I, S, M>, const M: usize>(
     }
 }
 
+/// Custom function for iteration that's like [`search_step`], but goes to the key or child to the
+/// target's immediate left if `excluded` is true
+///
+/// This is primarily used for finding iteration endpoints, where the end may be exclusive.
+fn bounded_search_step<'t, I, S, P, const M: usize>(
+    node: NodeHandle<ty::Unknown, borrow::Immut<'t>, I, S, P, M>,
+    hint: Option<PathComponent>,
+    target: I,
+    excluded: bool,
+) -> ChildOrKey<(u8, I), (u8, I)>
+where
+    I: Index,
+    P: RleTreeConfig<I, S, M>,
+{
+    let result = if target == node.leaf().subtree_size() {
+        debug_assert!(excluded);
+        ChildOrKey::Key((node.leaf().len(), target))
+    } else {
+        search_step(node, hint, target)
+    };
+
+    if !excluded {
+        return result;
+    }
+
+    // Because we have an excluded bound, check for key/child positions exactly matching `target`,
+    // and move to the previous key or child
+    match result {
+        ChildOrKey::Child((c_idx, c_pos)) if c_pos == target => {
+            if c_idx == 0 {
+                panic_internal_error_or_bad_index::<I>();
+            }
+
+            let k_idx = c_idx - 1;
+            // SAFETY: child indexes returned from `search_step` are guaranteed to be valid
+            // children, so the key to their left (at `c_idx - 1`) is a valid key
+            let k_pos = unsafe { node.leaf().key_pos(k_idx) };
+            ChildOrKey::Key((k_idx, k_pos))
+        }
+        ChildOrKey::Key((k_idx, k_pos)) if k_pos == target => match node.typed_ref() {
+            Type::Leaf(n) => {
+                if k_idx == 0 {
+                    panic_internal_error_or_bad_index::<I>();
+                }
+
+                // SAFETY: key indexes returned from `search_step` are guaranteed to be in bounds,
+                // and our special case is also non-zero; we checked above that `k_idx != 0`, so
+                // subtracting one won't overlflow: `k_idx - 1` is still in bounds.
+                let lhs_k_pos = unsafe { n.leaf().key_pos(k_idx - 1) };
+                ChildOrKey::Key((k_idx - 1, lhs_k_pos))
+            }
+            Type::Internal(n) => {
+                let c_idx = k_idx;
+                // SAFETY: key indexes returned from `search_step` are guaranteed to be in bounds,
+                // so a child at the same index (i.e. to its left) will also be valid.
+                let c_pos = k_pos.sub_right(unsafe { n.child_size(c_idx) });
+                ChildOrKey::Child((c_idx, c_pos))
+            }
+        },
+        r => r,
+    }
+}
+
+#[track_caller]
+fn panic_internal_error_or_bad_index<I: Index>() -> ! {
+    if I::TRUSTED {
+        panic!("internal error");
+    } else {
+        panic!("internal error or bad `Index` implementation");
+    }
+}
+
 macro_rules! define_node_box {
     (
         $(#[$attrs:meta])*
