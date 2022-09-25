@@ -5,7 +5,6 @@ use crate::param::RleTreeConfig;
 use crate::public_traits::{Index, Slice};
 use crate::range::{EndBound, RangeBounds, StartBound};
 use crate::Cursor;
-use std::any::TypeId;
 use std::fmt::Debug;
 use std::panic::{RefUnwindSafe, UnwindSafe};
 
@@ -185,10 +184,10 @@ enum IncludedOrExcludedBound<I> {
 
 #[track_caller]
 fn panic_internal_error_or_bad_index<I: Index>() -> ! {
-    if crate::public_traits::perfect_index_impls().contains(&TypeId::of::<I>()) {
-        panic!("internal error")
+    if I::TRUSTED {
+        panic!("internal error");
     } else {
-        panic!("internal error or bad `Index` implementation")
+        panic!("internal error or bad `Index` implementation");
     }
 }
 

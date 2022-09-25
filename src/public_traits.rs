@@ -1,22 +1,39 @@
 //! Public-facing traits for implementing [`RleTree`](crate::RleTree)
 
-use std::any::{Any, TypeId};
 use std::fmt::Debug;
 use std::ops::{Add, Sub};
 
-/// Blanket trait for types that can be used as an index in an [`RleTree`]
+/// Trait for types that can be used as an index in an [`RleTree`]
 ///
 /// This is abstracted, instead of just `usize` because there's some cases where it's valuable to
 /// allow multiple dimensions in indexes -- e.g., line & column number pairs. Treating these
 /// abstractly means that cases don't need to maintain a persistent 1D to 2D mapping.
 ///
-/// An implementation of this trait is already provided for types that implement the component
-/// supertraits.
+/// Implementations are provided for the unsigned integer primitives (`u8`, `u16`, etc.).
 ///
 /// [`RleTree`]: crate::RleTree
-pub trait Index: Debug + Copy + Ord + Zero + DirectionalAdd + DirectionalSub + Any {}
+pub trait Index: Debug + Copy + Ord + DirectionalAdd + DirectionalSub {
+    /// Constant value of zero for this index
+    ///
+    /// The requirements on `ZERO` are limited just to the mathematical meaning; addition and
+    /// subtraction by `ZERO` must return the original value.
+    ///
+    ///
+    /// Unlike [`num::Zero`], we use a constant for this trait's zero value, because we need it to
+    /// be guaranteed to be essentially "zero"-cost.
+    ///
+    /// [`num::Zero`]: https://docs.rs/num/0.4.0/num/trait.Zero.html
+    const ZERO: Self;
 
-impl<I: Debug + Copy + Ord + Zero + DirectionalAdd + DirectionalSub + Any> Index for I {}
+    /// Internal-only flag indicating whether we should assume that the `Index` implementation is
+    /// well-behaved
+    ///
+    /// This field is never used to change the behavior of unsafe code, but instead to provide
+    /// better error messages when we (this crate) have messed up (so we can know it's not the
+    /// fault of the `Index` implementation).
+    #[doc(hidden)]
+    const TRUSTED: bool = false;
+}
 
 /// Trait for values that can be stored in an [`RleTree`]
 ///
@@ -298,8 +315,9 @@ impl<T: Sub<Output = Self>> DirectionalSub for T {
 
 macro_rules! impl_for_unsigned_primitive {
     ($ty:ident) => {
-        impl Zero for $ty {
+        impl Index for $ty {
             const ZERO: $ty = 0;
+            const TRUSTED: bool = true;
         }
     };
 }
@@ -310,18 +328,3 @@ impl_for_unsigned_primitive!(u32);
 impl_for_unsigned_primitive!(u64);
 impl_for_unsigned_primitive!(u128);
 impl_for_unsigned_primitive!(usize);
-
-/// List of [`Index`] implementations that are *definitely* correct
-///
-/// We use this in order to provide better error messages when an internal iterator error happens
-/// and it's definitely our fault.
-pub(crate) fn perfect_index_impls() -> [TypeId; 6] {
-    [
-        TypeId::of::<u8>(),
-        TypeId::of::<u16>(),
-        TypeId::of::<u32>(),
-        TypeId::of::<u64>(),
-        TypeId::of::<u128>(),
-        TypeId::of::<usize>(),
-    ]
-}

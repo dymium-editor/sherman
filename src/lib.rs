@@ -45,11 +45,10 @@
 //! [General Sherman]: https://en.wikipedia.org/wiki/General_Sherman_(tree)
 
 #![deny(unsafe_op_in_unsafe_fn)]
-#![cfg_attr(feature = "nightly", feature(dropck_eyepatch))]
 #![cfg_attr(
-    all(feature = "nightly", test),
+    feature = "nightly",
     allow(incomplete_features),
-    feature(specialization)
+    feature(dropck_eyepatch, specialization)
 )]
 
 use std::fmt::{self, Debug, Formatter};
