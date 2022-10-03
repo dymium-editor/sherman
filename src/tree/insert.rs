@@ -836,6 +836,8 @@ where
     ///
     /// Callers must ensure that `new_key_idx <= node.leaf().len()`, and that if
     /// `override_lhs_size` is provided, `new_key_idx != 0`.
+    ///
+    /// [`insert_rhs`]: Self::insert_rhs
     unsafe fn do_insert_no_join<'t, C: Cursor>(
         store: &mut P::SliceRefStore,
         mut node: NodeHandle<ty::Leaf, borrow::Mut<'t>, I, S, P, M>,

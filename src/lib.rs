@@ -44,7 +44,7 @@
 //!
 //! [General Sherman]: https://en.wikipedia.org/wiki/General_Sherman_(tree)
 
-#![deny(unsafe_op_in_unsafe_fn)]
+#![deny(unsafe_op_in_unsafe_fn, rustdoc::broken_intra_doc_links)]
 #![cfg_attr(
     feature = "nightly",
     allow(incomplete_features),

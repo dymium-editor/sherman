@@ -116,9 +116,9 @@ pub enum BorrowState {
     NotBorrowed,
     /// The tree is currently mutably borrowed by a method on the main `RleTree` type
     Mutable,
-    /// A number of [`Ref`]s have immutable borrows on the tree
+    /// A number of [`SliceRef`]s have immutable borrows on the tree
     ///
-    /// If the main reference to the tree has been dropped but there are existing [`Ref`]s active,
+    /// If the main reference to the tree has been dropped but there are existing [`SliceRef`]s active,
     /// then `drop_if_zero` will be true. In this case, the contents of the [`InnerStore`]'s `refs`
     /// and `root` must be dropped when the final `Ref` is.
     ///
@@ -647,7 +647,7 @@ impl<I, S, const M: usize> SliceRef<I, S, M> {
     ///
     /// **See also:** [`can_borrow`]
     ///
-    /// [`can_borrow]: Self::can_borrow
+    /// [`can_borrow`]: Self::can_borrow
     /// [`RleTree`]: crate::RleTree
     /// [`Slice::try_join`]: crate::Slice::try_join
     pub fn is_valid(&self) -> bool {

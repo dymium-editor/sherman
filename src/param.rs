@@ -106,8 +106,7 @@ pub(crate) mod sealed {
     impl YouCantImplementThis for super::AllowSliceRefs {}
 }
 
-/// *Internal-only* abstraction trait required for types used as [`RleTreeConfig::StrongCount`] or
-/// [`RleTreeConfig::SharedStrongCount`].
+/// *Internal-only* abstraction trait required for types used as [`RleTreeConfig::StrongCount`]
 pub trait StrongCount: sealed::YouCantImplementThis {
     /// Returns the associated count
     ///

@@ -27,6 +27,8 @@ unstash () {
     fi
 }
 
+RUSTDOC="cargo +nightly rustdoc --" # nightly is required for -Z flags
+
 if rg '@''commit-fail' $dir -g "!$0"; then # allow <search term> to mark things that shouldn't be committed
     unstash
     exit 1
@@ -37,6 +39,9 @@ elif rg 'auto_fuzz_\d+_unnamed' $dir; then # prevent unnamed fuzz tests
     unstash
     exit 1
 elif ! cargo fmt --check; then
+    unstash
+    exit 1
+elif ! $RUSTDOC --document-private-items -Z unstable-options --check; then
     unstash
     exit 1
 fi

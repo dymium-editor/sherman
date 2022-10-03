@@ -955,7 +955,7 @@ struct ShiftKeys<I> {
     /// The position of the earlier change in the node
     ///
     /// We're being intentionally vague here because this can correspond to multiple different
-    /// things. [`PostInsertTraversalState`], for example, uses this as the index of an updated
+    /// things. `PostInsertTraversalState`, for example, uses this as the index of an updated
     /// child or key. But for cases where we've inserted multiple things (e.g., where
     /// [`insert_rhs`] is provided a second value), this might only correspond to the index of the
     /// first item, with `old_size` and `new_size` referring to the total size of the pieces.

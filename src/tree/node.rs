@@ -294,6 +294,8 @@ pub(super) mod borrow {
     /// Like `Owned`, but guarantees that the node does not have any shallow clones pointing to it
     ///
     /// Allows one-way conversion into [`Owned`] through the [`erase_unqiue`] method.
+    ///
+    /// [`erase_unqiue`]: super::NodeHandle::erase_unique
     pub struct UniqueOwned;
     /// Borrow for use solely by a [`SliceRef`](crate::SliceRef). Essentially like a `'static`
     /// immutable borrow

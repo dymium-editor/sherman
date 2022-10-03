@@ -201,6 +201,8 @@ where
     /// Creates a new iterator
     ///
     /// This function panics if the arguments are invalid, as described in [`RleTree::iter`].
+    ///
+    /// [`RleTree::iter`]: crate::RleTree::iter
     #[track_caller]
     pub(super) fn new(
         range: impl Debug + RangeBounds<I>,

@@ -15,6 +15,8 @@ use std::panic::{RefUnwindSafe, UnwindSafe};
 /// More information is available in the methods themselves.
 ///
 /// [`RleTree`]: crate::RleTree
+/// [`get`]: crate::RleTree::get
+/// [`iter`]: crate::RleTree::iter
 pub struct SliceEntry<'t, I, S, P, const M: usize = DEFAULT_MIN_KEYS>
 where
     P: RleTreeConfig<I, S, M>,
