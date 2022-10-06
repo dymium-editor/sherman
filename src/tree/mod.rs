@@ -538,11 +538,23 @@ where
     /// the range will be removed during `Drain`'s destructor. If the destructor is never called,
     /// the tree will be left in an unspecified (but safe) state. It may leak memory.
     ///
-    /// This method is equivalent to calling [`drain_with_cursor`] with [`NoCursor`].
+    /// **Note:** `Drain` requires that `S: Clone` for COW-enabled trees.
+    ///
+    /// Also: This method is equivalent to calling [`drain_with_cursor`] with [`NoCursor`].
+    ///
+    /// ## Panics
+    ///
+    /// This method panics if the range is out of bounds or invalid: if `range.start > range.end`,
+    /// `range.start < I::ZERO`, or `range.end > self.size()`.
     ///
     /// [`drain_with_cursor`]: Self::drain_with_cursor
-    pub fn drain(&mut self, range: Range<I>) -> Drain<'_, NoCursor, I, S, P, M> {
-        self.drain_with_cursor(NoCursor, range)
+    pub fn drain(&mut self, range: Range<I>) -> Drain<'_, NoCursor, I, S, P, M>
+    where
+        P: SupportsInsert<I, S, M>,
+    {
+        // Directly call `Drain::new`, even though we *could* use `drain_with_cursor`, so panic
+        // locations are better
+        Drain::new(&mut self.root, range, NoCursor)
     }
 
     /// Like [`drain`], but uses a [`Cursor`] to provide a hint on the first call to `next` or
@@ -557,6 +569,7 @@ where
     pub fn drain_with_cursor<C>(&mut self, cursor: C, range: Range<I>) -> Drain<'_, C, I, S, P, M>
     where
         C: Cursor,
+        P: SupportsInsert<I, S, M>,
     {
         Drain::new(&mut self.root, range, cursor)
     }
