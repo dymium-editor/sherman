@@ -1,5 +1,5 @@
-use crate::param::{AllowSliceRefs, NoFeatures};
-use crate::{Constant, RleTree};
+use crate::param::{AllowCow, AllowSliceRefs, NoFeatures};
+use crate::{Constant, RleTree, Slice};
 
 #[test]
 fn basic_insert() {
@@ -119,4 +119,79 @@ fn basic_deep_clone() {
 
     let copied_tree = tree.clone();
     copied_tree.validate();
+}
+
+#[test]
+fn shallow_copy_panics_no_leak() {
+    #[derive(Debug)]
+    struct TimedPanic<'a> {
+        counter: &'a std::cell::Cell<Option<usize>>,
+        record_drop: &'a std::cell::Cell<usize>,
+    }
+
+    impl Drop for TimedPanic<'_> {
+        fn drop(&mut self) {
+            self.record_drop.set(self.record_drop.get() + 1);
+        }
+    }
+
+    impl<'a> std::panic::UnwindSafe for TimedPanic<'a> {}
+
+    impl Clone for TimedPanic<'_> {
+        fn clone(&self) -> Self {
+            if let Some(0) = self.counter.get() {
+                panic!("counter expired!");
+            } else if let Some(n) = self.counter.get() {
+                self.counter.set(Some(n - 1));
+            }
+
+            TimedPanic {
+                counter: self.counter,
+                record_drop: self.record_drop,
+            }
+        }
+    }
+
+    impl<I> Slice<I> for TimedPanic<'_> {
+        const MAY_JOIN: bool = false;
+
+        fn split_at(&mut self, _idx: I) -> Self {
+            unreachable!(); // we never need this
+        }
+    }
+
+    let mut tree: RleTree<u8, TimedPanic, AllowCow> = RleTree::new_empty();
+    let counter = std::cell::Cell::new(None);
+    let fst_drop = std::cell::Cell::new(0);
+    let snd_drop = std::cell::Cell::new(0);
+    let trd_drop = std::cell::Cell::new(0);
+
+    #[rustfmt::skip]
+    let fst_slice = TimedPanic { counter: &counter, record_drop: &fst_drop };
+    #[rustfmt::skip]
+    let snd_slice = TimedPanic { counter: &counter, record_drop: &snd_drop };
+    #[rustfmt::skip]
+    let trd_slice = TimedPanic { counter: &counter, record_drop: &trd_drop };
+
+    tree.insert(0, fst_slice, 4);
+    tree.insert(4, snd_slice, 3);
+
+    // trigger a panic when we go to clone
+    //
+    // First clone: cloning element 0 of `tree`'s root.
+    // Second clone (panics): cloning element 1 of `tree`'s root
+    counter.set(Some(1));
+    let mut shallow_copy = tree.clone(); // <- shouldn't panic; just bumps node refcount
+    assert!(std::panic::catch_unwind(move || shallow_copy.insert(4, trd_slice, 1)).is_err());
+
+    // The call to `insert` should have panicked because creating a shallow clone of the root
+    // (i.e., cloning all slices in it) should have panicked. So: the initial `fst_slice` cloned
+    // should have been dropped once, `fst_slice` no times (because its clone panicked), and
+    // `trd_slice` once (because we were about to insert it).
+    assert_eq!([1, 0, 1], [fst_drop.get(), snd_drop.get(), trd_drop.get()]);
+
+    // And now, dropping the tree allows the original copies of `fst_slice` and `snd_slice` to be
+    // dropped as well:
+    drop(tree);
+    assert_eq!([2, 1, 1], [fst_drop.get(), snd_drop.get(), trd_drop.get()]);
 }
