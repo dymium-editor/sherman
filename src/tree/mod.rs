@@ -24,6 +24,7 @@ mod entry;
 mod insert;
 mod iter;
 mod node;
+mod remove;
 pub(crate) mod slice_ref;
 #[cfg(test)]
 mod tests;

@@ -2739,6 +2739,7 @@ unsafe fn shift<A: ArrayHack<Element = T>, T>(slice: &mut A, start: usize, end: 
 
 // Leaf (node)
 //  * len
+//  * min_len
 //  * max_len
 //  * is_hole
 //  * key_pos (where I: Copy)
@@ -2753,6 +2754,15 @@ where
     /// Returns the number of keys/values in the node
     pub fn len(&self) -> u8 {
         self.len
+    }
+
+    /// Returns the minimum number of keys allowed in any non-root node for a tree with this value
+    /// of `M`
+    ///
+    /// **Note**: This doesn't apply to the root node! It only has to have at least one key.
+    pub fn min_len(&self) -> u8 {
+        // The minimum length is equal to M
+        M as u8
     }
 
     /// Returns the maximum number of keys that any node with this value of `M` supports
@@ -2892,6 +2902,7 @@ where
 
 // Any params
 //  * erase_type
+//  * into_typed
 //  * key_pos
 //  * slice_size
 //  * is_hole
@@ -2911,6 +2922,20 @@ where
         SliceHandle {
             node: self.node.erase_type(),
             idx: self.idx,
+        }
+    }
+
+    /// Converts this `SliceHandle` into one where the type has been resolved
+    pub fn into_typed(self) -> Type<<Self as Typed>::Leaf, <Self as Typed>::Internal> {
+        match self.node.into_typed() {
+            Type::Leaf(node) => Type::Leaf(SliceHandle {
+                node,
+                idx: self.idx,
+            }),
+            Type::Internal(node) => Type::Internal(SliceHandle {
+                node,
+                idx: self.idx,
+            }),
         }
     }
 
@@ -2954,7 +2979,7 @@ where
     }
 
     /// Returns whether this handle's slice is currently a "hole"
-    fn is_hole(&self) -> bool {
+    pub fn is_hole(&self) -> bool {
         // SAFETY: `is_hole` requires `self.idx < u8::MAX`, which is guaranteed for all key
         // indexes
         unsafe { self.node.leaf().is_hole(self.idx) }
