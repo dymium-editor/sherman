@@ -538,11 +538,23 @@ where
     /// the range will be removed during `Drain`'s destructor. If the destructor is never called,
     /// the tree will be left in an unspecified (but safe) state. It may leak memory.
     ///
-    /// This method is equivalent to calling [`drain_with_cursor`] with [`NoCursor`].
+    /// **Note:** `Drain` requires that `S: Clone` for COW-enabled trees.
+    ///
+    /// Also: This method is equivalent to calling [`drain_with_cursor`] with [`NoCursor`].
+    ///
+    /// ## Panics
+    ///
+    /// This method panics if the range is out of bounds or invalid: if `range.start > range.end`,
+    /// `range.start < I::ZERO`, or `range.end > self.size()`.
     ///
     /// [`drain_with_cursor`]: Self::drain_with_cursor
-    pub fn drain(&mut self, range: Range<I>) -> Drain<'_, NoCursor, I, S, P, M> {
-        self.drain_with_cursor(NoCursor, range)
+    pub fn drain(&mut self, range: Range<I>) -> Drain<'_, NoCursor, I, S, P, M>
+    where
+        P: SupportsInsert<I, S, M>,
+    {
+        // Directly call `Drain::new`, even though we *could* use `drain_with_cursor`, so panic
+        // locations are better
+        Drain::new(&mut self.root, range, NoCursor)
     }
 
     /// Like [`drain`], but uses a [`Cursor`] to provide a hint on the first call to `next` or
@@ -557,6 +569,7 @@ where
     pub fn drain_with_cursor<C>(&mut self, cursor: C, range: Range<I>) -> Drain<'_, C, I, S, P, M>
     where
         C: Cursor,
+        P: SupportsInsert<I, S, M>,
     {
         Drain::new(&mut self.root, range, cursor)
     }
@@ -820,6 +833,78 @@ fn search_step<'t, I: Index, S, P: RleTreeConfig<I, S, M>, const M: usize>(
         // SAFETY: `k_idx` is known to be a valid key index from the binary search.
         true => ChildOrKey::Key((k_idx, unsafe { node.leaf().key_pos(k_idx) })),
         false => ChildOrKey::Child((k_idx + 1, next_child_start)),
+    }
+}
+
+/// Custom function for iteration that's like [`search_step`], but goes to the key or child to the
+/// target's immediate left if `excluded` is true
+///
+/// This is primarily used for finding iteration endpoints, where the end may be exclusive.
+fn bounded_search_step<'t, I, S, P, const M: usize>(
+    node: NodeHandle<ty::Unknown, borrow::Immut<'t>, I, S, P, M>,
+    hint: Option<PathComponent>,
+    target: I,
+    excluded: bool,
+) -> ChildOrKey<(u8, I), (u8, I)>
+where
+    I: Index,
+    P: RleTreeConfig<I, S, M>,
+{
+    let result = if target == node.leaf().subtree_size() {
+        debug_assert!(excluded);
+        ChildOrKey::Key((node.leaf().len(), target))
+    } else {
+        search_step(node, hint, target)
+    };
+
+    if !excluded {
+        return result;
+    }
+
+    // Because we have an excluded bound, check for key/child positions exactly matching `target`,
+    // and move to the previous key or child
+    match result {
+        ChildOrKey::Child((c_idx, c_pos)) if c_pos == target => {
+            if c_idx == 0 {
+                panic_internal_error_or_bad_index::<I>();
+            }
+
+            let k_idx = c_idx - 1;
+            // SAFETY: child indexes returned from `search_step` are guaranteed to be valid
+            // children, so the key to their left (at `c_idx - 1`) is a valid key
+            let k_pos = unsafe { node.leaf().key_pos(k_idx) };
+            ChildOrKey::Key((k_idx, k_pos))
+        }
+        ChildOrKey::Key((k_idx, k_pos)) if k_pos == target => match node.typed_ref() {
+            Type::Leaf(n) => {
+                if k_idx == 0 {
+                    panic_internal_error_or_bad_index::<I>();
+                }
+
+                // SAFETY: key indexes returned from `search_step` are guaranteed to be in bounds,
+                // and our special case is also non-zero; we checked above that `k_idx != 0`, so
+                // subtracting one won't overlflow: `k_idx - 1` is still in bounds.
+                let lhs_k_pos = unsafe { n.leaf().key_pos(k_idx - 1) };
+                ChildOrKey::Key((k_idx - 1, lhs_k_pos))
+            }
+            Type::Internal(n) => {
+                let c_idx = k_idx;
+                // SAFETY: key indexes returned from `search_step` are guaranteed to be in bounds,
+                // so a child at the same index (i.e. to its left) will also be valid.
+                let c_pos = k_pos.sub_right(unsafe { n.child_size(c_idx) });
+                ChildOrKey::Child((c_idx, c_pos))
+            }
+        },
+        r => r,
+    }
+}
+
+#[track_caller]
+fn panic_internal_error_or_bad_index<I: Index>() -> ! {
+    if I::TRUSTED {
+        panic!("internal error");
+    } else {
+        panic!("internal error or bad `Index` implementation");
     }
 }
 

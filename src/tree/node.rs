@@ -129,6 +129,7 @@ where
 impl<Ty, B, I, S, P, const M: usize> Debug for NodeHandle<Ty, B, I, S, P, M>
 where
     Ty: TypeHint,
+    B: borrow::Valid,
     P: RleTreeConfig<I, S, M>,
 {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
@@ -152,6 +153,7 @@ where
 impl<Ty, B, I, S, P, const M: usize> Debug for SliceHandle<Ty, B, I, S, P, M>
 where
     Ty: TypeHint,
+    B: borrow::Valid,
     P: RleTreeConfig<I, S, M>,
 {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
@@ -309,6 +311,12 @@ pub(super) mod borrow {
     /// that they don't produce aliasing issues. `miri` (i.e. Stacked Borrows) only accepts it
     /// because the entire thing uses raw pointers.
     pub struct Mut<'a>(PhantomData<&'a mut ()>);
+    /// Like [`Mut`], but for use within the implementation of `Drain`
+    ///
+    /// This borrow type is notable because it does *not* need to abide by the normal
+    /// initialization rules for `Leaf.vals` or `Leaf.refs`. As such, there are a few methods that
+    /// are not available for `DrainMut` that are available for other types of borrows.
+    pub struct DrainMut<'a>(PhantomData<&'a mut ()>);
     /// Borrow that's used only for dropping the tree, produced by [`NodeHandle::try_drop`] or
     /// [`NodeHandle::into_drop`]
     ///
@@ -316,11 +324,29 @@ pub(super) mod borrow {
     /// [`NodeHandle::into_drop`]: super::NodeHandle::into_drop
     pub struct Dropping;
 
+    /// Marker trait for borrow types that guarantee the tree they provide access to is valid
+    ///
+    /// After the end of each operation - even if it panics and ends prematurely - the tree will
+    /// remain valid.
+    ///
+    /// Note that "valid" here does not have the same meaning as in `RleTree::validate`. Here,
+    /// validity refers only to the initialization guarantees for keys, `RefId`s, and slices.
+    pub trait Valid {}
+    impl Valid for Owned {}
+    impl Valid for UniqueOwned {}
+    impl Valid for SliceRef {}
+    impl<'a> Valid for Immut<'a> {}
+    impl<'a> Valid for Mut<'a> {}
+    // Technically speaking, panic during drop can leave the tree in an invalid state, but because
+    // it's unsound to double-drop, that invalid state can't be observed, so this impl is still ok
+    impl<'a> Valid for Dropping {}
+
     /// Marker trait for borrow types that are not [`Owned`], [`UniqueOwned`], or [`Dropping`]
     pub trait NotOwned {}
     impl NotOwned for SliceRef {}
     impl<'a> NotOwned for Immut<'a> {}
     impl<'a> NotOwned for Mut<'a> {}
+    impl<'a> NotOwned for DrainMut<'a> {}
 
     /// Marker for borrow types that can be immutably borrowed
     pub trait AsImmut {}
@@ -369,6 +395,16 @@ pub(super) mod borrow {
         }
     }
     impl<'a, I, S, P, const M: usize> SupportsInsertIfMut<I, S, P, M> for Mut<'a>
+    where
+        P: RleTreeConfig<I, S, M> + SupportsInsert<I, S, M>,
+    {
+        type Param = P;
+
+        fn cast_ref_if_mut(r: &mut NodePtr<I, S, P, M>) -> Option<&mut NodePtr<I, S, P, M>> {
+            Some(r)
+        }
+    }
+    impl<'a, I, S, P, const M: usize> SupportsInsertIfMut<I, S, P, M> for DrainMut<'a>
     where
         P: RleTreeConfig<I, S, M> + SupportsInsert<I, S, M>,
     {
@@ -806,7 +842,7 @@ where
 //  * into_parent
 //  * into_slice_handle (where B: borrow::NotOwned)
 //  * try_child_size (where I: Copy)
-//  * shallow_clone (where I: Index, P: SupportsInsert)
+//  * shallow_clone (where B: borrow::Valid + borrow::Immut, I: Index, P: SupportsInsert)
 //  * increase_strong_count_and_clone
 impl<Ty, B, I, S, P, const M: usize> NodeHandle<Ty, B, I, S, P, M>
 where
@@ -826,6 +862,10 @@ where
     }
 
     /// Returns a reference to the inner `Leaf`
+    ///
+    /// This method does not require `B: borrow::Valid` only because the methods on `Leaf` don't
+    /// permit access that would be unsound if the node was invalid (in the ways allowed by
+    /// [`borrow::Valid`]).
     pub(super) fn leaf(&self) -> &Leaf<I, S, P, M> {
         // SAFETY: references to `Internal` nodes can be cast to `Leaf`s, as described in the
         // "safety" comment for `Internal` -- so regardless of the type of the node, we can read it
@@ -1026,7 +1066,7 @@ where
     /// This function requires that `P = AllowCow`, and *will* trigger UB if that is not true.
     pub unsafe fn shallow_clone(&self) -> NodeHandle<Ty, borrow::Owned, I, S, P, M>
     where
-        B: borrow::AsImmut,
+        B: borrow::Valid + borrow::AsImmut,
         I: Index,
         P: SupportsInsert<I, S, M>,
     {
@@ -1589,6 +1629,47 @@ where
     }
 }
 
+// any type, borrow::DrainMut
+//  * borrow_unchecked
+//  * copy_handle
+impl<'t, Ty, I, S, P, const M: usize> NodeHandle<Ty, borrow::DrainMut<'t>, I, S, P, M>
+where
+    Ty: TypeHint,
+    P: RleTreeConfig<I, S, M>,
+{
+    /// Immutably borrows the `DrainMut` node
+    ///
+    /// ## Safety
+    ///
+    /// Unlike [`NodeHandle::borrow`], which is not unsafe, this method requires that the caller
+    /// make sure that no references to any slices are produced.
+    pub unsafe fn borrow_unchecked<'h>(&'h self) -> NodeHandle<Ty, borrow::Immut<'h>, I, S, P, M> {
+        // Unfortunately, there isn't really a good way to check this. We're kind of left to our
+        // best bet of `miri`, creative test cases, and a bit of fuzzing.
+        NodeHandle {
+            ptr: self.ptr,
+            height: self.height,
+            borrow: PhantomData,
+        }
+    }
+
+    /// Copies the handle on the node
+    ///
+    /// This method is safe because all of the other methods on `borrow::Mut` or `borrow::Drain`
+    /// *already* assume that there may be multiple mutable handles active at the same time. For
+    /// example, the safety requirements for [`with_mut`] explicitly require that references are
+    /// not aliased.
+    ///
+    /// [`with_mut`]: Self::with_mut
+    pub fn copy_handle(&self) -> Self {
+        NodeHandle {
+            ptr: self.ptr,
+            height: self.height,
+            borrow: self.borrow,
+        }
+    }
+}
+
 // ty::Unknown, borrow::Owned
 //  * try_drop
 //  * make_unique (where I: Index, P: SupportsInsert)
@@ -2124,6 +2205,7 @@ where
 
 // ty::Unknown, borrow::Mut
 //  * split_slice_handle
+//  * into_drain
 impl<'t, Ty, I, S, P, const M: usize> NodeHandle<Ty, borrow::Mut<'t>, I, S, P, M>
 where
     Ty: TypeHint,
@@ -2145,6 +2227,15 @@ where
                 borrow: self.borrow,
             },
             idx: key_idx,
+        }
+    }
+
+    /// Converts this mutable borrow into one that does not need the node it references to be valid
+    pub fn into_drain(self) -> NodeHandle<Ty, borrow::DrainMut<'t>, I, S, P, M> {
+        NodeHandle {
+            ptr: self.ptr,
+            height: self.height,
+            borrow: PhantomData,
         }
     }
 }
@@ -2892,18 +2983,18 @@ where
 
 // Any params
 //  * erase_type
+//  * into_typed
 //  * key_pos
 //  * slice_size
 //  * is_hole
 //  * clone_slice_ref
 //  * clone_immut
-//  * take_refid
-//  * replace_refid
-//  * redirect_to
+//  * take_refid (where B: borrow::Valid)
+//  * replace_refid (where B: borrow::Valid)
+//  * redirect_to (where B: borrow::Valid)
 impl<Ty, B, I, S, P, const M: usize> SliceHandle<Ty, B, I, S, P, M>
 where
     Ty: TypeHint,
-    B: borrow::AsImmut,
     P: RleTreeConfig<I, S, M>,
 {
     /// Converts this `SliceHandle` into one with `ty::Unknown` instead of the current type tag
@@ -2911,6 +3002,20 @@ where
         SliceHandle {
             node: self.node.erase_type(),
             idx: self.idx,
+        }
+    }
+
+    /// Converts this `SliceHandle` into one where the type has been resolved
+    pub fn into_typed(self) -> Type<<Self as Typed>::Leaf, <Self as Typed>::Internal> {
+        match self.node.into_typed() {
+            Type::Leaf(node) => Type::Leaf(SliceHandle {
+                node,
+                idx: self.idx,
+            }),
+            Type::Internal(node) => Type::Internal(SliceHandle {
+                node,
+                idx: self.idx,
+            }),
         }
     }
 
@@ -2978,7 +3083,10 @@ where
     }
 
     /// Removes the `RefId` associated with the slice and returns it, if there is one
-    pub fn take_refid(&self) -> resolve![P::SliceRefStore::OptionRefId] {
+    pub fn take_refid(&self) -> resolve![P::SliceRefStore::OptionRefId]
+    where
+        B: borrow::Valid,
+    {
         let default = <resolve![P::SliceRefStore::OptionRefId]>::default();
         self.replace_refid(default)
     }
@@ -2987,7 +3095,10 @@ where
     pub fn replace_refid(
         &self,
         new_ref: resolve![P::SliceRefStore::OptionRefId],
-    ) -> resolve![P::SliceRefStore::OptionRefId] {
+    ) -> resolve![P::SliceRefStore::OptionRefId]
+    where
+        B: borrow::Valid,
+    {
         unsafe {
             let unsafecell = self
                 .node
@@ -3000,7 +3111,10 @@ where
     }
 
     /// Informs the `SliceRefStore` to redirect any references to `self` to `other`
-    pub fn redirect_to(&self, other: &Self, store: &mut resolve![P::SliceRefStore]) {
+    pub fn redirect_to(&self, other: &Self, store: &mut resolve![P::SliceRefStore])
+    where
+        B: borrow::Valid,
+    {
         // SAFETY: in general, producing a reference to something in `refs` is only valid as long
         // as we don't reentrantly call anything that would also modify the value, which we happen
         // to know `SliceRefStore` won't do for the call to `redirect`.
@@ -3147,6 +3261,106 @@ where
         let output = func(&mut slice);
         self.fill_hole(slice);
         output
+    }
+}
+
+// any type, borrow::DrainMut
+//  * copy_handle
+//  * with_slice_unchecked
+//  * remove_slice_unchecked
+//  * remove_refid_unchecked
+impl<'t, Ty, I, S, P, const M: usize> SliceHandle<Ty, borrow::DrainMut<'t>, I, S, P, M>
+where
+    Ty: TypeHint,
+    P: RleTreeConfig<I, S, M>,
+{
+    /// Copies the handle on the slice
+    ///
+    /// See also: [`NodeHandle::copy_handle`]
+    pub fn copy_handle(&self) -> Self {
+        SliceHandle {
+            node: self.node.copy_handle(),
+            idx: self.idx,
+        }
+    }
+
+    /// Version of [`with_slice`] for `DrainMut`, where arbitrary slices within a node may be
+    /// uninitialized without being marked as such
+    ///
+    /// ## Safety
+    ///
+    /// The slice pointed to by this `SliceHandle` *must not* have already been removed by a call
+    /// to [`remove_slice_unchecked`].
+    ///
+    /// ## Panics
+    ///
+    /// Exactly the same panics as [`with_slice`].
+    ///
+    /// [`with_slice`]: Self::with_slice
+    /// [`remove_slice_unchecked`]: Self::remove_slice_unchecked
+    pub unsafe fn with_slice_unchecked<R>(&mut self, func: impl FnOnce(&mut S) -> R) -> R {
+        // Create a `borrow::Mut` handle equivalent to `self` for us to use.
+        let mut h: SliceHandle<Ty, borrow::Mut, I, S, P, M> = SliceHandle {
+            idx: self.idx,
+            node: NodeHandle {
+                ptr: self.node.ptr,
+                height: self.node.height,
+                borrow: PhantomData,
+            },
+        };
+
+        h.with_slice(func)
+    }
+
+    /// Like [`take_value_and_leave_hole`], but does not leave a hole behind
+    ///
+    /// ## Safety
+    ///
+    /// This method may produce UB if the slice has already been removed with a prior call to
+    /// `remove_slice_unchecked` for the same slice.
+    ///
+    /// ## Panics
+    ///
+    /// This method panics if `self.is_hole()`.
+    ///
+    /// [`take_value_and_leave_hole`]: Self::take_value_and_leave_hole
+    pub unsafe fn remove_slice_unchecked(&mut self) -> S {
+        assert!(!self.is_hole());
+
+        // Create a `borrow::Mut` handle equivalent to `self.node` for us to use:
+        let mut h: NodeHandle<Ty, borrow::Mut, I, S, P, M> = NodeHandle {
+            ptr: self.node.ptr,
+            height: self.node.height,
+            borrow: PhantomData,
+        };
+
+        unsafe {
+            h.with_mut(|leaf| {
+                leaf.vals
+                    .get_unchecked(self.idx as usize)
+                    .assume_init_read()
+            })
+        }
+    }
+
+    /// Like [`take_refid`], but leaves the `RefId`'s slot uninitialized
+    ///
+    /// ## Safety
+    ///
+    /// This method may produce UB if the `RefId` has already been removed with a prior call to
+    /// `remove_refid_unchecked` for the same slice.
+    ///
+    /// [`take_refid`]: SliceHandle::take_refid
+    pub unsafe fn remove_refid_unchecked(&mut self) -> resolve![P::SliceRefStore::OptionRefId] {
+        unsafe {
+            let unsafecell = self
+                .node
+                .leaf()
+                .refs
+                .get_unchecked(self.idx as usize)
+                .assume_init_read();
+            unsafecell.into_inner()
+        }
     }
 }
 
