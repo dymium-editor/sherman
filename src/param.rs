@@ -8,8 +8,8 @@
 //! which can be used as parameterization for the [`RleTree`], like:
 //!
 //! ```
-//! use sherman::RleTree;
 //! use sherman::param::AllowCow;
+//! use sherman::RleTree;
 //!
 //! type MyTree<I, V> = RleTree<I, V, AllowCow>;
 //! ```

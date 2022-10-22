@@ -169,7 +169,8 @@ where
 #[rustfmt::skip]
 impl<'t, T: TypeHint, I, S, P, const M: usize> Copy for NodeHandle<T, borrow::Immut<'t>, I, S, P, M>
 where
-    P: RleTreeConfig<I, S, M> {}
+    P: RleTreeConfig<I, S, M>,
+{}
 
 #[rustfmt::skip]
 impl<'t, T: TypeHint, I, S, P, const M: usize> Clone for NodeHandle<T, borrow::Immut<'t>, I, S, P, M>
@@ -182,7 +183,8 @@ where
 #[rustfmt::skip]
 impl<'t, T: TypeHint, I, S, P, const M: usize> Copy for SliceHandle<T, borrow::Immut<'t>, I, S, P, M>
 where
-    P: RleTreeConfig<I, S, M> {}
+    P: RleTreeConfig<I, S, M>,
+{}
 
 #[rustfmt::skip]
 impl<'t, T: TypeHint, I, S, P, const M: usize> Clone for SliceHandle<T, borrow::Immut<'t>, I, S, P, M>
@@ -210,7 +212,8 @@ where
 impl<Ty, B, I, S, P, const M: usize> Eq for NodeHandle<Ty, B, I, S, P, M>
 where
     Ty: TypeHint,
-    P: RleTreeConfig<I, S, M> {}
+    P: RleTreeConfig<I, S, M>,
+{}
 
 impl<Ty, B, I, S, P, const M: usize> PartialEq for SliceHandle<Ty, B, I, S, P, M>
 where
@@ -226,7 +229,8 @@ where
 impl<Ty, B, I, S, P, const M: usize> Eq for SliceHandle<Ty, B, I, S, P, M>
 where
     Ty: TypeHint,
-    P: RleTreeConfig<I, S, M> {}
+    P: RleTreeConfig<I, S, M>,
+{}
 
 /// Abstraction over known/unknown types of a [`NodeHandle`] or [`SliceHandle`], so that we can
 /// provide certain guarantees via the type system
@@ -277,7 +281,6 @@ pub(super) mod ty {
 }
 
 /// Abstraction over borrows in a `NodeHandle` or `SliceHandle`
-#[rustfmt::skip]
 pub(super) mod borrow {
     use super::NodePtr;
     use crate::param::{RleTreeConfig, SupportsInsert};
@@ -626,12 +629,7 @@ impl<I, S, P: RleTreeConfig<I, S, M>, const M: usize> Leaf<I, S, P, M> {
                         // SAFETY: we're constructing a temporary reference to an initialized
                         // `Option<RefId>`
                         ref_id: unsafe {
-                            &*self
-                                .0
-                                .refs
-                                .get_unchecked(i as usize)
-                                .assume_init_ref()
-                                .get()
+                            &*self.0.refs.get_unchecked(i as usize).assume_init_ref().get()
                         },
                     });
                 }
@@ -656,10 +654,8 @@ impl<I, S, P: RleTreeConfig<I, S, M>, const M: usize> Leaf<I, S, P, M> {
                 }
 
                 let mut s = f.debug_struct("Key");
-                s.field("pos", self.pos.fallible_debug()).field(
-                    "slice",
-                    self.slice.map(|s| s.fallible_debug()).unwrap_or(&IsHole),
-                );
+                s.field("pos", self.pos.fallible_debug())
+                    .field("slice", self.slice.map(|s| s.fallible_debug()).unwrap_or(&IsHole));
                 if mem::size_of::<R>() != 0 {
                     s.field("ref_id", self.ref_id.fallible_debug());
                 }
@@ -887,11 +883,7 @@ where
                 height: ty::ZeroU8::new(),
                 borrow: PhantomData,
             }),
-            Some(h) => Type::Internal(NodeHandle {
-                ptr: self.ptr,
-                height: h,
-                borrow: PhantomData,
-            }),
+            Some(h) => Type::Internal(NodeHandle { ptr: self.ptr, height: h, borrow: PhantomData }),
         }
     }
 
@@ -969,10 +961,7 @@ where
     {
         // SAFETY: Guaranteed by the safety requirements for this method
         unsafe { weak_assert!(key_idx < self.leaf().len) };
-        SliceHandle {
-            node: self,
-            idx: key_idx,
-        }
+        SliceHandle { node: self, idx: key_idx }
     }
 
     /// Returns this node's parent, alongside the child index that `self` was. If this node has no
@@ -989,11 +978,7 @@ where
         // trivially true that `h + 1 != 0` (otherwise we'd worry about wrapping overflow).
         let height = unsafe { NonZeroU8::new_unchecked(self.height.as_u8() + 1) };
 
-        let parent_handle = NodeHandle {
-            ptr,
-            height,
-            borrow: PhantomData,
-        };
+        let parent_handle = NodeHandle { ptr, height, borrow: PhantomData };
         Ok((parent_handle, idx_in_parent))
     }
 
@@ -1217,10 +1202,8 @@ where
                 unsafe {
                     handle.as_mut().with_internal(|internal| {
                         for i in 0..=this_leaf.len {
-                            let p = internal
-                                .child_ptrs
-                                .get_mut_unchecked(i as usize)
-                                .assume_init_mut();
+                            let p =
+                                internal.child_ptrs.get_mut_unchecked(i as usize).assume_init_mut();
                             let leaf_mut = p.cast::<Leaf<I, S, param::NoFeatures, M>>().as_mut();
                             leaf_mut.parent = Some(new_ptr);
                         }
@@ -1390,10 +1373,7 @@ where
         &mut self,
         midpoint_idx: u8,
         store: &mut resolve![P::SliceRefStore],
-    ) -> (
-        Key<I, S, P, M>,
-        NodeHandle<Ty, borrow::UniqueOwned, I, S, P, M>,
-    )
+    ) -> (Key<I, S, P, M>, NodeHandle<Ty, borrow::UniqueOwned, I, S, P, M>)
     where
         I: Copy,
     {
@@ -1730,9 +1710,7 @@ where
         };
 
         let key_pos = self.leaf().subtree_size();
-        let total_size = key_pos
-            .add_right(key_size)
-            .add_right(rhs.leaf().subtree_size());
+        let total_size = key_pos.add_right(key_size).add_right(rhs.leaf().subtree_size());
 
         let new_internal: NonNull<Internal<I, S, P, M>> = alloc_aligned(Internal {
             leaf: Leaf {
@@ -2001,12 +1979,7 @@ where
 
         // SAFETY: the condition above guarantees that `idx <= self.leaf.len`, which is the section
         // fo the node that's initialized.
-        let ptr = unsafe {
-            self.internal()
-                .child_ptrs
-                .get_unchecked(idx as usize)
-                .assume_init()
-        };
+        let ptr = unsafe { self.internal().child_ptrs.get_unchecked(idx as usize).assume_init() };
 
         NodeHandle {
             ptr,
@@ -2045,10 +2018,8 @@ where
         // SAFETY: `child_size` requires `idx <= self.leaf().len()`. Guaranteed by caller
         let size = unsafe { self.child_size(idx) };
 
-        let next_key_pos = self
-            .leaf()
-            .try_key_pos(idx)
-            .unwrap_or_else(|| self.leaf().subtree_size());
+        let next_key_pos =
+            self.leaf().try_key_pos(idx).unwrap_or_else(|| self.leaf().subtree_size());
 
         next_key_pos.sub_right(size)
     }
@@ -2226,11 +2197,7 @@ where
                     let r = &*leaf.refs.get_unchecked(i as usize).assume_init_ref().get();
                     let handle = SliceHandle {
                         idx: i,
-                        node: NodeHandle {
-                            ptr: this_ptr,
-                            height,
-                            borrow: PhantomData,
-                        },
+                        node: NodeHandle { ptr: this_ptr, height, borrow: PhantomData },
                     };
                     store.update(r, handle);
                 }
@@ -2285,12 +2252,8 @@ where
         // SAFETY: getting an immutable reference to the OptionRefId is always sound, and we know
         // it's initialized because we did that above.
         unsafe {
-            let ref_ptr: *mut resolve![P::SliceRefStore::OptionRefId] = self
-                .leaf()
-                .refs
-                .get_unchecked(k_idx as usize)
-                .assume_init_ref()
-                .get();
+            let ref_ptr: *mut resolve![P::SliceRefStore::OptionRefId] =
+                self.leaf().refs.get_unchecked(k_idx as usize).assume_init_ref().get();
 
             let handle = SliceHandle {
                 idx: k_idx,
@@ -2506,12 +2469,7 @@ where
 
         let this_ptr = self.ptr;
         let height = self.height.as_u8();
-        let pos = self
-            .leaf()
-            .try_key_pos(key_idx)
-            .unwrap_or(self.leaf().total_size);
-
-        #[rustfmt::skip]
+        let pos = self.leaf().try_key_pos(key_idx).unwrap_or(self.leaf().total_size);
         let func = |internal: &mut Internal<I, S, P, M>| {
             let ki = key_idx as usize;
             let ci = ki + 1;
@@ -2587,11 +2545,8 @@ where
                 // Leaf` instead of `*mut <whatever type it is>` is ok because `struct
                 // Internal` is `#[repr(C)]` and starts with the `Leaf` it contains.
                 unsafe {
-                    let mut p: NonNull<Leaf<I, S, P, M>> = internal
-                        .child_ptrs
-                        .get_unchecked(i as usize)
-                        .assume_init()
-                        .cast();
+                    let mut p: NonNull<Leaf<I, S, P, M>> =
+                        internal.child_ptrs.get_unchecked(i as usize).assume_init().cast();
 
                     // Note: it's always valid to construct an immutable reference to a node
                     // (provided it's not also mutably borrowed, which the borrows on `self`
@@ -2637,11 +2592,8 @@ where
     // Even though we don't *actually* own the node, we can pretend like we do for now, because
     // we'll need to call `try_drop` later, which requires `borrow::Owned`. This is safe because
     // the `Owned` borrow doesn't escape this function.
-    let node: NodeHandle<ty::Unknown, borrow::Owned, _, _, _, M> = NodeHandle {
-        ptr: *ptr,
-        height,
-        borrow: PhantomData,
-    };
+    let node: NodeHandle<ty::Unknown, borrow::Owned, _, _, _, M> =
+        NodeHandle { ptr: *ptr, height, borrow: PhantomData };
 
     if node.leaf().strong_count.is_unique() {
         return;
@@ -2908,10 +2860,7 @@ where
 {
     /// Converts this `SliceHandle` into one with `ty::Unknown` instead of the current type tag
     pub fn erase_type(self) -> <Self as Typed>::Unknown {
-        SliceHandle {
-            node: self.node.erase_type(),
-            idx: self.idx,
-        }
+        SliceHandle { node: self.node.erase_type(), idx: self.idx }
     }
 
     /// Returns the position of the slice within its node
@@ -2940,9 +2889,7 @@ where
         // SAFETY: the existence of `self` guarantees that `self.idx` is a valid key
         let k_pos = unsafe { leaf.key_pos(self.idx) };
 
-        let mut next_pos = leaf
-            .try_key_pos(self.idx + 1)
-            .unwrap_or_else(|| leaf.subtree_size());
+        let mut next_pos = leaf.try_key_pos(self.idx + 1).unwrap_or_else(|| leaf.subtree_size());
 
         // SAFETY: `try_child_size` requires the same condition as `key_pos` returning `None`,
         // which we've already guaranteed.
@@ -2989,12 +2936,8 @@ where
         new_ref: resolve![P::SliceRefStore::OptionRefId],
     ) -> resolve![P::SliceRefStore::OptionRefId] {
         unsafe {
-            let unsafecell = self
-                .node
-                .leaf()
-                .refs
-                .get_unchecked(self.idx as usize)
-                .assume_init_ref();
+            let unsafecell =
+                self.node.leaf().refs.get_unchecked(self.idx as usize).assume_init_ref();
             mem::replace(&mut *unsafecell.get(), new_ref)
         }
     }
@@ -3042,12 +2985,7 @@ where
         // and `assume_init_ref`) are fine, and it's ok to hold onto the reference for 't because
         // the original borrow to create the `Immut` requires a reference with lifetime 't.
         unsafe {
-            let r: &S = self
-                .node
-                .leaf()
-                .vals
-                .get_unchecked(self.idx as usize)
-                .assume_init_ref();
+            let r: &S = self.node.leaf().vals.get_unchecked(self.idx as usize).assume_init_ref();
             // Extend the lifetime beyond borrowing `self`.
             &*(r as *const S)
         }
@@ -3100,9 +3038,7 @@ where
             self.node.with_mut(|leaf| {
                 // Add a hole before taking the value:
                 leaf.holes = new_holes;
-                leaf.vals
-                    .get_unchecked(self.idx as usize)
-                    .assume_init_read()
+                leaf.vals.get_unchecked(self.idx as usize).assume_init_read()
             })
         }
     }
@@ -3171,13 +3107,8 @@ where
         // SAFETY: the `get_unchecked` + `assume_init_ref` combo requires that the slice at index
         // `self.idx` is valid and initialized. The existence of a `SliceHandle` guarantees this
         // for its values.
-        let key_ref: &S = unsafe {
-            self.node
-                .leaf()
-                .vals
-                .get_unchecked(self.idx as usize)
-                .assume_init_ref()
-        };
+        let key_ref: &S =
+            unsafe { self.node.leaf().vals.get_unchecked(self.idx as usize).assume_init_ref() };
 
         // extend the lifetime of `key_ref`
         //

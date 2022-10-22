@@ -89,10 +89,7 @@ where
                 cursor_iter: Some(cursor.into_path()),
                 node: owned_root.borrow_mut(),
                 target: idx,
-                adjacent_keys: AdjacentKeys {
-                    lhs: None,
-                    rhs: None,
-                },
+                adjacent_keys: AdjacentKeys { lhs: None, rhs: None },
             };
 
         let insertion_point = loop {
@@ -139,13 +136,9 @@ where
                     },
                 }
             }
-            ChildOrKey::Key(key) => Self::split_insert(
-                &mut root.refs_store,
-                key.handle,
-                key.pos_in_key,
-                slice,
-                size,
-            ),
+            ChildOrKey::Key(key) => {
+                Self::split_insert(&mut root.refs_store, key.handle, key.pos_in_key, slice, size)
+            }
         };
 
         // Propagate the size change up the tree
@@ -190,8 +183,7 @@ where
                 // Make sure that the `SliceRefStore`'s root is up to date:
                 //
                 // SAFETY: we're only using `copied_handle` for the `SliceRefStore`
-                r.refs_store
-                    .set_root(Some(unsafe { r.handle.clone_root_for_refs_store() }));
+                r.refs_store.set_root(Some(unsafe { r.handle.clone_root_for_refs_store() }));
                 r.refs_store.release_mutable();
             }
             // SAFETY: We originally checekd that `self.root` is `Some(_)` up above, and while
@@ -553,13 +545,7 @@ where
                 }
                 s.field("insertion", insertion).finish()
             }
-            Self::NewRoot {
-                lhs,
-                key,
-                key_size,
-                rhs,
-                ..
-            } => {
+            Self::NewRoot { lhs, key, key_size, rhs, .. } => {
                 let mut s = f.debug_struct("NewRoot");
                 s.field("lhs", &lhs)
                     .field("key", &key)
@@ -930,22 +916,19 @@ where
         // We can allow `PostInsertTraversalState::do_upward_step` to shift the key positions,
         // because the "current" size of the newly inserted slice is zero, so the increase from
         // zero to `slice_size` in `do_upward_step` will have the desired effect anyways.
-        return Ok(PostInsertTraversalResult::Continue(
-            PostInsertTraversalState {
-                // SAFETY: `clone_slice_ref` requires that the handle isn't used until after
-                // `node` is dropped, which is guaranteed by the safety bounds of
-                // `inserted_slice`.
-                inserted_slice: unsafe { slice_handle.clone_slice_ref().erase_type() },
-                child_or_key: ChildOrKey::Key((
-                    new_key_idx + one_if_snd,
-                    slice_handle.node.erase_type(),
-                )),
-                override_pos,
-                old_size,
-                new_size,
-                partial_cursor: C::new_empty(),
-            },
-        ));
+        return Ok(PostInsertTraversalResult::Continue(PostInsertTraversalState {
+            // SAFETY: `clone_slice_ref` requires that the handle isn't used until after `node` is
+            // dropped, which is guaranteed by the safety bounds of `inserted_slice`.
+            inserted_slice: unsafe { slice_handle.clone_slice_ref().erase_type() },
+            child_or_key: ChildOrKey::Key((
+                new_key_idx + one_if_snd,
+                slice_handle.node.erase_type(),
+            )),
+            override_pos,
+            old_size,
+            new_size,
+            partial_cursor: C::new_empty(),
+        }));
     }
 
     /// Helper function for [`do_insert_no_join`]; refer to that function for context
@@ -1346,12 +1329,7 @@ where
                         insert_into.set_single_key_pos(new_key_idx + 1, snd_pos);
                     }
 
-                    let opts = ShiftKeys {
-                        from,
-                        pos,
-                        old_size,
-                        new_size,
-                    };
+                    let opts = ShiftKeys { from, pos, old_size, new_size };
                     shift_keys_increase(insert_into, opts);
                 }
 
@@ -1360,10 +1338,7 @@ where
                 // it until the other borrows on the tree are gone, which the safety docs for
                 // `BubbledInsertState` guarantees.
                 let inserted_handle = unsafe {
-                    insert_into
-                        .borrow()
-                        .into_slice_handle(new_key_idx)
-                        .clone_slice_ref()
+                    insert_into.borrow().into_slice_handle(new_key_idx).clone_slice_ref()
                 };
 
                 Err(BubbledInsertState {
@@ -1474,10 +1449,7 @@ where
             // is guaranteed by the safety docs for `BubbledInsertState`.
             let handle = unsafe { node.borrow().into_slice_handle(0).clone_slice_ref() };
 
-            Some(BubbledInsertion {
-                side: Side::Left,
-                handle: handle.erase_type(),
-            })
+            Some(BubbledInsertion { side: Side::Left, handle: handle.erase_type() })
         };
 
         Err(BubbledInsertState {
@@ -1731,20 +1703,18 @@ where
             let old_lhs_end = lhs_pos.add_right(old_lhs_size);
             let new_lhs_end = lhs_pos.add_right(new_lhs_size);
 
-            let state_pos = state
-                .override_pos
-                .unwrap_or_else(|| match &state.child_or_key {
-                    // SAFETY: docs for `PostInsertTraversalState` guarantee that `k_idx` is within
-                    // bounds for `node`.
-                    ChildOrKey::Key((k_idx, node)) => unsafe { node.leaf().key_pos(*k_idx) },
-                    ChildOrKey::Child((c_idx, node)) => {
-                        let next_key_pos = node
-                            .leaf()
-                            .try_key_pos(*c_idx)
-                            .unwrap_or_else(|| node.leaf().subtree_size());
-                        next_key_pos.sub_left(state.old_size)
-                    }
-                });
+            let state_pos = state.override_pos.unwrap_or_else(|| match &state.child_or_key {
+                // SAFETY: docs for `PostInsertTraversalState` guarantee that `k_idx` is within
+                // bounds for `node`.
+                ChildOrKey::Key((k_idx, node)) => unsafe { node.leaf().key_pos(*k_idx) },
+                ChildOrKey::Child((c_idx, node)) => {
+                    let next_key_pos = node
+                        .leaf()
+                        .try_key_pos(*c_idx)
+                        .unwrap_or_else(|| node.leaf().subtree_size());
+                    next_key_pos.sub_left(state.old_size)
+                }
+            });
 
             let diff = state_pos.sub_left(old_lhs_end);
             state.old_size = state.old_size.add_left(diff).add_left(old_lhs_size);
@@ -1895,22 +1865,20 @@ where
                 }
             };
 
-            return Ok(PostInsertTraversalResult::Continue(
-                PostInsertTraversalState {
-                    inserted_slice: insertion,
-                    // We need to use the midpoint key here so that
-                    // `PostInsertTraversalState::do_upward_step` updates only the keys after the
-                    // lhs-key-rhs grouping. The midpoint key has the same index as the left-hand
-                    // child, so the shifting will start immediately after rhs.
-                    child_or_key: ChildOrKey::Key((lhs_child_idx, parent.erase_type())),
-                    // ^ because of the funky stuff we're doing above, we need to make sure that
-                    // the base positions for shifting are correct
-                    override_pos: Some(override_pos),
-                    old_size,
-                    new_size,
-                    partial_cursor: self.partial_cursor,
-                },
-            ));
+            return Ok(PostInsertTraversalResult::Continue(PostInsertTraversalState {
+                inserted_slice: insertion,
+                // We need to use the midpoint key here so that
+                // `PostInsertTraversalState::do_upward_step` updates only the keys after the
+                // lhs-key-rhs grouping. The midpoint key has the same index as the left-hand
+                // child, so the shifting will start immediately after rhs.
+                child_or_key: ChildOrKey::Key((lhs_child_idx, parent.erase_type())),
+                // ^ because of the funky stuff we're doing above, we need to make sure that the
+                // base positions for shifting are correct
+                override_pos: Some(override_pos),
+                old_size,
+                new_size,
+                partial_cursor: self.partial_cursor,
+            }));
         }
         // Couldn't just insert: need to split
 
@@ -2076,10 +2044,7 @@ where
                         child_idx: new_key_idx + insertion.side as u8,
                     });
 
-                    BubbledInsertion {
-                        side,
-                        handle: insertion.handle,
-                    }
+                    BubbledInsertion { side, handle: insertion.handle }
                 }
 
                 // the insertion was in `self.key`. There isn't much we need to do because the
@@ -2091,19 +2056,13 @@ where
                     // the other borrows on the tree are gone, which the safety docs for
                     // `BubbledInsertState` guarantees.
                     let inserted_handle = unsafe {
-                        insert_into
-                            .borrow()
-                            .into_slice_handle(new_key_idx)
-                            .clone_slice_ref()
+                        insert_into.borrow().into_slice_handle(new_key_idx).clone_slice_ref()
                     };
 
                     // Don't have to update `self.partial_cursor` because the value got inserted as
                     // a key, not a child.
 
-                    BubbledInsertion {
-                        side,
-                        handle: inserted_handle.erase_type(),
-                    }
+                    BubbledInsertion { side, handle: inserted_handle.erase_type() }
                 }
             };
 
@@ -2159,9 +2118,7 @@ where
 
             // Add the key and child to the left-hand node (`parent`)
             let lhs_size = parent.leaf().subtree_size();
-            let new_lhs_size = lhs_size
-                .add_right(midpoint_size)
-                .add_right(old_first_child_size);
+            let new_lhs_size = lhs_size.add_right(midpoint_size).add_right(old_first_child_size);
 
             // SAFETY: `push_key_and_child` requires that `parent.leaf().len()` is not equal to the
             // capacity, which we know is true because `parent.leaf().len() == M - 1` is less than
@@ -2211,8 +2168,7 @@ where
                     Side::Right => M as u8,
                 };
 
-                self.partial_cursor
-                    .prepend_to_path(PathComponent { child_idx });
+                self.partial_cursor.prepend_to_path(PathComponent { child_idx });
             }
 
             Err(BubbledInsertState {
@@ -2268,15 +2224,12 @@ where
         // `node.leaf().len()`. This can be verified by looking at the code above; `from` is either
         // set to `k_idx + 1` or to `c_idx`, both of which exactly meet the required bound.
         unsafe {
-            shift_keys_increase(
-                &mut node,
-                ShiftKeys {
-                    from: first_key_after,
-                    pos,
-                    old_size: self.old_size,
-                    new_size: self.new_size,
-                },
-            );
+            shift_keys_increase(&mut node, ShiftKeys {
+                from: first_key_after,
+                pos,
+                old_size: self.old_size,
+                new_size: self.new_size,
+            });
         }
 
         let new_size = node.leaf().subtree_size();
@@ -2287,8 +2240,7 @@ where
         // ChildOrKey::Child(_)` as long as the cursor is non-empty, but that should always be
         // true.
         if let Some(child_idx) = maybe_child_idx {
-            self.partial_cursor
-                .prepend_to_path(PathComponent { child_idx });
+            self.partial_cursor.prepend_to_path(PathComponent { child_idx });
         }
 
         // Update `self` to the parent, if there is one. Otherwise, this is the root node so we

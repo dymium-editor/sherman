@@ -54,22 +54,23 @@ mod marker_impls {
     impl<'t, I: UnwindSafe + RefUnwindSafe, S: RefUnwindSafe, P, const M: usize> UnwindSafe
         for SliceEntry<'t, I, S, P, M>
     where
-        P: RleTreeConfig<I, S, M>
+        P: RleTreeConfig<I, S, M>,
     {}
 
     impl<'t, I: RefUnwindSafe, S: RefUnwindSafe, P, const M: usize> RefUnwindSafe
         for SliceEntry<'t, I, S, P, M>
     where
-        P: RleTreeConfig<I, S, M>
+        P: RleTreeConfig<I, S, M>,
     {}
 
     unsafe impl<'t, I: Send + Sync, S: Sync, P: Sync, const M: usize> Send
         for SliceEntry<'t, I, S, P, M>
     where
-        P: RleTreeConfig<I, S, M>
+        P: RleTreeConfig<I, S, M>,
     {}
 
-    unsafe impl<'t, I: Sync, S: Sync, P: Sync, const M: usize> Sync for SliceEntry<'t, I, S, P, M> where
+    unsafe impl<'t, I: Sync, S: Sync, P: Sync, const M: usize> Sync for SliceEntry<'t, I, S, P, M>
+    where
         P: RleTreeConfig<I, S, M>
     {}
 }

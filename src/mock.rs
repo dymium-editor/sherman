@@ -99,10 +99,7 @@ impl<I: Index, S: Slice<I>> Mock<I, S> {
         };
 
         let end = self.runs[idx].0;
-        let start = idx
-            .checked_sub(1)
-            .map(|i| self.runs[i].0)
-            .unwrap_or(I::ZERO);
+        let start = idx.checked_sub(1).map(|i| self.runs[i].0).unwrap_or(I::ZERO);
         (start..end, &self.runs[idx].1)
     }
 
@@ -114,9 +111,7 @@ impl<I: Index, S: Slice<I>> Mock<I, S> {
         };
 
         let stable_id = self.runs[idx].2;
-        Ref {
-            id: self.refs_map.new_refid(stable_id),
-        }
+        Ref { id: self.refs_map.new_refid(stable_id) }
     }
 
     pub fn insert(&mut self, index: I, mut slice: S, size: I, make_ref: bool) -> Option<Ref> {
@@ -133,11 +128,7 @@ impl<I: Index, S: Slice<I>> Mock<I, S> {
         };
 
         let key_start = if idx < self.runs.len() {
-            Some(
-                idx.checked_sub(1)
-                    .map(|i| self.runs[i].0)
-                    .unwrap_or(I::ZERO),
-            )
+            Some(idx.checked_sub(1).map(|i| self.runs[i].0).unwrap_or(I::ZERO))
         } else {
             None
         };
@@ -200,9 +191,7 @@ impl<I: Index, S: Slice<I>> Mock<I, S> {
                 }
                 Ok(new) => {
                     let rhs_start = lhs_end_override.unwrap_or_else(|| {
-                        idx.checked_sub(1)
-                            .map(|i| self.runs[i].0)
-                            .unwrap_or(I::ZERO)
+                        idx.checked_sub(1).map(|i| self.runs[i].0).unwrap_or(I::ZERO)
                     });
                     let rhs_size = rhs_end.sub_left(rhs_start);
                     old_size = old_size.add_right(rhs_size);
@@ -214,8 +203,7 @@ impl<I: Index, S: Slice<I>> Mock<I, S> {
         }
 
         let stable_id = self.refs_map.insert(idx);
-        self.runs
-            .insert(idx, (base_pos.add_right(new_size), slice, stable_id));
+        self.runs.insert(idx, (base_pos.add_right(new_size), slice, stable_id));
 
         if let Some(id) = lhs_stable_id {
             self.refs_map.remap(id, stable_id);
@@ -224,9 +212,7 @@ impl<I: Index, S: Slice<I>> Mock<I, S> {
             self.refs_map.remap(id, stable_id);
         }
 
-        let diff = base_pos
-            .add_right(new_size)
-            .sub_left(base_pos.add_right(old_size));
+        let diff = base_pos.add_right(new_size).sub_left(base_pos.add_right(old_size));
 
         for (i, ..) in self.runs.get_mut(idx + 1..).unwrap_or(&mut []) {
             *i = i.add_left(diff);
@@ -235,9 +221,7 @@ impl<I: Index, S: Slice<I>> Mock<I, S> {
         if !make_ref {
             None
         } else {
-            Some(Ref {
-                id: self.refs_map.new_refid(stable_id),
-            })
+            Some(Ref { id: self.refs_map.new_refid(stable_id) })
         }
     }
 
@@ -248,10 +232,7 @@ impl<I: Index, S: Slice<I>> Mock<I, S> {
     pub fn ref_range(&self, r: &Ref) -> Option<Range<I>> {
         let idx = self.refs_map.idx(r.id)?;
         let end = self.runs[idx].0;
-        let start = idx
-            .checked_sub(1)
-            .map(|i| self.runs[i].0)
-            .unwrap_or(I::ZERO);
+        let start = idx.checked_sub(1).map(|i| self.runs[i].0).unwrap_or(I::ZERO);
         Some(start..end)
     }
 
@@ -312,11 +293,7 @@ impl<I: Index, S: Slice<I>> Mock<I, S> {
             },
         };
 
-        MockIter {
-            runs: &self.runs,
-            fwd_idx,
-            bkwd_idx,
-        }
+        MockIter { runs: &self.runs, fwd_idx, bkwd_idx }
     }
 }
 
@@ -361,10 +338,7 @@ impl RefMap {
     }
 
     fn remap(&mut self, from: StableId, to: StableId) {
-        self.index_refs
-            .iter_mut()
-            .filter(|id| **id == from)
-            .for_each(|id| *id = to);
+        self.index_refs.iter_mut().filter(|id| **id == from).for_each(|id| *id = to);
     }
 }
 
@@ -383,11 +357,7 @@ impl<'t, I: Index, S> Iterator for MockIter<'t, I, S> {
             return None;
         }
 
-        let start = self
-            .fwd_idx
-            .checked_sub(1)
-            .map(|i| self.runs[i].0)
-            .unwrap_or(I::ZERO);
+        let start = self.fwd_idx.checked_sub(1).map(|i| self.runs[i].0).unwrap_or(I::ZERO);
 
         let &(end, ref slice, _) = &self.runs[self.fwd_idx];
         self.fwd_idx += 1;
@@ -403,11 +373,7 @@ impl<'t, I: Index, S> DoubleEndedIterator for MockIter<'t, I, S> {
         }
 
         self.bkwd_idx -= 1;
-        let start = self
-            .bkwd_idx
-            .checked_sub(1)
-            .map(|i| self.runs[i].0)
-            .unwrap_or(I::ZERO);
+        let start = self.bkwd_idx.checked_sub(1).map(|i| self.runs[i].0).unwrap_or(I::ZERO);
 
         let &(end, ref slice, _) = &self.runs[self.bkwd_idx];
 
@@ -473,15 +439,12 @@ mod tests {
         assert_eq!(tree_0.runs(), [(9, Constant('A')), (156, Constant('V'))]);
 
         tree_0.insert(98, Constant('A'), 8, false);
-        assert_eq!(
-            tree_0.runs(),
-            [
-                (9, Constant('A')),
-                (98, Constant('V')),
-                (106, Constant('A')),
-                (164, Constant('V'))
-            ]
-        );
+        assert_eq!(tree_0.runs(), [
+            (9, Constant('A')),
+            (98, Constant('V')),
+            (106, Constant('A')),
+            (164, Constant('V'))
+        ]);
     }
 
     #[test]

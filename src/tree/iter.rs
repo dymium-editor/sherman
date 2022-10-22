@@ -139,10 +139,7 @@ impl<'t, I, S, P: RleTreeConfig<I, S, M>, const M: usize> Debug for IterStack<'t
             fn fmt(&self, f: &mut Formatter) -> fmt::Result {
                 f.debug_list()
                     .entries(
-                        self.this
-                            .stack
-                            .iter()
-                            .map(|(node, child_idx)| (node.ptr(), *child_idx)),
+                        self.this.stack.iter().map(|(node, child_idx)| (node.ptr(), *child_idx)),
                     )
                     .finish()
             }
@@ -155,22 +152,13 @@ impl<'t, I, S, P: RleTreeConfig<I, S, M>, const M: usize> Debug for IterStack<'t
 
         impl<T> Debug for HeadNode<T> {
             fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-                f.debug_struct("")
-                    .field("ptr", &self.ptr)
-                    .field("idx", &self.idx)
-                    .finish()
+                f.debug_struct("").field("ptr", &self.ptr).field("idx", &self.idx).finish()
             }
         }
 
         f.debug_struct("IterStack")
             .field("stack", &JustTheStack { this: self })
-            .field(
-                "head",
-                &HeadNode {
-                    ptr: self.head.node.ptr(),
-                    idx: self.head.idx,
-                },
-            )
+            .field("head", &HeadNode { ptr: self.head.node.ptr(), idx: self.head.idx })
             .field("end_pos", self.end_pos.fallible_debug())
             .finish()
     }
@@ -224,10 +212,9 @@ where
         let (end, strict_end) = match end_bound {
             EndBound::Included(i) => (IncludedOrExcludedBound::Included(i), EndBound::Included(i)),
             EndBound::Excluded(i) => (IncludedOrExcludedBound::Excluded(i), EndBound::Excluded(i)),
-            EndBound::Unbounded => (
-                IncludedOrExcludedBound::Excluded(tree_size),
-                EndBound::Excluded(tree_size),
-            ),
+            EndBound::Unbounded => {
+                (IncludedOrExcludedBound::Excluded(tree_size), EndBound::Excluded(tree_size))
+            }
         };
 
         if range.starts_after_end() {
@@ -345,14 +332,8 @@ where
             match result {
                 ChildOrKey::Key((k_idx, k_pos)) => {
                     let slice_handle = unsafe { head_node.into_slice_handle(k_idx) };
-                    let slice_end = head_pos
-                        .add_right(k_pos)
-                        .add_right(slice_handle.slice_size());
-                    return IterStack {
-                        stack,
-                        end_pos: slice_end,
-                        head: slice_handle,
-                    };
+                    let slice_end = head_pos.add_right(k_pos).add_right(slice_handle.slice_size());
+                    return IterStack { stack, end_pos: slice_end, head: slice_handle };
                 }
                 ChildOrKey::Child((c_idx, c_pos)) => {
                     let node = match head_node.into_typed() {

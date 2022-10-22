@@ -217,10 +217,7 @@ pub struct GradualInitArray<A: ArrayHack> {
 impl<A: ArrayHack> GradualInitArray<A> {
     /// Creates a new, completely uninitialized array
     pub fn new() -> Self {
-        GradualInitArray {
-            array: MaybeUninit::uninit(),
-            len: 0,
-        }
+        GradualInitArray { array: MaybeUninit::uninit(), len: 0 }
     }
 
     /// Initializes the next value in the array
@@ -336,10 +333,7 @@ pub struct GradualUninitArray<A: ArrayHack> {
 impl<A: ArrayHack> GradualUninitArray<A> {
     /// Creates a new, fully initialized array to read from
     pub fn new(array: A) -> Self {
-        GradualUninitArray {
-            array: MaybeUninit::new(array),
-            next: 0,
-        }
+        GradualUninitArray { array: MaybeUninit::new(array), next: 0 }
     }
 
     /// Takes the next value, going from the start to the end of the array

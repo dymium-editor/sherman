@@ -249,10 +249,7 @@ impl<I: Index, S, P: RleTreeConfig<I, S, M>, const M: usize> Debug for Root<I, S
             false => "    ",
             true => "        ",
         };
-        let nodes = Nodes {
-            root: self.handle.borrow(),
-            indent,
-        };
+        let nodes = Nodes { root: self.handle.borrow(), indent };
         let mut s = f.debug_struct("Root");
         if P::SLICE_REFS {
             s.field("refs_store", &self.refs_store.fallible_debug());
@@ -390,10 +387,7 @@ where
             panic!("index {idx:?} out of bounds for size {:?}", self.size());
         }
 
-        let root = self
-            .root
-            .as_ref()
-            .expect("`self.root` should be `Some` if `0 < idx < size`");
+        let root = self.root.as_ref().expect("`self.root` should be `Some` if `0 < idx < size`");
 
         let mut node = root.handle.borrow();
         let mut cursor_iter = Some(cursor.into_path());
@@ -457,9 +451,10 @@ where
     /// The description above is a bit vague; here's some more concrete examples:
     ///
     /// ```should_panic
-    /// use sherman::{RleTree, Constant};
+    /// use sherman::{Constant, RleTree};
     ///
-    /// let tree: RleTree<usize, Constant<char>> = RleTree::new(Constant('a'), 5);
+    /// let tree: RleTree<usize, Constant<char>> =
+    ///     RleTree::new(Constant('a'), 5);
     /// // panics, out of bounds:
     /// let _ = tree.iter(5..);
     /// ```
@@ -491,10 +486,7 @@ where
         // While this method is equivalent to `self.iter_with_cursor(NoCursor, range)`, it's better
         // for us to replicate the body here so that any call stacks look correct.
 
-        let root = self
-            .root
-            .as_ref()
-            .map(|r| (r.handle.borrow(), &r.refs_store));
+        let root = self.root.as_ref().map(|r| (r.handle.borrow(), &r.refs_store));
 
         let size = self.size();
 
@@ -518,10 +510,7 @@ where
         C: Cursor,
         R: Debug + RangeBounds<I>,
     {
-        let root = self
-            .root
-            .as_ref()
-            .map(|r| (r.handle.borrow(), &r.refs_store));
+        let root = self.root.as_ref().map(|r| (r.handle.borrow(), &r.refs_store));
 
         let size = self.size();
 
@@ -1051,12 +1040,7 @@ unsafe fn shift_keys<'t, Ty, I, S, P, const M: usize, const IS_INCREASE: bool>(
     // SAFETY: guaranteed by caller
     unsafe { weak_assert!(opts.from <= node.leaf().len()) };
 
-    let ShiftKeys {
-        from,
-        pos,
-        old_size,
-        new_size,
-    } = opts;
+    let ShiftKeys { from, pos, old_size, new_size } = opts;
 
     // Because some of the jumping through hoops can get a little confusing in this function, we've
     // illustrated how all of the positions are laid out below.
@@ -1124,10 +1108,7 @@ unsafe fn shift_keys<'t, Ty, I, S, P, const M: usize, const IS_INCREASE: bool>(
 macro_rules! valid_assert {
     ($path:ident: $cond:expr) => {
         if !$cond {
-            panic!(
-                concat!("assertion failed: `", stringify!($cond), "` for path {:?}"),
-                $path
-            );
+            panic!(concat!("assertion failed: `", stringify!($cond), "` for path {:?}"), $path);
         }
     };
 }
@@ -1222,11 +1203,8 @@ where
 
         path.push(ChildOrKey::Child(0));
         // SAFETY: internal nodes are guaranteed to have at least one child
-        Self::validate_node(
-            unsafe { node.borrow().into_child(0) },
-            path,
-            Some((this_ptr, 0)),
-        );
+        let first_child = unsafe { node.borrow().into_child(0) };
+        Self::validate_node(first_child, path, Some((this_ptr, 0)));
         path.pop();
 
         for i in 0..node.leaf().len() {

@@ -150,12 +150,10 @@ pub trait Zero {
 /// operations.
 ///
 /// ## Directional Arithmetic -- Precise semantics
-///
 //
 // TODO: There's some work that could be done here to clarify the relationship between indexes and
 // ranges. The essential idea is that indexes are offsets, and offsets are attched to unique
 // ranges, so operations on indexes require that the ranges line up right.
-//
 ///
 /// This section gets a little bit notation-heavy. This is only really intended to be used if
 /// you're testing the implementation of some [`Index`] type to make sure that it upholds the

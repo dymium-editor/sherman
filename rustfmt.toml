@@ -1,0 +1,16 @@
+# hi! This is a living config file, and it is always open for improvements :)
+
+max_width = 100
+chain_width = 80
+struct_lit_width = 45
+fn_call_width = 80
+use_field_init_shorthand = true
+
+# unstable: https://github.com/rust-lang/rustfmt/issues/3348
+format_code_in_doc_comments = true
+
+# unstable: https://github.com/rust-lang/rustfmt/issues/5359
+doc_comment_code_block_width = 70 # much less because code blocks are narrower on the web
+
+# unstable: https://github.com/rust-lang/rustfmt/issues/3370
+overflow_delimited_expr = true

@@ -98,7 +98,7 @@ pub trait RangeBounds<T> {
     /// ```
     /// # use sherman::range::RangeBounds;
     /// // Doesn't panic:
-    /// assert!( !(..0_u8).is_empty_naive() );
+    /// assert!(!(..0_u8).is_empty_naive());
     /// ```
     ///
     /// Because there aren't any values less than zero, we can see that this should be false. But

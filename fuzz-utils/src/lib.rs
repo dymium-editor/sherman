@@ -58,11 +58,7 @@ pub struct IterEntry<I, S> {
 
 impl<I, S: Clone> IterEntry<I, S> {
     fn from_triple((range, size, slice): (Range<I>, I, &S)) -> Self {
-        IterEntry {
-            range,
-            size,
-            slice: slice.clone(),
-        }
+        IterEntry { range, size, slice: slice.clone() }
     }
 }
 
@@ -165,7 +161,6 @@ impl<C: Debug> Debug for CommandSequence<C> {
 }
 
 impl<I: Debug, S: Debug> Debug for BasicCommand<I, S> {
-    #[rustfmt::skip]
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match self {
             Self::Iter { id, start, end, access } => {
@@ -230,7 +225,7 @@ impl<I: Debug, S: Debug> Debug for BasicCommand<I, S> {
             }
             Self::Insert { id, index, slice, size, panics: false } => {
                 writeln!(f, "    tree_{id}.insert({index:?}, {slice:?}, {size:?});")
-            },
+            }
             Self::Insert { id, index, slice, size, panics: true } => {
                 f.write_str("    assert!(std::panic::catch_unwind(move || {\n")?;
                 writeln!(f, "        tree_{id}.insert({index:?}, {slice:?}, {size:?})")?;
@@ -241,54 +236,53 @@ impl<I: Debug, S: Debug> Debug for BasicCommand<I, S> {
 }
 
 impl<I: Debug, S: Debug> Debug for SliceRefCommand<I, S> {
-    #[rustfmt::skip]
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match self {
             Self::Basic(c) => c.fmt(f),
             Self::MakeRef { id, index, ref_id: Ok(ref_id) } => {
                 writeln!(f, "    let ref_{ref_id} = tree_{id}.get({index:?}).make_ref();")
-            },
+            }
             Self::MakeRef { id, index, ref_id: Err(()) } => {
                 f.write_str("    assert!(std::panic::catch_unwind(|| {\n")?;
                 writeln!(f, "        tree_{id}.get({index:?}).make_ref()\n")?;
                 f.write_str("    }).is_err());\n")
-            },
+            }
             Self::InsertRef { id, index, slice, size, ref_id: Ok(ref_id) } => {
                 writeln!(
                     f,
                     "    let ref_{ref_id} = tree_{id}.insert_ref({index:?}, {slice:?}, {size:?});"
                 )
-            },
+            }
             Self::InsertRef { id, index, slice, size, ref_id: Err(()) } => {
                 f.write_str("    assert!(std::panic::catch_unwind(move || {\n")?;
                 writeln!(f, "        tree_{id}.insert_ref({index:?}, {slice:?}, {size:?})")?;
                 f.write_str("    }).is_err());\n")
-            },
+            }
             Self::CloneRef { src_id, new_id } => {
                 writeln!(f, "    let ref_{new_id} = ref_{src_id}.clone();")
-            },
+            }
             Self::CheckRefValid { id: _, ref_id, valid: true } => {
                 writeln!(f, "    assert!(ref_{ref_id}.is_valid());")
-            },
+            }
             Self::CheckRefValid { id: _, ref_id, valid: false } => {
                 writeln!(f, "    assert!(!ref_{ref_id}.is_valid());")
-            },
+            }
             Self::CheckRefRange { id: _, ref_id, range: Ok(range) } => {
                 writeln!(f, "    assert_eq!(ref_{ref_id}.range(), {range:?});")
-            },
+            }
             Self::CheckRefRange { id: _, ref_id, range: Err(()) } => {
                 f.write_str("    assert!(std::panic::catch_unwind(move || {\n")?;
                 writeln!(f, "        ref_{ref_id}.range()")?;
                 f.write_str("    }).is_err());\n")
-            },
+            }
             Self::CheckRefSlice { id: _, ref_id, slice: Ok(slice) } => {
                 writeln!(f, "    assert_eq!(&*ref_{ref_id}.borrow_slice(), &{slice:?});")
-            },
+            }
             Self::CheckRefSlice { id: _, ref_id, slice: Err(()) } => {
                 f.write_str("    assert!(std::panic::catch_unwind(move || {\n")?;
                 writeln!(f, "        ref_{ref_id}.borrow_slice()")?;
                 f.write_str("    }).is_err());\n")
-            },
+            }
             Self::DropRef { ref_id } => writeln!(f, "    drop(ref_{ref_id})"),
         }
     }
@@ -298,9 +292,9 @@ impl<I: Debug, S: Debug> Debug for CowCommand<I, S> {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match self {
             Self::Basic(c) => c.fmt(f),
-            Self::ShallowClone { src_id, new_id } => f.write_fmt(format_args!(
-                "    let mut tree_{new_id} = tree_{src_id}.clone();\n",
-            )),
+            Self::ShallowClone { src_id, new_id } => {
+                f.write_fmt(format_args!("    let mut tree_{new_id} = tree_{src_id}.clone();\n"))
+            }
             Self::DropTree { id } => f.write_fmt(format_args!("    drop(tree_{id});\n")),
         }
     }
@@ -308,14 +302,11 @@ impl<I: Debug, S: Debug> Debug for CowCommand<I, S> {
 
 impl<C> CommandSequence<C> {
     pub fn map<D, F: FnMut(C) -> D>(self, f: F) -> CommandSequence<D> {
-        CommandSequence {
-            cmds: self.cmds.into_iter().map(f).collect(),
-        }
+        CommandSequence { cmds: self.cmds.into_iter().map(f).collect() }
     }
 }
 
 impl<I, S> BasicCommand<I, S> {
-    #[rustfmt::skip]
     pub fn map_index<J, F: FnMut(I) -> J>(self, mut f: F) -> BasicCommand<J, S> {
         match self {
             Self::Iter { id, start, end, access } => BasicCommand::Iter {
@@ -330,8 +321,7 @@ impl<I, S> BasicCommand<I, S> {
                     EndBound::Unbounded => EndBound::Unbounded,
                 },
                 access: access.map(|vals| {
-                    vals
-                        .into_iter()
+                    vals.into_iter()
                         .map(|(dir, entry)| (dir, entry.map(|e| e.map_index(&mut f))))
                         .collect()
                 }),
@@ -347,11 +337,10 @@ impl<I, S> BasicCommand<I, S> {
                 slice,
                 size: f(size),
                 panics,
-            }
+            },
         }
     }
 
-    #[rustfmt::skip]
     pub fn map_slice<T, F: FnMut(S) -> T>(self, mut f: F) -> BasicCommand<I, T> {
         match self {
             Self::Iter { id, start, end, access } => BasicCommand::Iter {
@@ -359,8 +348,7 @@ impl<I, S> BasicCommand<I, S> {
                 start,
                 end,
                 access: access.map(|vals| {
-                    vals
-                        .into_iter()
+                    vals.into_iter()
                         .map(|(dir, entry)| (dir, entry.map(|e| e.map_slice(&mut f))))
                         .collect()
                 }),
@@ -370,27 +358,20 @@ impl<I, S> BasicCommand<I, S> {
                 index,
                 info: info.map(|(range, slice)| (range, f(slice))),
             },
-            Self::Insert { id, index, slice, size, panics } => BasicCommand::Insert {
-                id,
-                index,
-                slice: f(slice),
-                size,
-                panics,
+            Self::Insert { id, index, slice, size, panics } => {
+                BasicCommand::Insert { id, index, slice: f(slice), size, panics }
             }
         }
     }
 }
 
 impl<I, S> SliceRefCommand<I, S> {
-    #[rustfmt::skip]
     pub fn map_index<J, F: FnMut(I) -> J>(self, mut f: F) -> SliceRefCommand<J, S> {
         match self {
             Self::Basic(c) => SliceRefCommand::Basic(c.map_index(f)),
-            Self::MakeRef { id, index, ref_id } => SliceRefCommand::MakeRef {
-                id,
-                index: f(index),
-                ref_id,
-            },
+            Self::MakeRef { id, index, ref_id } => {
+                SliceRefCommand::MakeRef { id, index: f(index), ref_id }
+            }
             Self::InsertRef { id, index, slice, size, ref_id } => SliceRefCommand::InsertRef {
                 id,
                 index: f(index),
@@ -414,20 +395,13 @@ impl<I, S> SliceRefCommand<I, S> {
         }
     }
 
-    #[rustfmt::skip]
     pub fn map_slice<T, F: FnMut(S) -> T>(self, mut f: F) -> SliceRefCommand<I, T> {
         match self {
             Self::Basic(c) => SliceRefCommand::Basic(c.map_slice(f)),
-            Self::MakeRef { id, index, ref_id } => {
-                SliceRefCommand::MakeRef { id, index, ref_id }
+            Self::MakeRef { id, index, ref_id } => SliceRefCommand::MakeRef { id, index, ref_id },
+            Self::InsertRef { id, index, slice, size, ref_id } => {
+                SliceRefCommand::InsertRef { id, index, slice: f(slice), size, ref_id }
             }
-            Self::InsertRef { id, index, slice, size, ref_id } => SliceRefCommand::InsertRef {
-                id,
-                index,
-                slice: f(slice),
-                size,
-                ref_id,
-            },
             Self::CloneRef { src_id, new_id } => SliceRefCommand::CloneRef { src_id, new_id },
             Self::CheckRefValid { id, ref_id, valid } => {
                 SliceRefCommand::CheckRefValid { id, ref_id, valid }
@@ -435,18 +409,15 @@ impl<I, S> SliceRefCommand<I, S> {
             Self::CheckRefRange { id, ref_id, range } => {
                 SliceRefCommand::CheckRefRange { id, ref_id, range }
             }
-            Self::CheckRefSlice { id, ref_id, slice } => SliceRefCommand::CheckRefSlice {
-                id,
-                ref_id,
-                slice: slice.map(|s| f(s)),
-            },
+            Self::CheckRefSlice { id, ref_id, slice } => {
+                SliceRefCommand::CheckRefSlice { id, ref_id, slice: slice.map(|s| f(s)) }
+            }
             Self::DropRef { ref_id } => SliceRefCommand::DropRef { ref_id },
         }
     }
 }
 
 impl<I, S> CowCommand<I, S> {
-    #[rustfmt::skip]
     pub fn map_index<J, F: FnMut(I) -> J>(self, f: F) -> CowCommand<J, S> {
         match self {
             Self::Basic(c) => CowCommand::Basic(c.map_index(f)),
@@ -455,7 +426,6 @@ impl<I, S> CowCommand<I, S> {
         }
     }
 
-    #[rustfmt::skip]
     pub fn map_slice<T, F: FnMut(S) -> T>(self, f: F) -> CowCommand<I, T> {
         match self {
             Self::Basic(c) => CowCommand::Basic(c.map_slice(f)),
@@ -591,12 +561,7 @@ where
                     vals
                 });
 
-                Ok(Self::Iter {
-                    id,
-                    start,
-                    end,
-                    access: result,
-                })
+                Ok(Self::Iter { id, start, end, access: result })
             }
             // get
             1 => {
@@ -610,11 +575,7 @@ where
                     (range, slice)
                 });
 
-                Ok(Self::Get {
-                    id,
-                    index,
-                    info: result,
-                })
+                Ok(Self::Get { id, index, info: result })
             }
             // insert
             2 => {
@@ -759,11 +720,7 @@ where
                     *refcount -= 1;
                 }
 
-                Ok(Self::CheckRefRange {
-                    id,
-                    ref_id,
-                    range: range.ok_or(()),
-                })
+                Ok(Self::CheckRefRange { id, ref_id, range: range.ok_or(()) })
             }
             // check ref.range()
             v if v == BASIC_VARIANTS + 5 => {
@@ -777,11 +734,7 @@ where
                     *refcount -= 1;
                 }
 
-                Ok(Self::CheckRefSlice {
-                    id,
-                    ref_id,
-                    slice: slice.ok_or(()),
-                })
+                Ok(Self::CheckRefSlice { id, ref_id, slice: slice.ok_or(()) })
             }
             // drop ref
             v if v == BASIC_VARIANTS + 6 => {
@@ -857,7 +810,6 @@ where
     }
 
     /// Runs the command
-    #[rustfmt::skip]
     pub fn run_basic_cmd(&mut self, cmd: &BasicCommand<I, S>) {
         match cmd {
             BasicCommand::Iter { id, start, end, access: Ok(access) } => {
@@ -869,9 +821,8 @@ where
                         IterDirection::Backward => iter.next_back(),
                     };
 
-                    let item_entry = item
-                        .map(|e| (e.range(), e.size(), e.slice()))
-                        .map(IterEntry::from_triple);
+                    let item_entry =
+                        item.map(|e| (e.range(), e.size(), e.slice())).map(IterEntry::from_triple);
                     assert_eq!(entry, &item_entry);
                 }
             }
@@ -888,13 +839,13 @@ where
                 let tree = self.trees[id.0].as_ref().unwrap();
                 let entry = tree.get(*index);
                 assert_eq!((entry.range(), entry.slice()), (range.clone(), slice));
-            },
+            }
             BasicCommand::Get { id, index, info: Err(()) } => {
                 let tree = self.trees[id.0].as_ref().unwrap();
                 let index = *index;
                 let panicked = expect_might_panic(|| tree.get(index)).is_err();
                 assert!(panicked);
-            },
+            }
             BasicCommand::Insert { id, index, slice, size, panics: false } => {
                 let tree = self.trees[id.0].as_mut().unwrap();
 
@@ -920,14 +871,13 @@ where
     I: UnwindSafe + RefUnwindSafe + sherman::Index,
     S: UnwindSafe + RefUnwindSafe + sherman::Slice<I> + Debug + Clone + PartialEq,
 {
-    #[rustfmt::skip]
     pub fn run_slice_ref_cmd(&mut self, cmd: &SliceRefCommand<I, S>) {
         match cmd {
             SliceRefCommand::Basic(c) => self.run_basic_cmd(c),
             SliceRefCommand::MakeRef { id, index, ref_id: Ok(_) } => {
                 let tree = self.trees[id.0].as_ref().unwrap();
                 self.refs.push(Some(tree.get(*index).make_ref()));
-            },
+            }
             SliceRefCommand::MakeRef { id, index, ref_id: Err(()) } => {
                 let tree = self.trees[id.0].as_ref().unwrap();
                 let panicked = expect_might_panic(|| {
@@ -937,12 +887,12 @@ where
                 .is_err();
 
                 assert!(panicked);
-            },
+            }
             SliceRefCommand::InsertRef { id, index, slice, size, ref_id: Ok(_) } => {
                 let tree = self.trees[id.0].as_mut().unwrap();
                 self.refs.push(Some(tree.insert_ref(*index, slice.clone(), *size)));
                 tree.validate();
-            },
+            }
             SliceRefCommand::InsertRef { id, index, slice, size, ref_id: Err(()) } => {
                 let mut tree = self.trees[id.0].take().unwrap();
                 let panicked = expect_might_panic(move || {
@@ -951,7 +901,7 @@ where
                 .is_err();
 
                 assert!(panicked);
-            },
+            }
             SliceRefCommand::CloneRef { src_id, new_id: _ } => {
                 let new_ref = self.refs[src_id.0].as_ref().unwrap().clone();
                 self.refs.push(Some(new_ref));
@@ -959,23 +909,23 @@ where
             SliceRefCommand::CheckRefValid { id: _, ref_id, valid } => {
                 let r = self.refs[ref_id.0].as_ref().unwrap();
                 assert_eq!(r.is_valid(), *valid);
-            },
+            }
             SliceRefCommand::CheckRefRange { id: _, ref_id, range: Ok(range) } => {
                 let r = self.refs[ref_id.0].as_ref().unwrap();
                 assert_eq!(r.range(), range.clone());
-            },
+            }
             SliceRefCommand::CheckRefRange { id: _, ref_id, range: Err(()) } => {
                 let r = self.refs[ref_id.0].as_ref().unwrap();
                 assert!(r.try_range().is_none());
-            },
+            }
             SliceRefCommand::CheckRefSlice { id: _, ref_id, slice: Ok(slice) } => {
                 let r = self.refs[ref_id.0].as_ref().unwrap();
                 assert_eq!(&*r.borrow_slice(), slice);
-            },
+            }
             SliceRefCommand::CheckRefSlice { id: _, ref_id, slice: Err(()) } => {
                 let r = self.refs[ref_id.0].as_ref().unwrap();
                 assert!(r.try_borrow_slice().is_none());
-            },
+            }
             SliceRefCommand::DropRef { ref_id } => drop(self.refs[ref_id.0].take()),
         }
     }

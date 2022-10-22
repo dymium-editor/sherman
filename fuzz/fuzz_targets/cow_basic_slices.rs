@@ -23,14 +23,12 @@ impl<'d> Arbitrary<'d> for UpperLetter {
     }
 }
 
-fuzz_target!(
-    |cmds: CommandSequence<CowCommand<u8, Constant<UpperLetter>>>| {
-        let cmds = cmds.map(|cmd| cmd.map_slice(|c| Constant(c.0)));
+fuzz_target!(|cmds: CommandSequence<CowCommand<u8, Constant<UpperLetter>>>| {
+    let cmds = cmds.map(|cmd| cmd.map_slice(|c| Constant(c.0)));
 
-        let mut runner: RunnerState<u8, Constant<UpperLetter>, AllowCow, 3> = RunnerState::init();
+    let mut runner: RunnerState<u8, Constant<UpperLetter>, AllowCow, 3> = RunnerState::init();
 
-        for c in cmds.cmds {
-            runner.run_cow_cmd(&c);
-        }
+    for c in cmds.cmds {
+        runner.run_cow_cmd(&c);
     }
-);
+});

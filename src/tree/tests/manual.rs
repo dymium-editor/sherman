@@ -58,16 +58,13 @@ fn insert_and_split_with_len_1() {
     tree.insert(6, Constant('c'), 2); // [ [ 'a' ] 'b' [ 'c' ] 'b' [ 'a' ] ]
     tree.validate();
     let snd_result: Vec<_> = tree.iter(..).map(|e| (e.range(), e.slice().0)).collect();
-    assert_eq!(
-        snd_result,
-        [
-            (0..3, 'a'),
-            (3..6, 'b'),
-            (6..8, 'c'),
-            (8..9, 'b'),
-            (9..11, 'a')
-        ]
-    );
+    assert_eq!(snd_result, [
+        (0..3, 'a'),
+        (3..6, 'b'),
+        (6..8, 'c'),
+        (8..9, 'b'),
+        (9..11, 'a')
+    ]);
 }
 
 #[test]
@@ -166,11 +163,8 @@ fn shallow_copy_panics_no_leak() {
     let snd_drop = std::cell::Cell::new(0);
     let trd_drop = std::cell::Cell::new(0);
 
-    #[rustfmt::skip]
     let fst_slice = TimedPanic { counter: &counter, record_drop: &fst_drop };
-    #[rustfmt::skip]
     let snd_slice = TimedPanic { counter: &counter, record_drop: &snd_drop };
-    #[rustfmt::skip]
     let trd_slice = TimedPanic { counter: &counter, record_drop: &trd_drop };
 
     tree.insert(0, fst_slice, 4);

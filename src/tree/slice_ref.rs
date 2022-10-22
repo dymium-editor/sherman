@@ -298,9 +298,7 @@ impl<I, S, const M: usize> param::BorrowState for SliceRefStore<I, S, M> {
             }
             BorrowState::Dropped
             | BorrowState::Dropping
-            | BorrowState::Immutable {
-                drop_if_zero: true, ..
-            } => {
+            | BorrowState::Immutable { drop_if_zero: true, .. } => {
                 unreachable!("double-drop attempted")
             }
             BorrowState::NotBorrowed => {
@@ -308,18 +306,16 @@ impl<I, S, const M: usize> param::BorrowState for SliceRefStore<I, S, M> {
                 ShouldDrop::Yes
             }
             BorrowState::Immutable { count, .. } => {
-                borrow.set(BorrowState::Immutable {
-                    count,
-                    drop_if_zero: true,
-                });
+                borrow.set(BorrowState::Immutable { count, drop_if_zero: true });
                 ShouldDrop::No
             }
         }
     }
 }
 
-#[rustfmt::skip]
-impl<I, S, P: param::RleTreeConfig<I, S, M>, const M: usize> param::SliceRefStore<I, S, P, M> for () {
+impl<I, S, P: param::RleTreeConfig<I, S, M>, const M: usize> param::SliceRefStore<I, S, P, M>
+    for ()
+{
     type OptionRefId = ();
 
     fn new(_: RawRoot<I, S, P, M>) {}
@@ -434,11 +430,7 @@ impl<I, S, const M: usize> param::SliceRefStore<I, S, AllowSliceRefs, M>
 
     fn suspend(&mut self, r: &Option<RefId>) {
         if let Some(id) = r.as_ref() {
-            let old = self
-                .inner()
-                .refs
-                .borrow_mut()
-                .replace(id, StoredSliceRef::Handle(None));
+            let old = self.inner().refs.borrow_mut().replace(id, StoredSliceRef::Handle(None));
 
             assert!(matches!(old, StoredSliceRef::Handle(Some(_))))
         }
@@ -446,7 +438,6 @@ impl<I, S, const M: usize> param::SliceRefStore<I, S, AllowSliceRefs, M>
 }
 
 impl<I, S, const M: usize> Drop for SliceRefStore<I, S, M> {
-    #[rustfmt::skip]
     fn drop(&mut self) {
         let inner = self.inner();
 
@@ -457,9 +448,8 @@ impl<I, S, const M: usize> Drop for SliceRefStore<I, S, M> {
             | BorrowState::Dropped => unreachable!("invalid state"),
 
             BorrowState::Immutable { count, .. } => {
-                BorrowState::Immutable { count, drop_if_zero: true,
-                }
-            },
+                BorrowState::Immutable { count, drop_if_zero: true }
+            }
             BorrowState::Dropping => BorrowState::Dropped,
         };
 
@@ -509,18 +499,12 @@ impl<I, S, const M: usize> SliceRef<I, S, M> {
                 drop_if_zero: false,
             }),
             BorrowState::Mutable => Err(BorrowFailure::CannotGetImmutAlreadyMutablyBorrowed),
-            BorrowState::Immutable {
-                mut count,
-                drop_if_zero,
-            } => {
+            BorrowState::Immutable { mut count, drop_if_zero } => {
                 count = count
                     .checked_add(1)
                     .expect("there should be fewer than usize::MAX concurrent borrows");
 
-                Ok(BorrowState::Immutable {
-                    count,
-                    drop_if_zero,
-                })
+                Ok(BorrowState::Immutable { count, drop_if_zero })
             }
             BorrowState::Dropping | BorrowState::Dropped => {
                 Err(BorrowFailure::CannotGetImmutAlreadyDropped)
@@ -816,19 +800,16 @@ impl<I, S, const M: usize> SliceRef<I, S, M> {
 /// Cloning a `SliceRef` -- even an invalid one -- is always possible, and will never panic
 impl<I, S, const M: usize> Clone for SliceRef<I, S, M> {
     fn clone(&self) -> Self {
-        let id = self
-            .id
-            .take()
-            .and_then(|this_id| match self.get_refs_without_borrow() {
-                None => None,
-                Some(r) => {
-                    let refs = r.borrow();
-                    bump_weak_count(&self.inner().weak_count);
-                    let new_id = refs.clone(&this_id);
-                    self.id.set(Some(this_id));
-                    Some(new_id)
-                }
-            });
+        let id = self.id.take().and_then(|this_id| match self.get_refs_without_borrow() {
+            None => None,
+            Some(r) => {
+                let refs = r.borrow();
+                bump_weak_count(&self.inner().weak_count);
+                let new_id = refs.clone(&this_id);
+                self.id.set(Some(this_id));
+                Some(new_id)
+            }
+        });
 
         SliceRef {
             inner: self.inner,
@@ -917,11 +898,7 @@ impl<'r, I, S, const M: usize> Drop for TemporaryBorrow<'r, I, S, M> {
         // of `Borrow` or `TemporaryBorrow`. Strictly speaking, that's not *quite* true here, but
         // the other stuff we're doing is both necessary and doesn't affect its soundness.
         unsafe {
-            drop_borrow(
-                &self.inner.borrow,
-                data_ptr.cast(),
-                Self::drop_tree_once_no_borrows,
-            )
+            drop_borrow(&self.inner.borrow, data_ptr.cast(), Self::drop_tree_once_no_borrows)
         };
     }
 }
@@ -1005,17 +982,11 @@ impl<'a, T> Clone for Borrow<'a, T> {
     fn clone(&self) -> Self {
         // bump the active borrow count
         match self.borrow.get() {
-            BorrowState::Immutable {
-                mut count,
-                drop_if_zero,
-            } => {
+            BorrowState::Immutable { mut count, drop_if_zero } => {
                 count = count
                     .checked_add(1)
                     .expect("should not have more than usize::MAX immutable borrows");
-                self.borrow.set(BorrowState::Immutable {
-                    count,
-                    drop_if_zero,
-                });
+                self.borrow.set(BorrowState::Immutable { count, drop_if_zero });
             }
             _ => unreachable!(),
         }
@@ -1064,23 +1035,19 @@ unsafe fn drop_borrow(
     drop_fn: unsafe fn(NonNull<()>),
 ) {
     match state.get() {
-        BorrowState::Immutable {
-            count,
-            drop_if_zero,
-        } => match NonZeroUsize::new(count.get() - 1) {
-            Some(count) => {
-                state.set(BorrowState::Immutable {
-                    count,
-                    drop_if_zero,
-                });
-                return;
+        BorrowState::Immutable { count, drop_if_zero } => {
+            match NonZeroUsize::new(count.get() - 1) {
+                Some(count) => {
+                    state.set(BorrowState::Immutable { count, drop_if_zero });
+                    return;
+                }
+                None if drop_if_zero => state.set(BorrowState::Dropped),
+                None => {
+                    state.set(BorrowState::NotBorrowed);
+                    return;
+                }
             }
-            None if drop_if_zero => state.set(BorrowState::Dropped),
-            None => {
-                state.set(BorrowState::NotBorrowed);
-                return;
-            }
-        },
+        }
         // SAFETY: existence of the borrow guarantees that the
         _ => unsafe { weak_unreachable!() },
     }
