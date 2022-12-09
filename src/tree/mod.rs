@@ -362,7 +362,7 @@ where
     /// Returns an object with information about the slice containing the index
     ///
     /// Through the returned [`SliceEntry`], both the slice `S` and the range of values covered
-    /// `Range<I> can be retrieved.
+    /// `Range<I>` can be retrieved.
     ///
     /// **See also:** [`get_with_cursor`](Self::get_with_cursor)
     ///
