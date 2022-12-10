@@ -31,9 +31,6 @@ pub trait Cursor: Sized {
 }
 
 /// Single component in a [`Cursor`]'s path through the tree
-///
-/// This type does not implement `Debug` because there is no sensible representation of this type
-/// to provide to users of this crate.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PathComponent {
     pub(crate) child_idx: u8,
