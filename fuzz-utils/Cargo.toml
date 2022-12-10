@@ -1,7 +1,7 @@
 [package]
 name = "sherman-fuzz-utils"
 version = "0.0.0"
-authors = ["sharnoff <github@max.sharnoff.org>"]
+authors = ["sharnoff <29154784+sharnoff@users.noreply.github.com>"]
 publish = false
 edition = "2021"
 
