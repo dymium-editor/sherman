@@ -135,14 +135,18 @@ impl<I: Index, S: Slice<I>> Mock<I, S> {
 
         // If the index is greater than the start of the key it's in, then we need to split
         // that key
-        if let Some(s) = key_start && s < index {
-            let pos_in_key = index.sub_left(s);
-            let rhs = self.runs[idx].1.split_at(pos_in_key);
-            let rhs_end = mem::replace(&mut self.runs[idx].0, pos_in_key);
-            self.runs[idx].0 = index;
-            let stable_id = self.refs_map.insert(idx + 1);
-            self.runs.insert(idx + 1, (rhs_end, rhs, stable_id));
-            idx += 1;
+        match key_start {
+            // if-let expressions, my beloved. What have they done to you :'(
+            Some(s) if s < index => {
+                let pos_in_key = index.sub_left(s);
+                let rhs = self.runs[idx].1.split_at(pos_in_key);
+                let rhs_end = mem::replace(&mut self.runs[idx].0, pos_in_key);
+                self.runs[idx].0 = index;
+                let stable_id = self.refs_map.insert(idx + 1);
+                self.runs.insert(idx + 1, (rhs_end, rhs, stable_id));
+                idx += 1;
+            }
+            _ => (),
         }
 
         let mut base_pos = index;
