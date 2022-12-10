@@ -1457,12 +1457,7 @@ where
                     unsafe {
                         let pos = rhs.as_mut().insert_key(store, 0, slice);
 
-                        let opts = ShiftKeys {
-                            from: 1,
-                            pos,
-                            old_size: I::ZERO,
-                            new_size: size,
-                        };
+                        let opts = ShiftKeys { from: 1, pos, old_size: I::ZERO, new_size: size };
                         shift_keys_increase(rhs.as_mut(), opts);
                     }
                 }

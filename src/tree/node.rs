@@ -2518,11 +2518,7 @@ where
                     let r = &*internal.leaf.refs.get_unchecked(i as usize).assume_init_ref().get();
                     let handle = SliceHandle {
                         idx: i,
-                        node: NodeHandle {
-                            ptr: this_ptr.cast(),
-                            height,
-                            borrow: PhantomData,
-                        },
+                        node: NodeHandle { ptr: this_ptr.cast(), height, borrow: PhantomData },
                     };
                     store.update(r, handle);
                 }
