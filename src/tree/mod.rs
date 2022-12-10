@@ -391,7 +391,7 @@ where
             panic!("index {idx:?} out of bounds for size {:?}", self.size());
         }
 
-        let root = self.root.as_ref().expect("`self.root` should be `Some` if `0 < idx < size`");
+        let root = self.root.as_ref().expect("`self.root` should be `Some` if `0 <= idx < size`");
 
         let mut node = root.handle.borrow();
         let mut cursor_iter = Some(cursor.into_path());
