@@ -21,6 +21,7 @@ use std::ptr::NonNull;
 pub(crate) mod cow;
 mod drain;
 mod entry;
+mod fix;
 mod insert;
 mod iter;
 mod node;
@@ -648,7 +649,12 @@ where
             None => unsafe { weak_unreachable!() },
         };
 
-        let slice_ref = root.refs_store.make_ref(inserted_slice);
+        let insertion = match inserted_slice {
+            Some(h) => h,
+            None => unreachable!(),
+        };
+
+        let slice_ref = root.refs_store.make_ref(insertion);
         (cursor, slice_ref)
     }
 }
@@ -934,174 +940,6 @@ define_node_box! {
             }
         }
     }
-}
-
-/// (*Internal*) Helper struct for [`shift_keys`], so that the parameters are named and we can
-/// provide a bit more documentation
-struct ShiftKeys<I> {
-    /// First key index to update. May be equal to node length
-    from: u8,
-    /// The position of the earlier change in the node
-    ///
-    /// We're being intentionally vague here because this can correspond to multiple different
-    /// things. `PostInsertTraversalState`, for example, uses this as the index of an updated
-    /// child or key. But for cases where we've inserted multiple things (e.g., where
-    /// [`insert_rhs`] is provided a second value), this might only correspond to the index of the
-    /// first item, with `old_size` and `new_size` referring to the total size of the pieces.
-    ///
-    /// [`insert_rhs`]: RleTree::insert_rhs
-    pos: I,
-    /// The old size of the object at `pos`
-    old_size: I,
-    /// The new size of the object at `pos`
-    ///
-    /// If [`shift_keys`] is given `IS_INCREASE = true`, then `new_size` will be expected to be
-    /// greater than `old_size`. Otherwise, `new_size` *should* be less than `old_size`. We can't
-    /// *guarantee* that this will be true, because of the limitations exposed by user-defined
-    /// implementations of `Ord` for `I`, but in general these conditions should hold.
-    new_size: I,
-}
-
-/// (*Internal*) Updates the positions of all keys in a node, calling either
-/// [`shift_keys_increase`] or [`shift_keys_decrease`] depending on whether the size has increased
-/// or decreased
-///
-/// ## Safety
-///
-/// The value of `opts.from` must be less than or equal to `node.leaf().len()`.
-unsafe fn shift_keys_auto<'t, Ty, I, S, P, const M: usize>(
-    node: &mut NodeHandle<Ty, borrow::Mut<'t>, I, S, P, M>,
-    opts: ShiftKeys<I>,
-) where
-    Ty: ty::TypeHint,
-    I: Index,
-    P: RleTreeConfig<I, S, M>,
-{
-    // SAFETY: guaranteed by caller
-    unsafe {
-        if opts.new_size > opts.old_size {
-            shift_keys_increase(node, opts)
-        } else {
-            shift_keys_decrease(node, opts)
-        }
-    }
-}
-
-/// (*Internal*) Updates the positions of all keys in a node, expecting them to increase
-///
-/// ## Safety
-///
-/// The value of `opts.from` must be less than or equal to `node.leaf().len()`.
-unsafe fn shift_keys_increase<'t, Ty, I, S, P, const M: usize>(
-    node: &mut NodeHandle<Ty, borrow::Mut<'t>, I, S, P, M>,
-    opts: ShiftKeys<I>,
-) where
-    Ty: ty::TypeHint,
-    I: Index,
-    P: RleTreeConfig<I, S, M>,
-{
-    // SAFETY: guaranteed by caller
-    unsafe { shift_keys::<Ty, I, S, P, M, true>(node, opts) }
-}
-
-/// (*Internal*) Updates the positions of all keys in a node, expecting them to decrease
-///
-/// ## Safety
-///
-/// The value of `opts.from` must be less than or equal to `node.leaf().len()`.
-unsafe fn shift_keys_decrease<'t, Ty, I, S, P, const M: usize>(
-    node: &mut NodeHandle<Ty, borrow::Mut<'t>, I, S, P, M>,
-    opts: ShiftKeys<I>,
-) where
-    Ty: ty::TypeHint,
-    I: Index,
-    P: RleTreeConfig<I, S, M>,
-{
-    // SAFETY: guaranteed by caller
-    unsafe { shift_keys::<Ty, I, S, P, M, false>(node, opts) }
-}
-
-/// (*Internal*) Updates the positions of all keys in a node
-///
-/// Typically this function is called via [`shift_keys_increase`] or [`shift_keys_decrease`] to
-/// avoid manually specifying the generic args.
-///
-/// ## Safety
-///
-/// The value of `opts.from` must be less than or equal to `node.leaf().len()`.
-unsafe fn shift_keys<'t, Ty, I, S, P, const M: usize, const IS_INCREASE: bool>(
-    node: &mut NodeHandle<Ty, borrow::Mut<'t>, I, S, P, M>,
-    opts: ShiftKeys<I>,
-) where
-    Ty: ty::TypeHint,
-    I: Index,
-    P: RleTreeConfig<I, S, M>,
-{
-    // SAFETY: guaranteed by caller
-    unsafe { weak_assert!(opts.from <= node.leaf().len()) };
-
-    let ShiftKeys { from, pos, old_size, new_size } = opts;
-
-    // Because some of the jumping through hoops can get a little confusing in this function, we've
-    // illustrated how all of the positions are laid out below.
-    //
-    // First, define `old_end = pos.add_right(old_size)` and `new_end = pos.add_right(new_size)`.
-    // Visually, this is:
-    //
-    //   |------------- old_end ------------|
-    //   |- ... ---- pos ----|-- old_size --|
-    //
-    //   |--------------- new_end --------------|
-    //   |- ... ---- pos ----|---- new_size ----|
-    //
-    // These abbreviations help make the illustration below a little more compact. In either case
-    // of `IS_INCREASE`, we have something like the following:
-    //
-    //   |- ... ----------------- k_pos -----------------|  (old key pos, of a later key in the node)
-    //   |- ... - old_end -|
-    //                     |-- k_pos.sub_left(old_end) --|  (offset)
-    //   |- ... --- new_end ---|
-    //                         |-- k_pos.sub_left(old_end) --|  (offset, shifted)
-    //   |- ... - k_pos.sub_left(old_end).add_left(new_end) -|  (new key pos)
-    //
-    // So we have a workable formula here for shifitng keys. The thing is, we'd to make this a
-    // single operation in the loop, in case the index type is complicated or the compiler has
-    // failed to optimize away the extra work.
-    //
-    // We're guaranteed by the directional arithmetic rules that the following is equivalent to
-    // the formula we got above:
-    //
-    //   k_pos.sub_left(old_end.sub_right(new_end))
-    //
-    // Of course, this is only valid if `new_end < old_end` -- so if `IS_INCREASE` is false.
-    // Naturally, there's a rephrasing for when `new_end > old_end`:
-    //
-    //   k_pos.add_left(new_end.sub_left(old_end))           FIXME: prove this?
-    //
-    // This one is to be used when `IS_INCREASE` is true.
-    //
-    // ---
-    //
-    // With both of these, we can use the const generics from IS_INCREASE to minimize the final
-    // amount of code that gets generated:
-    let old_end = pos.add_right(old_size);
-    let new_end = pos.add_right(new_size);
-
-    let abs_difference = match IS_INCREASE {
-        true => new_end.sub_left(old_end),
-        false => old_end.sub_right(new_end),
-    };
-
-    let recalculate = |k_pos: I| -> I {
-        match IS_INCREASE {
-            true => k_pos.add_left(abs_difference),
-            false => k_pos.sub_left(abs_difference),
-        }
-    };
-
-    // SAFETY: `set_key_poss_with` requires that `from` is not greater than the number of keys
-    // (just like this function). This is already guaranteed by the caller.
-    unsafe { node.set_key_poss_with(recalculate, from..) };
 }
 
 #[cfg(any(test, feature = "fuzz"))]

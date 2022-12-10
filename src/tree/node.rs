@@ -2843,12 +2843,12 @@ where
 }
 
 // Any params
+//  * borrow
 //  * erase_type
 //  * key_pos
 //  * slice_size
 //  * is_hole
 //  * clone_slice_ref
-//  * clone_immut
 //  * take_refid
 //  * replace_refid
 //  * redirect_to
@@ -3134,5 +3134,24 @@ where
         }
 
         pos..pos.add_right(size)
+    }
+
+    /// Creates a [`SliceHandle`] from the raw parts
+    ///
+    /// ## Safety
+    ///
+    /// THIS FUNCTION IS PROVIDED AS IS, WITHOUT WARRANTY OF ANY KIND, EXPR-
+    ///
+    /// Anyways. Basically you have to pinkie promise that all of the arguments are valid, that the
+    /// [`SliceHandle`] will not be accessed (a) after changes to its node or (b) before all other
+    /// changes within the [`RleTree`] have finished.
+    ///
+    /// [`RleTree`]: super::RleTree
+    pub(super) unsafe fn from_raw_parts(ptr: NodePtr<I, S, P, M>, height: u8, idx: u8) -> Self {
+        let node = NodeHandle { ptr, height, borrow: PhantomData };
+        // SAFETY: Guaranteed by the caller.
+        unsafe { weak_assert!(idx < node.leaf().len()) };
+
+        SliceHandle { node, idx }
     }
 }

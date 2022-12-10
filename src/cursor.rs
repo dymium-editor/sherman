@@ -9,6 +9,12 @@
 ///
 /// [`RleTree`]: crate::RleTree
 pub trait Cursor: Sized {
+    /// Marker for whether the cursor does nothing
+    ///
+    /// Practically speaking, this only really exists so that we can optimize uses of [`NoCursor`],
+    /// but you're welcome to set this if you'd like :)
+    const IS_NOP: bool = false;
+
     /// Creates a new `Cursor` with an empty path
     fn new_empty() -> Self;
 
@@ -113,6 +119,7 @@ pub struct NoCursor;
 
 #[rustfmt::skip]
 impl Cursor for NoCursor {
+    const IS_NOP: bool = true;
     fn new_empty() -> Self { NoCursor }
     fn prepend_to_path(&mut self, _: PathComponent) {}
     type PathIter = std::iter::Empty<PathComponent>;

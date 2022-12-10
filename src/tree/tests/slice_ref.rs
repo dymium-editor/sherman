@@ -20,3 +20,21 @@ fn auto_fuzz_2_insert_panics() {
         std::panic::catch_unwind(move || { tree_0.insert_ref(75, Constant('F'), 245) }).is_err()
     );
 }
+
+#[test]
+#[allow(unused_variables)]
+fn auto_fuzz_3_insert_deferred_after_split() {
+    let mut tree_0: SliceRefFuzzTree = RleTree::new_empty();
+    let ref_0 = tree_0.insert_ref(0, Constant('A'), 69);
+    assert_eq!(ref_0.range(), 0..69);
+    assert_eq!(ref_0.range(), 0..69);
+    let ref_1 = tree_0.insert_ref(12, Constant('M'), 12);
+    let ref_2 = tree_0.insert_ref(49, Constant('M'), 12);
+    let ref_3 = tree_0.insert_ref(12, Constant('L'), 51);
+    assert_eq!(ref_3.range(), 12..63);
+    assert_eq!(ref_0.range(), 0..12);
+    let ref_4 = tree_0.insert_ref(12, Constant('V'), 12);
+    let ref_5 = tree_0.insert_ref(51, Constant('M'), 12);
+    let ref_6 = tree_0.insert_ref(47, Constant('M'), 12);
+    assert!(std::panic::catch_unwind(move || { tree_0.insert_ref(0, Constant('A'), 0) }).is_err());
+}
