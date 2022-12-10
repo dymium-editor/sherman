@@ -85,7 +85,7 @@ where
         self.range_start..self.range_end
     }
 
-    /// Returns the size of the range of vales covered by this entry
+    /// Returns the size of the range of values covered by this entry
     ///
     /// This is essentially a convenience method roughly equivalent to `self.range().len()`.
     pub fn size(&self) -> I {
