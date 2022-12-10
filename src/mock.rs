@@ -55,10 +55,7 @@ impl<I: Index, S: Slice<I>> Mock<I, S> {
     pub fn new_empty() -> Self {
         Mock {
             runs: Vec::new(),
-            refs_map: RefMap {
-                stable_indexes: Vec::new(),
-                index_refs: Vec::new(),
-            },
+            refs_map: RefMap { stable_indexes: Vec::new(), index_refs: Vec::new() },
         }
     }
 
@@ -67,16 +64,10 @@ impl<I: Index, S: Slice<I>> Mock<I, S> {
             panic!("size less than zero");
         }
 
-        let mut refs_map = RefMap {
-            stable_indexes: Vec::new(),
-            index_refs: Vec::new(),
-        };
+        let mut refs_map = RefMap { stable_indexes: Vec::new(), index_refs: Vec::new() };
         let stable_id = refs_map.new_stableid(Some(0));
 
-        Mock {
-            runs: vec![(size, slice, stable_id)],
-            refs_map,
-        }
+        Mock { runs: vec![(size, slice, stable_id)], refs_map }
     }
 
     #[cfg(test)]
