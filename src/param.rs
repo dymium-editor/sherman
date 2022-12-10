@@ -89,6 +89,65 @@ pub trait SupportsInsert<I, S, const M: usize>: sealed::YouCantImplementThis {
     }
 }
 
+/// Marker trait for which [`RleTree`]s can implement [`Send`], based on their [`RleTreeConfig`]
+///
+/// This trait exists because determining whether an [`RleTree`] should implement [`Send`] is a bit
+/// annoying, and this is the only solution that allows us to retain error messages that don't
+/// involve implementation internals.
+///
+/// The table below lays out which [`RleTreeConfig`] implement [`Send`], and when:
+///
+/// | Parameter | Requirements |
+/// |-----------|--------------|
+/// | [`NoFeatures`] | [`RleTree`]s with this parameter can be thought of as analogous to `Box`es, `Vec`s, or `BTreeMap`s -- they aren't doing any funky stuff with concurrency, so they impement `Send` if the values they contain do. This requires only `I: Send` and `S: Send`. |
+/// | [`AllowCow`] | [`RleTree`]s with this parameter are roughly analogous to `Arc`s. Because sending a COW-enabled tree across threads doesn't clone the value, we can view a reference to a value from multiple threads, meaning that we must have `I: Send + Sync` **and** `S: Send + Sync`. |
+/// | [`AllowSliceRefs`] | [`RleTree`]s with this enabled will never implement `Send`. Our mechanisms for handling [`SliceRef`]s are not synchronized (they internally use `Cell` and others), so it is never safe to implement `Send` for a slice ref-enabled [`RleTree`]. |
+///
+/// ## When can I implement `Send` for `AllowSliceRefs`?
+///
+/// Ok, I know the table above says "don't do it, ever". However: there are _some_ guarantees that
+/// we can provide about our internal implementation that mean it's possible to have higher-level
+/// datastructures built with [`SliceRef`]s that _do_ implement [`Send`].
+///
+/// In short: if your datastructure always ensures that the [`SliceRef`]s are in the same thread as
+/// the [`RleTree`] itself, and moving the [`RleTree`] between threads is appropriately
+/// synchronized (either with atomics or locks), then the outer type containing both the
+/// [`RleTree`] and the [`SliceRef`]s _may_ implement [`Send`]. The typical requirements that `I:
+/// Send` and `S: Send` will of course still apply.
+///
+/// ## Actually though, why does this trait exist?
+///
+/// To prevent [`AllowSliceRefs`] from implementing [`Send`], we basically have three options:
+///
+/// 1. Use separate `impl`s for [`NoFeatures`] and [`AllowCow`], and don't have one for
+///    [`AllowSliceRefs`]
+/// 2. Same as (1), but add `impl !Send` for [`AllowSliceRefs`]
+/// 3. The current solution: implement [`Send`] for all `P`, and restrict with another trait bound
+///
+/// The second doesn't work right now, because [negative impls aren't stable yet]. So let's briefly
+/// talk about why we didn't use the first solution.
+///
+/// [negative impls aren't stable yet]: https://github.com/rust-lang/rust/issues/68318
+///
+/// If we just didn't implement [`Send`] for slice ref-enabled trees, the error message would refer
+/// to the raw pointers we use internally as why it doesn't implement [`Send`], which is actively
+/// unhelpful:
+///
+/// ```text
+/// `NonNull<AbstractNode<I, S, P, M>>` cannot be sent between threads safely
+/// ```
+///
+/// By providing an implementation of [`Send`] that covers all [`RleTree`]s, where instead the
+/// trait bound isn't satisfied, we instead get an error that reads more like:
+///
+/// ```text
+/// the trait bound `AllowSliceRefs: RleTreeIsSend<I, S>` is not satisfied
+/// ```
+///
+/// [`RleTree`]: crate::RleTree
+/// [`SliceRef`]: crate::SliceRef
+pub trait RleTreeIsSend<I, S> {}
+
 pub(crate) mod sealed {
     /// It's a trait you (the user of this crate) can't reach
     pub trait TraitYouCantReach {}
@@ -242,3 +301,7 @@ impl<I: Clone, S: Clone, const M: usize> SupportsInsert<I, S, M> for AllowCow {
         slice.clone()
     }
 }
+
+// Refer to `RleTreeIsSend` for more information about impelmenting `Send`
+impl<I: Send, S: Send> RleTreeIsSend<I, S> for NoFeatures {}
+impl<I: Send + Sync, S: Send + Sync> RleTreeIsSend<I, S> for AllowCow {}

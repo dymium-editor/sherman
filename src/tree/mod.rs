@@ -1,7 +1,8 @@
 //! Wrapper module containing the big-boy tree itself
 
 use crate::param::{
-    self, AllowSliceRefs, BorrowState, RleTreeConfig, SliceRefStore as _, SupportsInsert,
+    self, AllowSliceRefs, BorrowState, RleTreeConfig, RleTreeIsSend, SliceRefStore as _,
+    SupportsInsert,
 };
 use crate::public_traits::{Index, Slice};
 use crate::range::RangeBounds;
@@ -128,7 +129,9 @@ where
 // tl;dr is that we're good to implement all of `[Ref]UnwindSafe` and `Send`/`Sync`. For
 // `AllowCow`, the interior mutability that we *do* have is solely around the `Arc`s or
 // `AtomicUsize`s for tracking reference counts, which are both `Send + Sync`, and should be fine
-// from `[Ref]UnwindSafe`.
+// from `[Ref]UnwindSafe`. However, because `AllowCow` *also* allows the same value to be viewed
+// from multiple threads, implementing `Send` requires `Send + Sync` on both `I` and `S`. For more,
+// refer to the docs on `RleTreeIsSend`.
 //
 // The tricky one is `AllowSliceRefs`. With `SliceRef`s, we cannot be `Send` or `Sync`, because the
 // shared ownership is managed by `Cell` and `RefCell`. They *can* be `UnwindSafe` or
@@ -144,8 +147,8 @@ impl<I: RefUnwindSafe, S: RefUnwindSafe, P, const M: usize> RefUnwindSafe for Rl
 {
 }
 
-unsafe impl<I: Send, S: Send, P: Send, const M: usize> Send for RleTree<I, S, P, M> where
-    P: RleTreeConfig<I, S, M>
+unsafe impl<I, S, P, const M: usize> Send for RleTree<I, S, P, M> where
+    P: RleTreeConfig<I, S, M> + RleTreeIsSend<I, S>
 {
 }
 
