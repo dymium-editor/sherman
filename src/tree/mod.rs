@@ -127,7 +127,7 @@ where
 // come from various kinds of interior mutability. For `NoFeatures`, we don't have any, so the
 // tl;dr is that we're good to implement all of `[Ref]UnwindSafe` and `Send`/`Sync`. For
 // `AllowCow`, the interior mutability that we *do* have is solely around the `Arc`s or
-// `AtomicUsize`s for trackin reference counts, which are both `Send + Sync`, and should be fine
+// `AtomicUsize`s for tracking reference counts, which are both `Send + Sync`, and should be fine
 // from `[Ref]UnwindSafe`.
 //
 // The tricky one is `AllowSliceRefs`. With `SliceRef`s, we cannot be `Send` or `Sync`, because the
