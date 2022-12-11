@@ -61,10 +61,13 @@ pub struct BoundedCursor<const LEN: usize = 8> {
 }
 
 impl<const LEN: usize> Cursor for BoundedCursor<LEN> {
+    const IS_NOP: bool = LEN == 0;
+
     fn new_empty() -> Self {
         let len_u8 = match u8::try_from(LEN) {
             Err(_) => panic!("tried to construct BoundedCursor with LEN > u8::MAX"),
-            Ok(len) => len,
+            Ok(0) => 0,
+            Ok(len) => len - 1,
         };
 
         BoundedCursor {
@@ -75,6 +78,10 @@ impl<const LEN: usize> Cursor for BoundedCursor<LEN> {
 
     fn prepend_to_path(&mut self, component: PathComponent) {
         if self.start_at == 0 {
+            if LEN == 0 {
+                return;
+            }
+
             // if the cursor is already full,
             self.path.copy_within(0..LEN - 1, 1);
             self.path[0] = component;
