@@ -1,7 +1,8 @@
 //! Internal insertion implementation
 
+use crate::cursor::CursorBuilder;
 use crate::param::{BorrowState, RleTreeConfig, SliceRefStore as _, SupportsInsert};
-use crate::{Cursor, Index, PathComponent, RleTree, Slice};
+use crate::{Index, PathComponent, RleTree, Slice};
 use std::cell::Cell;
 use std::cmp::Ordering;
 use std::ops::ControlFlow;
@@ -15,8 +16,6 @@ use super::{search_step, NodeBox, SharedNodeBox, Side, SliceSize};
 use crate::MaybeDebug;
 #[cfg(test)]
 use std::fmt::{self, Debug, Formatter};
-#[cfg(test)]
-use std::mem::size_of;
 
 ///////////////////////////////////////////////
 // High-level entrypoint (lower-level below) //
@@ -37,13 +36,14 @@ where
     ///
     /// [`AllowSliceRefs`]: crate::param::AllowSliceRefs
     #[track_caller] // so that panics are on the function that was called.
-    pub(super) fn insert_internal<'t, C: Cursor>(
+    pub(super) fn insert_internal<'t, 'c>(
         &'t mut self,
-        cursor: C,
+        cursor_builder: CursorBuilder<'c>,
+        cursor_path: &mut dyn Iterator<Item = PathComponent>,
         idx: I,
         slice: S,
         size: I,
-    ) -> (C, Option<SliceHandle<ty::Unknown, borrow::SliceRef, I, S, P, M>>) {
+    ) -> Option<SliceHandle<ty::Unknown, borrow::SliceRef, I, S, P, M>> {
         // All non-trivial operations on this tree are a pain in the ass, and insertion is no
         // exception. We'll try to have comments explaining some of the more hairy stuff.
         //
@@ -67,9 +67,8 @@ where
             // create a fresh tree and return:
             None => {
                 *self = Self::new(slice, size);
-                let cursor = Cursor::new_empty();
                 if !P::SLICE_REFS {
-                    return (cursor, None);
+                    return None;
                 }
 
                 let root_ptr = &self.root.as_mut().unwrap().handle;
@@ -79,7 +78,7 @@ where
                 // single entry.
                 let value_handle =
                     unsafe { root_ptr.borrow().into_slice_handle(0).clone_slice_ref() };
-                return (Cursor::new_empty(), Some(value_handle));
+                return Some(value_handle);
             }
         };
 
@@ -110,8 +109,7 @@ where
         //
         // (ok not *actually* here, but kinda nearby)
         //
-        let insertion_point =
-            Self::find_insertion_point(owned_root.borrow_mut(), cursor.into_path(), idx);
+        let insertion_point = Self::find_insertion_point(owned_root.borrow_mut(), cursor_path, idx);
 
         // Inseriton algorith, Part 2: do the thing
         let (post_insert_result, mut insertion) = if P::SLICE_REFS {
@@ -121,7 +119,14 @@ where
             // `new_k_idx` is less than or equal to its `node`'s length, which is guaranteed by
             // `find_insertion_point`.
             let result = unsafe {
-                Self::do_insert_full(&mut root.refs_store, insertion_point, slice, size, &mut u)
+                Self::do_insert_full(
+                    &mut root.refs_store,
+                    cursor_builder,
+                    insertion_point,
+                    slice,
+                    size,
+                    &mut u,
+                )
             };
             drop(u); // `u` borrows `insertion`, and would otherwise drop *after* we yield here
             (result, insertion)
@@ -131,14 +136,21 @@ where
             // `new_k_idx` is less than or equal to its `node`'s length, which is guaranteed by
             // `find_insertion_point`.
             let result = unsafe {
-                Self::do_insert_full(&mut root.refs_store, insertion_point, slice, size, &mut u)
+                Self::do_insert_full(
+                    &mut root.refs_store,
+                    cursor_builder,
+                    insertion_point,
+                    slice,
+                    size,
+                    &mut u,
+                )
             };
             (result, None)
         };
 
-        let cursor = match post_insert_result {
-            PostInsertResult::Done(cursor) => cursor,
-            PostInsertResult::NewRoot { cursor, lhs, key, key_size, rhs } => {
+        match post_insert_result {
+            PostInsertResult::Done => (),
+            PostInsertResult::NewRoot { lhs, key, key_size, rhs } => {
                 // we need to get rid of `lhs` first, so that we've released the borrow when we
                 // access the root
                 let lhs_ptr = lhs.ptr();
@@ -154,8 +166,6 @@ where
                     insertion =
                         Some(unsafe { root.handle.borrow().into_slice_handle(0).clone_slice_ref() })
                 }
-
-                cursor
             }
         };
 
@@ -181,7 +191,7 @@ where
             None => unsafe { weak_unreachable!() },
         }
 
-        (cursor, insertion)
+        insertion
     }
 }
 
@@ -237,7 +247,7 @@ struct AdjacentKeys<'b, I, S, P: RleTreeConfig<I, S, M>, const M: usize> {
 
 /// (*Internal*) Helper struct to carry the information we use when an insertion overflowed a node,
 /// and we need to "bubble" the new midpoint and right-hand side up to the parent
-struct BubbledInsertState<'t, C, I, S, P, const M: usize>
+struct BubbledInsertState<'t, 'c, I, S, P, const M: usize>
 where
     P: RleTreeConfig<I, S, M>,
 {
@@ -277,20 +287,20 @@ where
     ///
     /// The cursor does not not yet include the path segment through `lhs` or `rhs`; we'd need to
     /// have already taken into account the shifts from inserting `key` at this level.
-    partial_cursor: C,
+    cursor_builder: CursorBuilder<'c>,
 }
 
 /// (*Internal*) The end result of running the "full" insertion algorithm, minus the cleanup that
 /// happens afterwards
 ///
 /// This type is primarily returned by [`RleTree::do_insert_full`].
-enum PostInsertResult<'t, C, I, S, P: RleTreeConfig<I, S, M>, const M: usize> {
-    /// No more changes to the tree are necessary - here's the [`Cursor`]
-    Done(C),
+enum PostInsertResult<'t, I, S, P: RleTreeConfig<I, S, M>, const M: usize> {
+    /// No more changes to the tree are necessary. The [`Cursor`](crate::Cursor) has been fully
+    /// created
+    Done,
+    /// A new root node is required. The [`Cursor`](crate::Cursor) has already taken into account
+    /// the locations that `lhs` and `rhs` will have.
     NewRoot {
-        /// The *completed* cursor to the insertion, taking into account the locations that `lhs`
-        /// and `rhs` will have
-        cursor: C,
         /// Current root node, which will become the left-hand child of the new root
         lhs: NodeHandle<ty::Unknown, borrow::Mut<'t>, I, S, P, M>,
         /// Key to be inserted between `lhs` and `rhs`
@@ -347,7 +357,7 @@ where
 }
 
 #[cfg(test)]
-impl<'t, C, I, S, P, const M: usize> Debug for BubbledInsertState<'t, C, I, S, P, M>
+impl<'t, 'c, I, S, P, const M: usize> Debug for BubbledInsertState<'t, 'c, I, S, P, M>
 where
     P: RleTreeConfig<I, S, M>,
 {
@@ -364,32 +374,20 @@ where
 }
 
 #[cfg(test)]
-impl<'t, C, I, S, P, const M: usize> Debug for PostInsertResult<'t, C, I, S, P, M>
+impl<'t, I, S, P, const M: usize> Debug for PostInsertResult<'t, I, S, P, M>
 where
     P: RleTreeConfig<I, S, M>,
 {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match self {
-            PostInsertResult::Done(cursor) => {
-                let mut s = f.debug_struct("Done");
-                if size_of::<C>() != 0 {
-                    s.field("cursor", cursor.fallible_debug());
-                }
-                s.finish()
-            }
-            PostInsertResult::NewRoot { cursor, lhs, key, key_size, rhs } => {
-                let mut s = f.debug_struct("NewRoot");
-
-                if size_of::<C>() != 0 {
-                    s.field("cursor", cursor.fallible_debug());
-                }
-
-                s.field("lhs", lhs)
-                    .field("key", key)
-                    .field("key_size", key_size.fallible_debug())
-                    .field("rhs", rhs)
-                    .finish()
-            }
+            PostInsertResult::Done => f.write_str("Done"),
+            PostInsertResult::NewRoot { lhs, key, key_size, rhs } => f
+                .debug_struct("NewRoot")
+                .field("lhs", lhs)
+                .field("key", key)
+                .field("key_size", key_size.fallible_debug())
+                .field("rhs", rhs)
+                .finish(),
         }
     }
 }
@@ -420,22 +418,23 @@ where
     ///
     /// If `insertion_point` is a `Child`, then the [`EdgeInsert`]'s `new_k_idx` must be less than
     /// or equal to its `node`'s length.
-    unsafe fn do_insert_full<'t, C: Cursor>(
+    unsafe fn do_insert_full<'t, 'c>(
         store: &mut P::SliceRefStore,
+        cb: CursorBuilder<'c>,
         insertion_point: InsertionPoint<'t, I, S, P, M>,
         slice: S,
         size: I,
         updates_callback: &mut dyn FnMut(TraverseUpdate<I, S, P, M>),
-    ) -> PostInsertResult<'t, C, I, S, P, M> {
+    ) -> PostInsertResult<'t, I, S, P, M> {
         match insertion_point {
             // SAFETY: `do_insert_full_edge` requires that `edge_ins.new_k_idx` is less than or
             // equal to `edge_ins.node.leaf().len()`, which is guaranteed by the safety
             // requirements for this function.
             ChildOrKey::Child(edge_ins) => unsafe {
-                Self::do_insert_full_edge(store, edge_ins, slice, size, updates_callback)
+                Self::do_insert_full_edge(store, cb, edge_ins, slice, size, updates_callback)
             },
             ChildOrKey::Key(split_ins) => {
-                Self::do_insert_full_split_key(store, split_ins, slice, size, updates_callback)
+                Self::do_insert_full_split_key(store, cb, split_ins, slice, size, updates_callback)
             }
         }
     }
@@ -449,17 +448,19 @@ where
     ///
     /// This function requires that `insert.new_k_idx` is less than or equal to
     /// `insert.node.leaf().len()`.
-    unsafe fn do_insert_full_edge<'t, C: Cursor>(
+    unsafe fn do_insert_full_edge<'t, 'c>(
         store: &mut P::SliceRefStore,
+        mut cursor_builder: CursorBuilder<'c>,
         insert: EdgeInsert<'t, I, S, P, M>,
         slice: S,
         size: I,
         updates_callback: &mut dyn FnMut(TraverseUpdate<I, S, P, M>),
-    ) -> PostInsertResult<'t, C, I, S, P, M> {
+    ) -> PostInsertResult<'t, I, S, P, M> {
         unsafe { weak_assert!(insert.new_k_idx <= insert.node.leaf().len()) }
 
         match Self::do_insert_full_edge_try_join(
             store,
+            cursor_builder.reborrow(),
             slice,
             size,
             insert.adjacent_keys,
@@ -472,6 +473,7 @@ where
             Err(slice) => unsafe {
                 Self::do_insert_full_edge_no_join(
                     store,
+                    cursor_builder,
                     insert.node,
                     insert.new_k_idx, None,
                     SliceSize { slice, size }, None,
@@ -486,13 +488,14 @@ where
     /// the [`SplitKeyInsert`].
     ///
     /// Returns the result of completing the insertion.
-    fn do_insert_full_split_key<'t, C: Cursor>(
+    fn do_insert_full_split_key<'t, 'c>(
         store: &mut P::SliceRefStore,
+        cb: CursorBuilder<'c>,
         mut info: SplitKeyInsert<'t, I, S, P, M>,
         slice: S,
         slice_size: I,
         updates_callback: &mut dyn FnMut(TraverseUpdate<I, S, P, M>),
-    ) -> PostInsertResult<'t, C, I, S, P, M> {
+    ) -> PostInsertResult<'t, I, S, P, M> {
         let key_size = info.handle.slice_size();
 
         let rhs = info.handle.with_slice(|slice| slice.split_at(info.pos_in_key));
@@ -505,7 +508,15 @@ where
             let (mid, mid_size) = (slice, slice_size);
             let fst = SliceSize::new(mid, mid_size);
             let snd = SliceSize::new(rhs, rhs_size);
-            return Self::insert_rhs(store, lhs_handle, lhs_size, fst, Some(snd), updates_callback);
+            return Self::insert_rhs(
+                store,
+                cb,
+                lhs_handle,
+                lhs_size,
+                fst,
+                Some(snd),
+                updates_callback,
+            );
         }
 
         // Slow path: try to join with both sides.
@@ -539,18 +550,19 @@ where
                     override_pos: None,
                     old_size: lhs_size.add_right(rhs_size),
                     new_size: mid_size.add_right(rhs_size),
-                    partial_cursor: C::new_empty(),
+                    cursor_builder: cb,
                 };
 
                 let mapper = OpUpdateState::identity();
-                let final_cursor = post_op_state.finish(mapper, None);
-                PostInsertResult::Done(final_cursor)
+                post_op_state.finish(mapper, None);
+                PostInsertResult::Done
             }
             // Couldn't join with lhs, but slice + rhs joined. Still need to insert those:
             Ok(new) => {
                 let size = mid_size.add_right(rhs_size);
                 Self::insert_rhs(
                     store,
+                    cb,
                     lhs_handle,
                     lhs_size,
                     SliceSize::new(new, size),
@@ -564,14 +576,14 @@ where
                 let fst = SliceSize::new(r, rhs_size);
                 updates_callback(TraverseUpdate::insert(&lhs_handle));
                 let mut new_callback = TraverseUpdate::skip_insertions(updates_callback);
-                Self::insert_rhs(store, lhs_handle, mid_size, fst, None, &mut new_callback)
+                Self::insert_rhs(store, cb, lhs_handle, mid_size, fst, None, &mut new_callback)
             }
             // Couldn't join with either lhs or rhs. Need to insert both original slice AND new rhs
             Err((m, r)) => {
                 let fst = SliceSize::new(m, mid_size);
                 let snd = SliceSize::new(r, rhs_size);
 
-                Self::insert_rhs(store, lhs_handle, lhs_size, fst, Some(snd), updates_callback)
+                Self::insert_rhs(store, cb, lhs_handle, lhs_size, fst, Some(snd), updates_callback)
             }
         }
     }
@@ -592,13 +604,14 @@ where
     ///
     /// We return `Err` instead of handling that case as well because there's many code paths that
     /// can lead to being unable to join to anything, so it's easier to
-    fn do_insert_full_edge_try_join<'t, C: Cursor>(
+    fn do_insert_full_edge_try_join<'t, 'c>(
         store: &mut P::SliceRefStore,
+        cursor_builder: CursorBuilder<'c>,
         slice: S,
         slice_size: I,
         adjacent_keys: AdjacentKeys<'t, I, S, P, M>,
         updates_callback: &mut dyn FnMut(TraverseUpdate<I, S, P, M>),
-    ) -> Result<PostInsertResult<'t, C, I, S, P, M>, S> {
+    ) -> Result<PostInsertResult<'t, I, S, P, M>, S> {
         // Broadly speaking, there's four cases here:
         //  1. `slice` doesn't join with either of `adjacent_keys` -- returns Err(slice)
         //  2. `slice` only joins with `adjacent_keys.lhs`
@@ -702,6 +715,7 @@ where
                             let new_lhs_size = mid_size.add_right(rhs_size);
                             return Ok(Self::handle_join_deletion(
                                 store,
+                                cursor_builder,
                                 lhs,
                                 lhs_size,
                                 new_lhs_size,
@@ -736,12 +750,12 @@ where
             override_pos: None,
             old_size,
             new_size,
-            partial_cursor: C::new_empty(),
+            cursor_builder,
         };
 
         let mapper = OpUpdateState::identity();
-        let cursor = update_state.finish(mapper, None);
-        Ok(PostInsertResult::Done(cursor))
+        update_state.finish(mapper, None);
+        Ok(PostInsertResult::Done)
     }
 
     /// (*Internal*) Tries to insert the slice(s) _without_ joining with adjacent keys
@@ -762,16 +776,17 @@ where
     /// `override_lhs_size` is provided, `new_key_idx != 0`.
     ///
     /// [`insert_rhs`]: Self::insert_rhs
-    unsafe fn do_insert_full_edge_no_join<'m, 't: 'm, C: Cursor>(
+    unsafe fn do_insert_full_edge_no_join<'m, 't: 'm, 'c: 'm>(
         store: &mut P::SliceRefStore,
+        cursor_builder: CursorBuilder<'c>,
         mut node: NodeHandle<ty::Leaf, borrow::Mut<'t>, I, S, P, M>,
         new_key_idx: u8,
         override_lhs_size: Option<I>,
         fst: SliceSize<I, S>,
         snd: Option<SliceSize<I, S>>,
         updates_callback: &mut dyn FnMut(TraverseUpdate<I, S, P, M>),
-        state_map: <BubbledInsertState<'t, C, I, S, P, M> as MapState>::Map<'m>,
-    ) -> PostInsertResult<'t, C, I, S, P, M> {
+        state_map: <BubbledInsertState<'t, 'c, I, S, P, M> as MapState>::Map<'m>,
+    ) -> PostInsertResult<'t, I, S, P, M> {
         // SAFETY: Guaranteed by caller
         unsafe {
             weak_assert!(new_key_idx <= node.leaf().len());
@@ -792,6 +807,7 @@ where
             let bubble_state = unsafe {
                 Self::do_insert_full_edge_no_join_split(
                     store,
+                    cursor_builder,
                     node,
                     new_key_idx,
                     override_lhs_size,
@@ -869,11 +885,11 @@ where
             override_pos,
             old_size,
             new_size,
-            partial_cursor: C::new_empty(),
+            cursor_builder,
         };
 
-        let final_cursor = post_op_state.finish(state_map.post_op, None);
-        PostInsertResult::Done(final_cursor)
+        post_op_state.finish(state_map.post_op, None);
+        PostInsertResult::Done
     }
 
     /// (*Internal*) Completes an insertion that resulted in the deletion of a slice
@@ -882,14 +898,15 @@ where
     /// turning two values (plus one) into one.
     ///
     /// This function expects, without checking, that `rhs.is_hole()` is true.
-    fn handle_join_deletion<'t, C: Cursor>(
+    fn handle_join_deletion<'t, 'c>(
         store: &mut P::SliceRefStore,
+        cursor_builder: CursorBuilder<'c>,
         lhs: SliceHandle<ty::Unknown, borrow::Mut<'t>, I, S, P, M>,
         old_lhs_size: I,
         new_lhs_size: I,
         rhs: SliceHandle<ty::Unknown, borrow::Mut<'t>, I, S, P, M>,
         rhs_size: I,
-    ) -> PostInsertResult<'t, C, I, S, P, M> {
+    ) -> PostInsertResult<'t, I, S, P, M> {
         // todo: Pending deletion implementation.
         todo!()
     }
@@ -898,14 +915,15 @@ where
     /// both the left (present) and right (inserted) sides
     ///
     /// This method calls `updates_callback` with `TraverseUpdate::Insertion` only for `fst`.
-    fn insert_rhs<'t, C: Cursor>(
+    fn insert_rhs<'t, 'c>(
         store: &mut P::SliceRefStore,
+        cursor_builder: CursorBuilder<'c>,
         right_of: SliceHandle<ty::Unknown, borrow::Mut<'t>, I, S, P, M>,
         new_lhs_size: I,
         fst: SliceSize<I, S>,
         snd: Option<SliceSize<I, S>>,
         updates_callback: &mut dyn FnMut(TraverseUpdate<I, S, P, M>),
-    ) -> PostInsertResult<'t, C, I, S, P, M> {
+    ) -> PostInsertResult<'t, I, S, P, M> {
         // If we're inserting to the right of the particular slice, we have to traverse down to the
         // leftmost leaf in the child right of `right_of` (if it's not yet in a leaf).
         //
@@ -948,16 +966,18 @@ where
         let (override_lhs_size, mapper) = match lhs_height == leaf_height {
             true => (Some(new_lhs_size), BubbledInsertState::identity()),
             false => {
-                map_cursor = |node: &NodeHandle<_, _, _, _, _, M>, cursor| match node.height()
-                    == lhs_height
-                {
-                    false => cursor,
-                    // FIXME: there's some extra handling needed here when the cursor isn't on the
-                    // same side as the inserted value. Also this isn't correct when the value that
-                    // we *should* point to is currently removed. Tracking that requires modifying
-                    // `updates_callback` as well.
-                    true => C::new_empty(),
-                };
+                map_cursor =
+                    |node: &NodeHandle<_, _, _, _, _, M>, mut builder: CursorBuilder| match node
+                        .height()
+                        == lhs_height
+                    {
+                        false => (),
+                        // FIXME: there's some extra handling needed here when the cursor isn't on the
+                        // same side as the inserted value. Also this isn't correct when the value that
+                        // we *should* point to is currently removed. Tracking that requires modifying
+                        // `updates_callback` as well.
+                        true => builder.reset(),
+                    };
 
                 // If the bubble state *will* change the node at the height of `lhs`, then we need
                 // to change the way that it internally calculates positions. The case for equal
@@ -1050,8 +1070,9 @@ where
         // guaranteed by our search procedure above; `insert_idx = lhs_k_idx + 1` if `next_leaf` is
         // at the same height, and is otherwise equal to zero.
         unsafe {
-            Self::do_insert_full_edge_no_join::<C>(
+            Self::do_insert_full_edge_no_join(
                 store,
+                cursor_builder,
                 next_leaf,
                 insert_idx,
                 override_lhs_size,
@@ -1085,7 +1106,7 @@ where
     /// so that cursor types with the same [`PathIter`] associated type will use the same
     /// monomorphized function.
     ///
-    /// [`PathIter`]: Cursor::PathIter
+    /// [`PathIter`]: crate::Cursor::PathIter
     fn find_insertion_point<'t>(
         root: NodeHandle<ty::Unknown, borrow::Mut<'t>, I, S, P, M>,
         cursor_hints: impl Iterator<Item = PathComponent>,
@@ -1195,15 +1216,16 @@ where
     /// `Some`.
     ///
     /// [`do_insert_full_edge_no_join`]: Self::do_insert_full_edge_no_join
-    unsafe fn do_insert_full_edge_no_join_split<'t, C: Cursor>(
+    unsafe fn do_insert_full_edge_no_join_split<'t, 'c>(
         store: &mut P::SliceRefStore,
+        cursor_builder: CursorBuilder<'c>,
         mut node: NodeHandle<ty::Leaf, borrow::Mut<'t>, I, S, P, M>,
         mut new_key_idx: u8,
         mut override_lhs_size: Option<I>,
         fst: SliceSize<I, S>,
         snd: Option<SliceSize<I, S>>,
         updates_callback: &mut dyn FnMut(TraverseUpdate<I, S, P, M>),
-    ) -> BubbledInsertState<'t, C, I, S, P, M> {
+    ) -> BubbledInsertState<'t, 'c, I, S, P, M> {
         // There's a few cases here to determine where we split the node, depending both on
         // `new_key_idx` and `node.leaf().len()`. We'll illustrate them all, pretending for now
         // that `M = 3`. Our node is initially:
@@ -1341,6 +1363,7 @@ where
                 unsafe {
                     return Self::do_insert_full_edge_no_join_split_small_m(
                         store,
+                        cursor_builder,
                         node,
                         new_key_idx,
                         override_lhs_size,
@@ -1474,7 +1497,7 @@ where
                     old_size: old_node_size,
                     shift_lhs: None,
                     insertion_side: None,
-                    partial_cursor: C::new_empty(),
+                    cursor_builder,
                 }
             }
             Err(Side::Left) => {
@@ -1527,7 +1550,7 @@ where
                     old_size: old_node_size,
                     shift_lhs: None,
                     insertion_side: Some(Side::Left),
-                    partial_cursor: C::new_empty(),
+                    cursor_builder,
                 }
             }
             Ok(side) => {
@@ -1608,7 +1631,7 @@ where
                     old_size: old_node_size,
                     shift_lhs: None,
                     insertion_side: Some(side),
-                    partial_cursor: C::new_empty(),
+                    cursor_builder,
                 }
             }
         }
@@ -1626,15 +1649,16 @@ where
     /// [`do_insert_full_edge_no_join_split`] and *also* requires that `M = 1`.
     ///
     /// [`do_insert_full_edge_no_join_split`]: Self::do_insert_full_edge_no_join_split
-    unsafe fn do_insert_full_edge_no_join_split_small_m<'t, C: Cursor>(
+    unsafe fn do_insert_full_edge_no_join_split_small_m<'t, 'c>(
         store: &mut P::SliceRefStore,
+        cursor_builder: CursorBuilder<'c>,
         mut node: NodeHandle<ty::Leaf, borrow::Mut<'t>, I, S, P, M>,
         new_key_idx: u8,
         override_lhs_size: Option<I>,
         fst: SliceSize<I, S>,
         snd: SliceSize<I, S>,
         updates_callback: &mut dyn FnMut(TraverseUpdate<I, S, P, M>),
-    ) -> BubbledInsertState<'t, C, I, S, P, M> {
+    ) -> BubbledInsertState<'t, 'c, I, S, P, M> {
         // SAFETY: these are all guaranteed by the caller in some form. refer to the individual
         // comments for more information.
         unsafe {
@@ -1729,7 +1753,7 @@ where
             old_size,
             shift_lhs: None,
             insertion_side,
-            partial_cursor: C::new_empty(),
+            cursor_builder,
         }
     }
 }
@@ -1746,9 +1770,8 @@ pub(super) struct BubbleLhs<I> {
     pub(super) new_size: I,
 }
 
-impl<'t, C, I, S, P, const M: usize> BubbledInsertState<'t, C, I, S, P, M>
+impl<'t, 'c, I, S, P, const M: usize> BubbledInsertState<'t, 'c, I, S, P, M>
 where
-    C: Cursor,
     I: Index,
     S: Slice<I>,
     P: RleTreeConfig<I, S, M>,
@@ -1756,10 +1779,10 @@ where
     fn finish<'m>(
         mut self,
         store: &mut P::SliceRefStore,
-        mut map: <BubbledInsertState<'t, C, I, S, P, M> as MapState>::Map<'m>,
+        mut map: <BubbledInsertState<'t, 'c, I, S, P, M> as MapState>::Map<'m>,
         updates_callback: &mut dyn FnMut(TraverseUpdate<I, S, P, M>),
-        early_exit: Option<&mut dyn FnMut(&OpUpdateState<'t, C, I, S, P, M>) -> ControlFlow<()>>,
-    ) -> PostInsertResult<'t, C, I, S, P, M>
+        early_exit: Option<&mut dyn FnMut(&OpUpdateState<'t, 'c, I, S, P, M>) -> ControlFlow<()>>,
+    ) -> PostInsertResult<'t, I, S, P, M>
     where
         Self: 'm,
     {
@@ -1769,8 +1792,8 @@ where
                 BubbleStepResult::KeepGoing(new_state) => self = new_state,
                 BubbleStepResult::Root(result) => return result,
                 BubbleStepResult::Done(post_op_state) => {
-                    let cursor = post_op_state.finish(map.post_op, early_exit);
-                    return PostInsertResult::Done(cursor);
+                    post_op_state.finish(map.post_op, early_exit);
+                    return PostInsertResult::Done;
                 }
             }
         }
@@ -1780,7 +1803,7 @@ where
         mut self,
         store: &mut P::SliceRefStore,
         updates_callback: &mut dyn FnMut(TraverseUpdate<I, S, P, M>),
-    ) -> BubbleStepResult<'t, C, I, S, P, M> {
+    ) -> BubbleStepResult<'t, 'c, I, S, P, M> {
         let lhs_size = self.lhs.leaf().subtree_size();
         let new_total_size = lhs_size
             .add_right(self.key_size)
@@ -1795,14 +1818,13 @@ where
                 assert!(self.shift_lhs.is_none(), "internal error: this is a bug");
 
                 if let Some(side) = self.insertion_side {
-                    self.partial_cursor.prepend_to_path(PathComponent {
+                    self.cursor_builder.prepend_to_path(PathComponent {
                         // `Side` is explicitly tagged so that Side::Left = 0 and Side::Right = 1
                         child_idx: side as u8,
                     });
                 }
 
                 return BubbleStepResult::Root(PostInsertResult::NewRoot {
-                    cursor: self.partial_cursor,
                     lhs,
                     key: self.key,
                     key_size: self.key_size,
@@ -1871,7 +1893,7 @@ where
             // is in order to get it to use the correct key position for shifting and it won't
             // update the cursor if we don't say it's in a `Child`.
             if let Some(side) = self.insertion_side {
-                self.partial_cursor
+                self.cursor_builder
                     .prepend_to_path(PathComponent { child_idx: lhs_child_idx + side as u8 });
             }
 
@@ -1886,7 +1908,7 @@ where
                 override_pos: Some(override_pos),
                 old_size,
                 new_size,
-                partial_cursor: self.partial_cursor,
+                cursor_builder: self.cursor_builder,
             });
         }
         // Couldn't just insert: need to split
@@ -2049,7 +2071,7 @@ where
             // of `self.{lhs,rhs}`, so we don't need to worry about the pointer becoming invalid.
             match self.insertion_side {
                 Some(s) => {
-                    self.partial_cursor
+                    self.cursor_builder
                         .prepend_to_path(PathComponent { child_idx: new_key_idx + s as u8 });
                 }
                 // the insertion was in `self.key`. There isn't much we need to do because the
@@ -2078,7 +2100,7 @@ where
                 old_size: old_parent_size,
                 shift_lhs: None,
                 insertion_side: Some(side),
-                partial_cursor: self.partial_cursor,
+                cursor_builder: self.cursor_builder,
             })
         } else {
             // ^ new_key_idx == M. We'll use `self.key` as the new midpoint. Our current state
@@ -2173,7 +2195,7 @@ where
                     Side::Right => M as u8,
                 };
 
-                self.partial_cursor.prepend_to_path(PathComponent { child_idx });
+                self.cursor_builder.prepend_to_path(PathComponent { child_idx });
             }
 
             BubbleStepResult::KeepGoing(BubbledInsertState {
@@ -2184,31 +2206,31 @@ where
                 old_size: old_parent_size,
                 shift_lhs: None,
                 insertion_side: self.insertion_side,
-                partial_cursor: self.partial_cursor,
+                cursor_builder: self.cursor_builder,
             })
         }
     }
 }
 
 /// The result of calling [`BubbledInsertState::do_upward_step`]
-enum BubbleStepResult<'t, C, I, S, P: RleTreeConfig<I, S, M>, const M: usize> {
+enum BubbleStepResult<'t, 'c, I, S, P: RleTreeConfig<I, S, M>, const M: usize> {
     /// The [`BubbledInsertState`] has reached the root
-    Root(PostInsertResult<'t, C, I, S, P, M>),
+    Root(PostInsertResult<'t, I, S, P, M>),
     /// Changes in tree structure from the [`BubbledInsertState`] have been resolved, and there are
     /// still more nodes to traverse
-    Done(OpUpdateState<'t, C, I, S, P, M>),
-    KeepGoing(BubbledInsertState<'t, C, I, S, P, M>),
+    Done(OpUpdateState<'t, 'c, I, S, P, M>),
+    KeepGoing(BubbledInsertState<'t, 'c, I, S, P, M>),
 }
 
 /// Struct containing `dyn` functions that map [`BubbledInsertState`]s (See: [`MapState`])
 ///
 /// This type also includes the mapping functions for the [`OpUpdateState`] that will continue the
 /// traversal up the tree once we've stopped "bubbling" the insertion.
-pub(super) struct MapBubbledInsertState<'f, 't, C: 'f, I, S, P, const M: usize>
+pub(super) struct MapBubbledInsertState<'f, 't, 'c: 'f, I, S, P, const M: usize>
 where
     P: RleTreeConfig<I, S, M>,
 {
-    pub(super) post_op: <OpUpdateState<'t, C, I, S, P, M> as MapState>::Map<'f>,
+    pub(super) post_op: <OpUpdateState<'t, 'c, I, S, P, M> as MapState>::Map<'f>,
     pub(super) shift_lhs: Option<
         &'f mut dyn FnMut(
             &NodeHandle<ty::Unknown, borrow::Mut<'t>, I, S, P, M>,
@@ -2217,18 +2239,18 @@ where
     >,
 }
 
-impl<'t, C, I, S, P, const M: usize> MapState for BubbledInsertState<'t, C, I, S, P, M>
+impl<'t, 'c, I, S, P, const M: usize> MapState for BubbledInsertState<'t, 'c, I, S, P, M>
 where
     P: RleTreeConfig<I, S, M>,
 {
-    type Map<'f> = MapBubbledInsertState<'f, 't, C, I, S, P, M> where Self: 'f;
+    type Map<'f> = MapBubbledInsertState<'f, 't, 'c, I, S, P, M> where Self: 'f;
 
     fn identity<'f>() -> Self::Map<'f>
     where
         Self: 'f,
     {
         MapBubbledInsertState {
-            post_op: <OpUpdateState<'t, C, I, S, P, M> as MapState>::identity(),
+            post_op: <OpUpdateState<'t, 'c, I, S, P, M> as MapState>::identity(),
             shift_lhs: None,
         }
     }
@@ -2238,7 +2260,7 @@ where
         Self: 'f,
     {
         if let Some(map_cursor) = f.post_op.cursor.as_mut() {
-            self.partial_cursor = map_cursor(&self.lhs, self.partial_cursor);
+            map_cursor(&self.lhs, self.cursor_builder.reborrow());
         }
 
         if let Some(map_shift) = f.shift_lhs.as_mut() {

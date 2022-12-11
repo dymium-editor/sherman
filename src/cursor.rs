@@ -130,3 +130,63 @@ impl Cursor for NoCursor {
     type PathIter = std::iter::Empty<PathComponent>;
     fn into_path(self) -> Self::PathIter { std::iter::empty() }
 }
+
+/// Handler for creating a [`Cursor`] without needing to be generic
+pub(crate) struct CursorBuilder<'c> {
+    builder: Option<&'c mut dyn CursorBuilderDispatch>,
+}
+
+// note: we require MaybeDebug so that the Debug impl for CursorBuilder is possible
+trait CursorBuilderDispatch: crate::MaybeDebug {
+    fn reset(&mut self);
+    fn prepend_to_path(&mut self, component: PathComponent);
+}
+
+impl<C: Cursor> CursorBuilderDispatch for C {
+    fn reset(&mut self) {
+        *self = C::new_empty();
+    }
+
+    fn prepend_to_path(&mut self, component: PathComponent) {
+        self.prepend_to_path(component);
+    }
+}
+
+impl<'c> CursorBuilder<'c> {
+    /// Creates a new `CursorBuilder` borrowing the provided `Cursor`
+    pub(crate) fn new<C: Cursor>(cursor: &'c mut C) -> Self {
+        CursorBuilder {
+            builder: match C::IS_NOP {
+                true => None,
+                false => Some(cursor),
+            },
+        }
+    }
+
+    /// Dynamic dispatch for [`Cursor::prepend_to_path`]
+    pub(crate) fn prepend_to_path(&mut self, component: PathComponent) {
+        if let Some(c) = self.builder.as_mut() {
+            c.prepend_to_path(component);
+        }
+    }
+
+    /// Dynamic dispatch for `*cursor = Cursor::new_empty()`
+    pub(crate) fn reset(&mut self) {
+        if let Some(c) = self.builder.as_mut() {
+            c.reset();
+        }
+    }
+
+    /// Convenience method to reborrow the `CursorBuilder`, much like you would a `&mut` reference
+    ///
+    /// This allows us to always pass around `CursorBuilder` objects directly, which means we never
+    /// have to double-dereference.
+    pub(crate) fn reborrow<'b>(&'b mut self) -> CursorBuilder<'b> {
+        CursorBuilder {
+            builder: match self.builder.as_mut() {
+                None => None,
+                Some(c) => Some(*c),
+            },
+        }
+    }
+}

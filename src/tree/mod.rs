@@ -1,12 +1,12 @@
 //! Wrapper module containing the big-boy tree itself
 
+use crate::cursor::{Cursor, CursorBuilder, NoCursor, PathComponent};
 use crate::param::{
     self, AllowSliceRefs, BorrowState, RleTreeConfig, RleTreeIsSend, SliceRefStore as _,
     SupportsInsert,
 };
 use crate::public_traits::{Index, Slice};
 use crate::range::RangeBounds;
-use crate::{Cursor, NoCursor, PathComponent};
 use std::fmt::Debug;
 use std::mem::ManuallyDrop;
 use std::ops::Range;
@@ -680,8 +680,11 @@ where
     /// [`insert_ref`]: Self::insert_ref
     /// [`insert_ref_with_cursor`]: Self::insert_ref_with_cursor
     pub fn insert_with_cursor<C: Cursor>(&mut self, cursor: C, idx: I, slice: S, size: I) -> C {
-        let (cursor, _returned_ptr) = self.insert_internal(cursor, idx, slice, size);
-        cursor
+        let mut result_cursor = C::new_empty();
+        let cursor_builder = CursorBuilder::new(&mut result_cursor);
+        let mut path_iter = &mut cursor.into_path();
+        let _returned_ptr = self.insert_internal(cursor_builder, &mut path_iter, idx, slice, size);
+        result_cursor
     }
 }
 
@@ -724,7 +727,10 @@ where
         slice: S,
         size: I,
     ) -> (C, SliceRef<I, S, M>) {
-        let (cursor, inserted_slice) = self.insert_internal(cursor, idx, slice, size);
+        let mut result_cursor = C::new_empty();
+        let cursor_builder = CursorBuilder::new(&mut result_cursor);
+        let mut path_iter = cursor.into_path();
+        let inserted_slice = self.insert_internal(cursor_builder, &mut path_iter, idx, slice, size);
         let root = match self.root.as_ref() {
             Some(r) => r,
             // SAFETY: insertion always results in at least a root node remaining in the tree
@@ -737,7 +743,7 @@ where
         };
 
         let slice_ref = root.refs_store.make_ref(insertion);
-        (cursor, slice_ref)
+        (result_cursor, slice_ref)
     }
 }
 

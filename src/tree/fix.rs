@@ -15,8 +15,9 @@
 //!
 //! [`apply_to_ref`]: TraverseUpdate::apply_to_ref
 
+use crate::cursor::CursorBuilder;
 use crate::param::RleTreeConfig;
-use crate::{Cursor, Index, PathComponent, Slice};
+use crate::{Index, PathComponent, Slice};
 use std::ops::{ControlFlow, Range};
 
 use super::node::{borrow, ty, ChildOrKey, NodeHandle, NodePtr, SliceHandle};
@@ -65,9 +66,13 @@ pub(super) trait MapState {
 ///
 /// Both functions are provided the [`NodeHandle`] taken from `child_or_key` to allow functions
 /// using extra context.
-pub(super) struct MapOpUpdateState<'f, 't, C, I, S, P: RleTreeConfig<I, S, M>, const M: usize> {
-    pub(super) cursor:
-        Option<&'f mut dyn FnMut(&NodeHandle<ty::Unknown, borrow::Mut<'t>, I, S, P, M>, C) -> C>,
+pub(super) struct MapOpUpdateState<'f, 't, I, S, P: RleTreeConfig<I, S, M>, const M: usize> {
+    pub(super) cursor: Option<
+        &'f mut (dyn for<'c> FnMut(
+            &NodeHandle<ty::Unknown, borrow::Mut<'t>, I, S, P, M>,
+            CursorBuilder<'c>,
+        )),
+    >,
     pub(super) sizes: Option<
         &'f mut dyn FnMut(
             &mut NodeHandle<ty::Unknown, borrow::Mut<'t>, I, S, P, M>,
@@ -86,11 +91,11 @@ pub(super) struct OpUpdateStateSizes<I> {
 }
 
 #[rustfmt::skip]
-impl<'t, C, I, S, P, const M: usize> MapState for OpUpdateState<'t, C, I, S, P, M>
+impl<'t, 'c, I, S, P, const M: usize> MapState for OpUpdateState<'t, 'c, I, S, P, M>
 where
     P: RleTreeConfig<I, S, M>,
 {
-    type Map<'f> = MapOpUpdateState<'f, 't, C, I, S, P, M>
+    type Map<'f> = MapOpUpdateState<'f, 't, I, S, P, M>
         where Self: 'f;
 
     fn identity<'f>() -> Self::Map<'f>
@@ -111,7 +116,7 @@ where
         };
 
         if let Some(map_cursor) = f.cursor.as_mut() {
-            self.partial_cursor = map_cursor(node, self.partial_cursor);
+            map_cursor(node, self.cursor_builder.reborrow());
         }
 
         if let Some(map_sizes) = f.sizes.as_mut() {
@@ -399,7 +404,7 @@ where
 ///////////////////
 
 /// State recording how to propagate an update to the size of the tree as we traverse upwards
-pub(super) struct OpUpdateState<'t, C, I, S, P: RleTreeConfig<I, S, M>, const M: usize> {
+pub(super) struct OpUpdateState<'t, 'c, I, S, P: RleTreeConfig<I, S, M>, const M: usize> {
     /// The key or child containing the change as we're traversing upwards, alongside the typed
     /// node containing it
     ///
@@ -455,11 +460,11 @@ pub(super) struct OpUpdateState<'t, C, I, S, P: RleTreeConfig<I, S, M>, const M:
     /// and get the exact path to the insertion. In practice, this involves doing a second upwards
     /// tree traversal, so we opt for an imperfect "good enough" solution that minimizes additional
     /// costs.
-    pub(super) partial_cursor: C,
+    pub(super) cursor_builder: CursorBuilder<'c>,
 }
 
 #[cfg(test)]
-impl<'t, C, I, S, P, const M: usize> Debug for OpUpdateState<'t, C, I, S, P, M>
+impl<'t, 'c, I, S, P, const M: usize> Debug for OpUpdateState<'t, 'c, I, S, P, M>
 where
     P: RleTreeConfig<I, S, M>,
 {
@@ -479,9 +484,8 @@ where
     }
 }
 
-impl<'t, C, I, S, P, const M: usize> OpUpdateState<'t, C, I, S, P, M>
+impl<'t, 'c, I, S, P, const M: usize> OpUpdateState<'t, 'c, I, S, P, M>
 where
-    C: Cursor,
     I: Index,
     S: Slice<I>,
     P: RleTreeConfig<I, S, M>,
@@ -495,19 +499,18 @@ where
         mut self,
         mut map_state: <Self as MapState>::Map<'m>,
         mut early_exit: Option<&mut dyn FnMut(&Self) -> ControlFlow<()>>,
-    ) -> C
-    where
+    ) where
         Self: 'm,
     {
         loop {
             self = self.map(&mut map_state);
 
             if let Some(ControlFlow::Break(())) = early_exit.as_mut().map(|f| f(&self)) {
-                return self.partial_cursor;
+                return;
             }
 
             match self.do_upward_step() {
-                Ok(final_cursor) => return final_cursor,
+                Ok(()) => return,
                 Err(new_state) => self = new_state,
             }
         }
@@ -517,7 +520,7 @@ where
     /// root
     ///
     /// Typically this method will not be used directly, and instead
-    pub(super) fn do_upward_step(mut self) -> Result<C, Self> {
+    pub(super) fn do_upward_step(mut self) -> Result<(), Self> {
         // The first part of the traversal step starts with repositioning all of the keys after
         // `self.child_or_key`.
 
@@ -566,19 +569,19 @@ where
         // ChildOrKey::Child(_)` as long as the cursor is non-empty, but that should always be
         // true.
         if let Some(child_idx) = maybe_child_idx {
-            self.partial_cursor.prepend_to_path(PathComponent { child_idx });
+            self.cursor_builder.prepend_to_path(PathComponent { child_idx });
         }
 
         // Update `self` to the parent, if there is one. Otherwise, this is the root node so we
         // should return `Err` with the cursor and reference to the insertion.
         match node.into_parent().ok() {
-            None => Ok(self.partial_cursor),
+            None => Ok(()),
             Some((parent_handle, c_idx)) => Err(OpUpdateState {
                 child_or_key: ChildOrKey::Child((c_idx, parent_handle)),
                 override_pos: None,
                 old_size,
                 new_size,
-                partial_cursor: self.partial_cursor,
+                cursor_builder: self.cursor_builder,
             }),
         }
     }
