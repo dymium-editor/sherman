@@ -2,8 +2,8 @@
 
 use super::node::{borrow, ty, SliceHandle};
 use super::{SliceRef, DEFAULT_MIN_KEYS};
-use crate::param::{AllowSliceRefs, RleTreeConfig};
-use crate::Index;
+use crate::param::{AllowSliceRefs, NoFeatures, RleTreeConfig};
+use crate::{Cursor, Index, PathComponent};
 use std::ops::Range;
 use std::panic::{RefUnwindSafe, UnwindSafe};
 
@@ -98,6 +98,51 @@ where
     }
 }
 
+/// Shared helper function to produce a cursor to a [`SliceHandle`]
+///
+/// ## Panics
+///
+/// This method will panic if called with `P = AllowCow`.
+pub(super) fn cursor_to_handle<C: Cursor, I, S, P: RleTreeConfig<I, S, M>, const M: usize>(
+    handle: SliceHandle<ty::Unknown, borrow::Immut, I, S, P, M>,
+) -> C {
+    assert!(!P::COW);
+
+    let mut node = handle.node;
+    let mut cursor = C::new_empty();
+
+    // Short-circuit for no-op cursors
+    if C::IS_NOP {
+        return cursor;
+    }
+
+    while let Ok((parent, child_idx)) = node.into_parent() {
+        cursor.prepend_to_path(PathComponent { child_idx });
+        node = parent.erase_type();
+    }
+
+    cursor
+}
+
+macro_rules! fn_cursor {
+    () => {
+        /// Returns a [`Cursor`] to this `SliceEntry`
+        ///
+        /// For now, this method is not available on COW-enabled trees, because retrieving the
+        /// cursor is actually non-trivial. For those, you should use the [`RleTree::cursor_to`]
+        /// method.
+        ///
+        /// [`RleTree::cursor_to`]: crate::RleTree::cursor_to
+        pub fn cursor<C: Cursor>(&self) -> C {
+            cursor_to_handle(self.slice)
+        }
+    };
+}
+
+impl<'t, I, S, const M: usize> SliceEntry<'t, I, S, NoFeatures, M> {
+    fn_cursor!();
+}
+
 impl<'t, I, S, const M: usize> SliceEntry<'t, I, S, AllowSliceRefs, M> {
     /// Creates a new [`SliceRef`] pointing to this slice
     pub fn make_ref(&self) -> SliceRef<I, S, M> {
@@ -105,4 +150,6 @@ impl<'t, I, S, const M: usize> SliceEntry<'t, I, S, AllowSliceRefs, M> {
         let handle = unsafe { self.slice.clone_slice_ref() };
         self.store.make_ref(handle)
     }
+
+    fn_cursor!();
 }

@@ -53,7 +53,8 @@ pub struct PathComponent {
 /// *really* should not be an issue.
 ///
 /// [`RleTree`]: crate::RleTree
-#[derive(Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
+#[cfg_attr(any(test, feature = "fuzz"), derive(PartialEq, Eq))]
 pub struct BoundedCursor<const LEN: usize = 8> {
     path: [PathComponent; LEN],
     start_at: u8,

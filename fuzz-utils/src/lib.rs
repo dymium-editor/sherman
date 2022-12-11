@@ -2,7 +2,7 @@ use arbitrary::{Arbitrary, Unstructured};
 use sherman::mock::{self, Mock};
 use sherman::param::{self, RleTreeConfig};
 use sherman::range::{EndBound, StartBound};
-use sherman::{RleTree, SliceRef};
+use sherman::{BoundedCursor, Cursor, RleTree, SliceEntry, SliceRef};
 use std::fmt::{self, Debug, Display, Formatter};
 use std::ops::Range;
 use std::panic::{self, RefUnwindSafe, UnwindSafe};
@@ -19,6 +19,12 @@ fn expect_might_panic<R, F: UnwindSafe + FnOnce() -> R>(f: F) -> Result<R, ()> {
     let _ = panic::take_hook();
 
     result
+}
+
+enum CommandType {
+    Basic,
+    Cow,
+    SliceRefs,
 }
 
 const BASIC_VARIANTS: u8 = 2;
@@ -162,6 +168,12 @@ impl<C: Debug> Debug for CommandSequence<C> {
 
 impl<I: Debug, S: Debug> Debug for BasicCommand<I, S> {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        self.fmt_ty(f, CommandType::Basic)
+    }
+}
+
+impl<I: Debug, S: Debug> BasicCommand<I, S> {
+    fn fmt_ty(&self, f: &mut Formatter, cmd_ty: CommandType) -> fmt::Result {
         match self {
             Self::Iter { id, start, end, access } => {
                 let start_fmt = match start {
@@ -216,6 +228,12 @@ impl<I: Debug, S: Debug> Debug for BasicCommand<I, S> {
                 writeln!(f, "        let entry = tree_{id}.get({index:?});")?;
                 writeln!(f, "        assert_eq!(entry.range(), {range:?});")?;
                 writeln!(f, "        assert_eq!(entry.slice(), &{slice:?});")?;
+                if !matches!(cmd_ty, CommandType::Cow) {
+                    writeln!(
+                        f,
+                        "        assert_eq!(entry.cursor::<BoundedCursor>(), tree_{id}.cursor_to({index:?}));"
+                    )?;
+                }
                 f.write_str("    }\n")
             }
             Self::Get { id, index, info: Err(()) } => {
@@ -224,7 +242,10 @@ impl<I: Debug, S: Debug> Debug for BasicCommand<I, S> {
                 f.write_str("    }).is_err());\n")
             }
             Self::Insert { id, index, slice, size, panics: false } => {
-                writeln!(f, "    tree_{id}.insert({index:?}, {slice:?}, {size:?});")
+                f.write_str("    assert_eq!(\n")?;
+                writeln!(f, "        tree_{id}.insert_with_cursor(BoundedCursor::new_empty(), {index:?}, {slice:?}, {size:?}),")?;
+                writeln!(f, "        tree_{id}.cursor_to({index:?}),")?;
+                f.write_str("    );\n")
             }
             Self::Insert { id, index, slice, size, panics: true } => {
                 f.write_str("    assert!(std::panic::catch_unwind(move || {\n")?;
@@ -238,7 +259,7 @@ impl<I: Debug, S: Debug> Debug for BasicCommand<I, S> {
 impl<I: Debug, S: Debug> Debug for SliceRefCommand<I, S> {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match self {
-            Self::Basic(c) => c.fmt(f),
+            Self::Basic(c) => c.fmt_ty(f, CommandType::SliceRefs),
             Self::MakeRef { id, index, ref_id: Ok(ref_id) } => {
                 writeln!(f, "    let ref_{ref_id} = tree_{id}.get({index:?}).make_ref();")
             }
@@ -291,7 +312,7 @@ impl<I: Debug, S: Debug> Debug for SliceRefCommand<I, S> {
 impl<I: Debug, S: Debug> Debug for CowCommand<I, S> {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match self {
-            Self::Basic(c) => c.fmt(f),
+            Self::Basic(c) => c.fmt_ty(f, CommandType::Cow),
             Self::ShallowClone { src_id, new_id } => {
                 f.write_fmt(format_args!("    let mut tree_{new_id} = tree_{src_id}.clone();\n"))
             }
@@ -331,13 +352,9 @@ impl<I, S> BasicCommand<I, S> {
                 index: f(index),
                 info: info.map(|(range, slice)| (f(range.start)..f(range.end), slice)),
             },
-            Self::Insert { id, index, slice, size, panics } => BasicCommand::Insert {
-                id,
-                index: f(index),
-                slice,
-                size: f(size),
-                panics,
-            },
+            Self::Insert { id, index, slice, size, panics } => {
+                BasicCommand::Insert { id, index: f(index), slice, size: f(size), panics }
+            }
         }
     }
 
@@ -372,13 +389,9 @@ impl<I, S> SliceRefCommand<I, S> {
             Self::MakeRef { id, index, ref_id } => {
                 SliceRefCommand::MakeRef { id, index: f(index), ref_id }
             }
-            Self::InsertRef { id, index, slice, size, ref_id } => SliceRefCommand::InsertRef {
-                id,
-                index: f(index),
-                slice,
-                size: f(size),
-                ref_id,
-            },
+            Self::InsertRef { id, index, slice, size, ref_id } => {
+                SliceRefCommand::InsertRef { id, index: f(index), slice, size: f(size), ref_id }
+            }
             Self::CloneRef { src_id, new_id } => SliceRefCommand::CloneRef { src_id, new_id },
             Self::CheckRefValid { id, ref_id, valid } => {
                 SliceRefCommand::CheckRefValid { id, ref_id, valid }
@@ -795,6 +808,42 @@ pub struct RunnerState<I, S, P: RleTreeConfig<I, S, M>, const M: usize> {
     refs: Vec<Option<SliceRef<I, S, M>>>,
 }
 
+pub struct ExtraRunnerInfo<I, S, P: RleTreeConfig<I, S, M>, const M: usize> {
+    entry_cursor_method: Option<fn(&SliceEntry<I, S, P, M>) -> BoundedCursor>,
+}
+
+impl<I, S, const M: usize> ExtraRunnerInfo<I, S, param::NoFeatures, M> {
+    pub fn new_basic() -> Self {
+        // We have to explicitly create this method here (with lifetimes and all) because otherwise
+        // the compiler gets a little cranky about directly using the method in `ExtraRunnerInfo`
+        fn cursor<'r, 't, C: Cursor, I, S, const M: usize>(
+            entry: &'r SliceEntry<'t, I, S, param::NoFeatures, M>,
+        ) -> C {
+            entry.cursor()
+        }
+
+        ExtraRunnerInfo { entry_cursor_method: Some(cursor) }
+    }
+}
+impl<I, S, const M: usize> ExtraRunnerInfo<I, S, param::AllowSliceRefs, M> {
+    pub fn new_slice_refs() -> Self {
+        // We have to explicitly create this method here (with lifetimes and all) because otherwise
+        // the compiler gets a little cranky about directly using the method in `ExtraRunnerInfo`
+        fn cursor<'r, 't, C: Cursor, I, S, const M: usize>(
+            entry: &'r SliceEntry<'t, I, S, param::AllowSliceRefs, M>,
+        ) -> C {
+            entry.cursor()
+        }
+
+        ExtraRunnerInfo { entry_cursor_method: Some(cursor) }
+    }
+}
+impl<I, S, const M: usize> ExtraRunnerInfo<I, S, param::AllowCow, M> {
+    pub fn new_cow() -> Self {
+        ExtraRunnerInfo { entry_cursor_method: None }
+    }
+}
+
 impl<I, S, P, const M: usize> RunnerState<I, S, P, M>
 where
     I: UnwindSafe + RefUnwindSafe + sherman::Index,
@@ -810,7 +859,7 @@ where
     }
 
     /// Runs the command
-    pub fn run_basic_cmd(&mut self, cmd: &BasicCommand<I, S>) {
+    pub fn run_basic_cmd(&mut self, cmd: &BasicCommand<I, S>, extra: &ExtraRunnerInfo<I, S, P, M>) {
         match cmd {
             BasicCommand::Iter { id, start, end, access: Ok(access) } => {
                 let tree = self.trees[id.0].as_ref().unwrap();
@@ -839,6 +888,10 @@ where
                 let tree = self.trees[id.0].as_ref().unwrap();
                 let entry = tree.get(*index);
                 assert_eq!((entry.range(), entry.slice()), (range.clone(), slice));
+                if let Some(cursor_method) = extra.entry_cursor_method {
+                    let entry_cursor = cursor_method(&entry);
+                    assert_eq!(entry_cursor, tree.cursor_to(*index));
+                }
             }
             BasicCommand::Get { id, index, info: Err(()) } => {
                 let tree = self.trees[id.0].as_ref().unwrap();
@@ -849,8 +902,10 @@ where
             BasicCommand::Insert { id, index, slice, size, panics: false } => {
                 let tree = self.trees[id.0].as_mut().unwrap();
 
-                tree.insert(*index, slice.clone(), *size);
+                let cursor: BoundedCursor =
+                    tree.insert_with_cursor(Cursor::new_empty(), *index, slice.clone(), *size);
                 tree.validate();
+                assert_eq!(cursor, tree.cursor_to(*index));
             }
             BasicCommand::Insert { id, index, slice, size, panics: true } => {
                 let mut tree = self.trees[id.0].take().unwrap();
@@ -871,9 +926,13 @@ where
     I: UnwindSafe + RefUnwindSafe + sherman::Index,
     S: UnwindSafe + RefUnwindSafe + sherman::Slice<I> + Debug + Clone + PartialEq,
 {
-    pub fn run_slice_ref_cmd(&mut self, cmd: &SliceRefCommand<I, S>) {
+    pub fn run_slice_ref_cmd(
+        &mut self,
+        cmd: &SliceRefCommand<I, S>,
+        extra: &ExtraRunnerInfo<I, S, param::AllowSliceRefs, M>,
+    ) {
         match cmd {
-            SliceRefCommand::Basic(c) => self.run_basic_cmd(c),
+            SliceRefCommand::Basic(c) => self.run_basic_cmd(c, &extra),
             SliceRefCommand::MakeRef { id, index, ref_id: Ok(_) } => {
                 let tree = self.trees[id.0].as_ref().unwrap();
                 self.refs.push(Some(tree.get(*index).make_ref()));
@@ -936,9 +995,13 @@ where
     I: UnwindSafe + RefUnwindSafe + sherman::Index,
     S: UnwindSafe + RefUnwindSafe + sherman::Slice<I> + Debug + Clone + PartialEq,
 {
-    pub fn run_cow_cmd(&mut self, cmd: &CowCommand<I, S>) {
+    pub fn run_cow_cmd(
+        &mut self,
+        cmd: &CowCommand<I, S>,
+        extra: &ExtraRunnerInfo<I, S, param::AllowCow, M>,
+    ) {
         match cmd {
-            CowCommand::Basic(c) => self.run_basic_cmd(c),
+            CowCommand::Basic(c) => self.run_basic_cmd(c, extra),
             CowCommand::ShallowClone { src_id, .. } => {
                 let old_tree = self.trees[src_id.0].take().unwrap();
                 let new_tree = old_tree.clone();

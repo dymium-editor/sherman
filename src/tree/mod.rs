@@ -374,8 +374,6 @@ where
     ///
     /// This method will panic if `idx` is out of bounds -- i.e., if it is less than zero or
     /// greater than `self.size()`.
-    //
-    // FIXME: add `SliceEntry::cursor`.
     pub fn get(&self, idx: I) -> SliceEntry<I, S, P, M> {
         self.get_with_cursor(NoCursor, idx)
     }
@@ -434,6 +432,87 @@ where
                 }
             }
         }
+    }
+
+    /// Returns a [`Cursor`] to the value at the provided index
+    ///
+    /// This method is functionally the same as [`SliceEntry::cursor`], except it is also available
+    /// on COW-enabled trees. If you already have a [`SliceEntry`] pointing to a value, its
+    /// `cursor` method should be preferred over this one.
+    ///
+    /// ## Panics
+    ///
+    /// This method will panic if `idx` is out of bounds -- i.e., if it is less than zero or
+    /// greater than `self.size()`
+    pub fn cursor_to<C: Cursor>(&self, idx: I) -> C {
+        if idx < I::ZERO {
+            panic!("index {idx:?} out of bounds, less than zero");
+        } else if idx >= self.size() {
+            panic!("index {idx:?} out of bounds for size {:?}", self.size());
+        }
+
+        let root = self.root.as_ref().expect("`self.root` should be `Some` if `0 <= idx < size`");
+
+        // Short-circuit for no-op cursors
+        if C::IS_NOP {
+            return C::new_empty();
+        }
+
+        // recursive helper function, required in order to support COW-enabled trees. For all
+        // others, this *should* compile down to a simple loop
+        fn recurse<C: Cursor, I: Index, S, P: RleTreeConfig<I, S, M>, const M: usize>(
+            mut node: NodeHandle<ty::Unknown, borrow::Immut, I, S, P, M>,
+            mut target: I,
+        ) -> C {
+            let top_height = node.height();
+
+            // Traverse down the tree:
+            let mut cursor = loop {
+                match node.into_typed() {
+                    Type::Leaf(_) => break C::new_empty(),
+                    Type::Internal(n) => match search_step(n.erase_type(), None, target) {
+                        // If it's a key, return an empty cursor to this node
+                        ChildOrKey::Key(_) => break C::new_empty(),
+                        ChildOrKey::Child((c_idx, c_pos)) => {
+                            target = target.sub_left(c_pos);
+
+                            // SAFETY: search_step guarantees that c_idx is valid
+                            let child = unsafe { n.into_child(c_idx) };
+                            // note: adding P::COW means the compiler knows it will always be false
+                            let mismatched_parent = P::COW
+                                && matches!(child.leaf().parent(), Some(p) if p.ptr != n.ptr());
+                            if mismatched_parent {
+                                let mut c: C = recurse(node, target);
+                                c.prepend_to_path(PathComponent { child_idx: c_idx });
+                                break c;
+                            }
+
+                            node = child;
+                            continue;
+                        }
+                    },
+                }
+            };
+
+            // Traverse back up until we get to `top_height` (or the top of the tree, if !COW)
+            loop {
+                if P::COW && node.height() == top_height {
+                    break;
+                }
+
+                match node.into_parent() {
+                    Err(_) => break,
+                    Ok((parent, child_idx)) => {
+                        cursor.prepend_to_path(PathComponent { child_idx });
+                        node = parent.erase_type();
+                    }
+                }
+            }
+
+            cursor
+        }
+
+        recurse(root.handle.borrow(), idx)
     }
 
     /// Returns an iterator yielding all slices that touch the range

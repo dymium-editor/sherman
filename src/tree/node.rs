@@ -2839,7 +2839,7 @@ where
 }
 
 // Any params
-//  * borrow
+//  * borrow (where B: borrow::AsImmut)
 //  * erase_type
 //  * key_pos
 //  * slice_size
@@ -2854,6 +2854,14 @@ where
     B: borrow::AsImmut,
     P: RleTreeConfig<I, S, M>,
 {
+    /// Produces an immutable handle for the slice, borrowing the handle for its duration
+    pub fn borrow<'h>(&'h self) -> SliceHandle<Ty, borrow::Immut<'h>, I, S, P, M>
+    where
+        B: borrow::AsImmut,
+    {
+        SliceHandle { node: self.node.borrow(), idx: self.idx }
+    }
+
     /// Converts this `SliceHandle` into one with `ty::Unknown` instead of the current type tag
     pub fn erase_type(self) -> <Self as Typed>::Unknown {
         SliceHandle { node: self.node.erase_type(), idx: self.idx }
