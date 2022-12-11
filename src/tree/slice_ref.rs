@@ -23,7 +23,7 @@ use super::node::{borrow, ty, NodeHandle, SliceHandle};
 use super::DEFAULT_MIN_KEYS;
 use crate::param::{self, AllowSliceRefs};
 use crate::recycle::{self, RecycleVec};
-use crate::Index;
+use crate::{Cursor, Index};
 
 pub type RawRoot<I, S, P, const M: usize> = NodeHandle<ty::Unknown, borrow::Owned, I, S, P, M>;
 
@@ -794,6 +794,50 @@ impl<I, S, const M: usize> SliceRef<I, S, M> {
     {
         let b = self.try_temporary_borrow()?;
         Ok(b.handle.as_ref().map(|h| h.range()))
+    }
+
+    /// Builds and returns a [`Cursor`] pointing to this slice
+    ///
+    /// ## Panics
+    ///
+    /// This method will panic if the slice reference is no longer [valid] or the tree
+    /// [cannot be borrowed] right now. For a fallible version of this method, see:
+    /// [`try_cursor`].
+    ///
+    /// [valid]: Self::is_valid
+    /// [cannot be borrowed]: Self::can_borrow
+    /// [`try_cursor`]: Self::try_cursor
+    pub fn cursor<C: Cursor>(&self) -> C {
+        let panic_msg = match self.cursor_internal() {
+            Ok(Some(c)) => return c,
+            Ok(None) => Self::panic_msg(None),
+            Err(e) => Self::panic_msg(Some(e)),
+        };
+
+        panic!("{panic_msg}");
+    }
+
+    /// Builds and returns a [`Cursor`] pointing to this slice, or `None` if the reference isn't
+    /// valid or can't be borrowed right now
+    ///
+    /// This is a fallible version of [`cursor`](Self::cursor).
+    pub fn try_cursor<C: Cursor>(&self) -> Option<C> {
+        match self.cursor_internal() {
+            Ok(Some(cursor)) => Some(cursor),
+            Ok(None) | Err(_) => None,
+        }
+    }
+
+    /// Internal function with shared logic between [`cursor`] and [`try_cursor`]
+    ///
+    /// This method returns `Err(_)` on failure when the tree cannot be accessed, and `Ok(None)`
+    /// when the slice has been removed.
+    ///
+    /// [`cursor`]: Self::cursor
+    /// [`try_cursor`]: Self::try_cursor
+    fn cursor_internal<C: Cursor>(&self) -> Result<Option<C>, BorrowFailure> {
+        let b = self.try_temporary_borrow()?;
+        Ok(b.handle.as_ref().map(|h| super::entry::cursor_to_handle(h.borrow())))
     }
 }
 
