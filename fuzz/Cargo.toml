@@ -19,19 +19,19 @@ sherman-fuzz-utils = { path = "../fuzz-utils" }
 members = ["."]
 
 [[bin]]
-name = "no_features_basic_slices"
-path = "fuzz_targets/no_features_basic_slices.rs"
+name = "basic_slices_m3_no_features"
+path = "fuzz_targets/basic_slices/M3/no_features.rs"
 test = false
 doc = false
 
 [[bin]]
-name = "slice_ref_basic_slices"
-path = "fuzz_targets/slice_ref_basic_slices.rs"
+name = "basic_slices_m3_slice_ref"
+path = "fuzz_targets/basic_slices/M3/slice_ref.rs"
 test = false
 doc = false
 
 [[bin]]
-name = "cow_basic_slices"
-path = "fuzz_targets/cow_basic_slices.rs"
+name = "basic_slices_m3_cow"
+path = "fuzz_targets/basic_slices/M3/cow.rs"
 test = false
 doc = false
