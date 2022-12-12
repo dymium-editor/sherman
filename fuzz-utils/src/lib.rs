@@ -28,7 +28,7 @@ enum CommandType {
     SliceRefs,
 }
 
-const BASIC_VARIANTS: u8 = 2;
+const BASIC_VARIANTS: u8 = 3;
 
 /// A basic command, applicable to all [`RleTree`] parameterizations
 #[derive(Clone)]
@@ -163,7 +163,7 @@ impl<N: Name, C: Debug> Debug for CommandSequence<N, C> {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         let init_id = TreeId(0);
         f.write_str("#[test]\n")?;
-        f.write_str("#[allow(unused_variables)]\n")?;
+        f.write_str("#[allow(unused_variables, unused_mut)]\n")?;
         f.write_str("fn test_case() {\n")?;
         let ty_name = N::name();
         writeln!(f, "    let mut tree_{init_id}: {ty_name} = RleTree::new_empty();")?;
@@ -251,7 +251,7 @@ impl<I: Debug, S: Debug> BasicCommand<I, S> {
             }
             Self::Insert { id, index, slice, size, panics: false } => {
                 f.write_str("    assert_eq!(\n")?;
-                writeln!(f, "        tree_{id}.insert_with_cursor(BoundedCursor::new_empty(), {index:?}, {slice:?}, {size:?}),")?;
+                writeln!(f, "        tree_{id}.insert_with_cursor::<BoundedCursor>(Cursor::new_empty(), {index:?}, {slice:?}, {size:?}),")?;
                 writeln!(f, "        tree_{id}.cursor_to({index:?}),")?;
                 f.write_str("    );\n")
             }
@@ -273,7 +273,7 @@ impl<I: Debug, S: Debug> Debug for SliceRefCommand<I, S> {
             }
             Self::MakeRef { id, index, ref_id: Err(()) } => {
                 f.write_str("    assert!(std::panic::catch_unwind(|| {\n")?;
-                writeln!(f, "        tree_{id}.get({index:?}).make_ref()\n")?;
+                writeln!(f, "        tree_{id}.get({index:?}).make_ref()")?;
                 f.write_str("    }).is_err());\n")
             }
             Self::InsertRef { id, index, slice, size, ref_id: Ok(ref_id) } => {
@@ -312,7 +312,7 @@ impl<I: Debug, S: Debug> Debug for SliceRefCommand<I, S> {
                 writeln!(f, "        ref_{ref_id}.borrow_slice()")?;
                 f.write_str("    }).is_err());\n")
             }
-            Self::DropRef { ref_id } => writeln!(f, "    drop(ref_{ref_id})"),
+            Self::DropRef { ref_id } => writeln!(f, "    drop(ref_{ref_id});"),
         }
     }
 }
