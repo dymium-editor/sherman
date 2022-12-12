@@ -1,5 +1,7 @@
 //! Wrapper module for [`Cursor`] and related types
 
+use std::fmt::{self, Debug, Formatter};
+
 /// Interface to store prior paths through the [`RleTree`], so that they can be used to speed up
 /// subsequent accesses
 ///
@@ -53,11 +55,39 @@ pub struct PathComponent {
 /// *really* should not be an issue.
 ///
 /// [`RleTree`]: crate::RleTree
-#[derive(Debug, Copy, Clone)]
+#[derive(Copy, Clone)]
 #[cfg_attr(any(test, feature = "fuzz"), derive(PartialEq, Eq))]
 pub struct BoundedCursor<const LEN: usize = 8> {
     path: [PathComponent; LEN],
     start_at: u8,
+}
+
+impl<const LEN: usize> Debug for BoundedCursor<LEN> {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        struct P<'a>(&'a [PathComponent]);
+
+        impl Debug for P<'_> {
+            fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+                let absent = format_args!("-");
+
+                let mut list = f.debug_list();
+                for c in self.0 {
+                    if c.child_idx == 0xFF {
+                        list.entry(&absent);
+                    } else {
+                        list.entry(&c.child_idx);
+                    }
+                }
+
+                list.finish()
+            }
+        }
+
+        f.debug_struct("BoundedCursor")
+            .field("start_at", &self.start_at)
+            .field("path", &P(&self.path))
+            .finish()
+    }
 }
 
 impl<const LEN: usize> Cursor for BoundedCursor<LEN> {
