@@ -7,7 +7,7 @@ use crate::{Cursor, Index, PathComponent};
 use std::ops::Range;
 use std::panic::{RefUnwindSafe, UnwindSafe};
 
-/// Information about a single slice in an [`RleTree`], returned by [`get`] or yeilded by [`iter`]
+/// Information about a single slice in an [`RleTree`], returned by [`get`] or yielded by [`iter`]
 ///
 /// Conceptually, this type is not too different from `(Range<I>, &'t S)`, but the methods provide
 /// some additional functionality that wouldn't be available with a simpler type.
