@@ -1,6 +1,6 @@
 use crate::{param::AllowCow, Constant, RleTree};
 
-type CowFuzzTree = RleTree<u8, Constant<char>, AllowCow, 3>;
+type CowFuzzTree<const M: usize = 3> = RleTree<u8, Constant<char>, AllowCow, M>;
 
 #[test]
 fn auto_fuzz_1_simple_diverge_insert() {

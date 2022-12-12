@@ -4,6 +4,7 @@ use sherman::param::{self, RleTreeConfig};
 use sherman::range::{EndBound, StartBound};
 use sherman::{BoundedCursor, Cursor, RleTree, SliceEntry, SliceRef};
 use std::fmt::{self, Debug, Display, Formatter};
+use std::marker::PhantomData;
 use std::ops::Range;
 use std::panic::{self, RefUnwindSafe, UnwindSafe};
 use std::sync::Mutex;
@@ -149,16 +150,23 @@ pub enum CowCommand<I, S> {
 }
 
 /// Sequence of [`BasicCommand`]s, [`SliceRefCommand`]s, or [`CowCommand`]s
-pub struct CommandSequence<C> {
+pub struct CommandSequence<N, C> {
     pub cmds: Vec<C>,
+    pub ty_name: PhantomData<N>,
 }
 
-impl<C: Debug> Debug for CommandSequence<C> {
+pub trait Name {
+    fn name() -> &'static str;
+}
+
+impl<N: Name, C: Debug> Debug for CommandSequence<N, C> {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         let init_id = TreeId(0);
         f.write_str("#[test]\n")?;
+        f.write_str("#[allow(unused_variables)]\n")?;
         f.write_str("fn test_case() {\n")?;
-        writeln!(f, "    let mut tree_{init_id} = RleTree::new_empty();")?;
+        let ty_name = N::name();
+        writeln!(f, "    let mut tree_{init_id}: {ty_name} = RleTree::new_empty();")?;
         for c in &self.cmds {
             c.fmt(f)?;
         }
@@ -321,9 +329,12 @@ impl<I: Debug, S: Debug> Debug for CowCommand<I, S> {
     }
 }
 
-impl<C> CommandSequence<C> {
-    pub fn map<D, F: FnMut(C) -> D>(self, f: F) -> CommandSequence<D> {
-        CommandSequence { cmds: self.cmds.into_iter().map(f).collect() }
+impl<N, C> CommandSequence<N, C> {
+    pub fn map<D, F: FnMut(C) -> D>(self, f: F) -> CommandSequence<N, D> {
+        CommandSequence {
+            cmds: self.cmds.into_iter().map(f).collect(),
+            ty_name: PhantomData,
+        }
     }
 }
 
@@ -466,7 +477,7 @@ impl<I, S> IterEntry<I, S> {
     }
 }
 
-impl<'d, C: ArbitraryCommand<'d>> Arbitrary<'d> for CommandSequence<C>
+impl<'d, N, C: ArbitraryCommand<'d>> Arbitrary<'d> for CommandSequence<N, C>
 where
     C::Index: sherman::Index,
     C::Slice: sherman::Slice<C::Index>,
@@ -493,7 +504,7 @@ where
             )?);
         }
 
-        Ok(CommandSequence { cmds })
+        Ok(CommandSequence { cmds, ty_name: PhantomData })
     }
 }
 

@@ -1,7 +1,7 @@
 use crate::BoundedCursor;
 use crate::{param::AllowSliceRefs, Constant, RleTree};
 
-type SliceRefFuzzTree = RleTree<u8, Constant<char>, AllowSliceRefs, 3>;
+type SliceRefFuzzTree<const M: usize = 3> = RleTree<u8, Constant<char>, AllowSliceRefs, M>;
 
 #[test]
 #[allow(unused_variables)]

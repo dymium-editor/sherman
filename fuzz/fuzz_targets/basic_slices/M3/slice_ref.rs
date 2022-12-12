@@ -3,7 +3,7 @@
 use arbitrary::{Arbitrary, Unstructured};
 use libfuzzer_sys::fuzz_target;
 use sherman::{param::AllowSliceRefs, Constant};
-use sherman_fuzz_utils::{CommandSequence, ExtraRunnerInfo, RunnerState, SliceRefCommand};
+use sherman_fuzz_utils::{CommandSequence, ExtraRunnerInfo, Name, RunnerState, SliceRefCommand};
 use std::fmt::{self, Debug, Formatter};
 
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -23,7 +23,15 @@ impl<'d> Arbitrary<'d> for UpperLetter {
     }
 }
 
-fuzz_target!(|cmds: CommandSequence<SliceRefCommand<u8, Constant<UpperLetter>>>| {
+struct TyName;
+
+impl Name for TyName {
+    fn name() -> &'static str {
+        "SliceRefFuzzTree<3>"
+    }
+}
+
+fuzz_target!(|cmds: CommandSequence<TyName, SliceRefCommand<u8, Constant<UpperLetter>>>| {
     let cmds = cmds.map(|cmd| cmd.map_slice(|c| Constant(c.0)));
 
     let mut runner: RunnerState<u8, Constant<UpperLetter>, AllowSliceRefs, 3> = RunnerState::init();

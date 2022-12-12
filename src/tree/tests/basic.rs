@@ -1,6 +1,6 @@
 use crate::{param::NoFeatures, Constant, RleTree};
 
-type BasicFuzzTree = RleTree<u8, Constant<char>, NoFeatures, 3>;
+type BasicFuzzTree<const M: usize = 3> = RleTree<u8, Constant<char>, NoFeatures, M>;
 
 #[test]
 fn auto_fuzz_2_iter_rangefrom_out_of_bounds_panic() {
