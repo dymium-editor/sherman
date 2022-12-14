@@ -2079,9 +2079,7 @@ where
                 None => {
                     // SAFETY: `into_slice_handle` requires that
                     // `new_key_idx < insert_into.leaf().len()`, which is guaranteed by
-                    // `insert_key_and_child`. `clone_slice_ref` requires that we not use it until
-                    // the other borrows on the tree are gone, which the safety docs for
-                    // `BubbledInsertState` guarantees.
+                    // `insert_key_and_child`.
                     let inserted_handle =
                         unsafe { insert_into.borrow().into_slice_handle(new_key_idx) };
 
