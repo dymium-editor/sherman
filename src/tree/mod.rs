@@ -933,7 +933,8 @@ macro_rules! define_node_box {
             P: RleTreeConfig<I, S, M>,
         {
             fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-                Debug::fmt(&self.node, f)
+                Debug::fmt(&*self.node, f)
+                //         ^^ deref through the ManuallyDrop
             }
         }
 
