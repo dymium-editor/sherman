@@ -193,6 +193,11 @@ impl<'c> CursorBuilder<'c> {
         }
     }
 
+    /// Returns the value of the inner cursor's [`IS_NOP`](Cursor::IS_NOP)
+    pub(crate) fn is_nop(&self) -> bool {
+        self.builder.is_none()
+    }
+
     /// Dynamic dispatch for [`Cursor::prepend_to_path`]
     pub(crate) fn prepend_to_path(&mut self, component: PathComponent) {
         if let Some(c) = self.builder.as_mut() {

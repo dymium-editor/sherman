@@ -1,4 +1,4 @@
-use crate::{param::NoFeatures, Constant, RleTree};
+use crate::{param::NoFeatures, BoundedCursor, Constant, Cursor, RleTree};
 
 type BasicFuzzTree<const M: usize = 3> = RleTree<u8, Constant<char>, NoFeatures, M>;
 
@@ -431,4 +431,41 @@ fn auto_fuzz_18_misc_large_insert() {
     tree_0.insert(5, Constant('F'), 5);
     tree_0.insert(120, Constant('Q'), 80);
     tree_0.validate();
+}
+
+#[test]
+#[allow(unused_variables, unused_mut)]
+fn auto_fuzz_19_bubble_deferred_insert() {
+    let mut tree_0: BasicFuzzTree<3> = RleTree::new_empty();
+    assert_eq!(
+        tree_0.insert_with_cursor::<BoundedCursor>(Cursor::new_empty(), 0, Constant('L'), 26),
+        tree_0.cursor_to(0),
+    );
+    assert_eq!(
+        tree_0.insert_with_cursor::<BoundedCursor>(Cursor::new_empty(), 1, Constant('A'), 76),
+        tree_0.cursor_to(1),
+    );
+    assert_eq!(
+        tree_0.insert_with_cursor::<BoundedCursor>(Cursor::new_empty(), 71, Constant('B'), 26),
+        tree_0.cursor_to(71),
+    );
+    assert_eq!(
+        tree_0.insert_with_cursor::<BoundedCursor>(Cursor::new_empty(), 42, Constant('V'), 1),
+        tree_0.cursor_to(42),
+    );
+    {
+        let entry = tree_0.get(26);
+        assert_eq!(entry.range(), 1..42);
+        assert_eq!(entry.slice(), &Constant('A'));
+        assert_eq!(entry.cursor::<BoundedCursor>(), tree_0.cursor_to(26));
+    }
+    assert_eq!(
+        tree_0.insert_with_cursor::<BoundedCursor>(Cursor::new_empty(), 73, Constant('A'), 26),
+        tree_0.cursor_to(73),
+    );
+    assert_eq!(
+        tree_0.insert_with_cursor::<BoundedCursor>(Cursor::new_empty(), 71, Constant('I'), 61),
+        tree_0.cursor_to(71),
+    );
+    assert!(std::panic::catch_unwind(move || { tree_0.insert(0, Constant('A'), 0) }).is_err());
 }

@@ -278,10 +278,19 @@ where
     /// [`do_upward_step`]: Self::do_upward_step
     shift_lhs: Option<BubbleLhs<I>>,
 
-    /// If the inserted slice isn't `key`, then a marker for which one of `lhs` or `rhs` it's in
+    /// If the slice we're building a cursor to a value that has already been inserted, this is a
+    /// marker for which one of `lhs` or `rhs` it's in
     ///
-    /// This is kept only so that we can update the cursor on processing the upward step.
-    insertion_side: Option<Side>,
+    /// Without tampering from state mapping, this value is `None` exactly when `inserted` is
+    /// false. State mapping allows us to redirect the cursor to a different value instead.
+    cursor_side: Option<Side>,
+
+    /// Marker for whether the original insertion has been made. If false, the next placement of
+    /// the current `key` will be made with an [`Insertion`] update, instead of [`PutBack`]
+    ///
+    /// [`Insertion`]: TraverseUpdate::Insertion
+    /// [`PutBack`]: TraverseUpdate::PutBack
+    inserted: bool,
 
     /// Cursor representing the path to the insertion
     ///
@@ -368,7 +377,8 @@ where
             .field("key_size", self.key_size.fallible_debug())
             .field("rhs", &self.rhs)
             .field("old_size", &self.old_size.fallible_debug())
-            .field("insertion_side", &self.insertion_side)
+            .field("cursor_side", &self.cursor_side)
+            .field("inserted", &self.inserted)
             .finish()
     }
 }
@@ -395,6 +405,15 @@ where
 /////////////////////////////////
 // Private(ish) implementation //
 /////////////////////////////////
+
+/// Single-use flag indicating whether [`insert_rhs`] should produce a cursor to `right_of` or `fst`
+///
+/// [`insert_rhs`]: RleTree::insert_rhs
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum CursorMode {
+    Lhs,
+    Fst,
+}
 
 #[allow(rustdoc::private_intra_doc_links)]
 /// Internal-only helper functions for implementing [`insert_internal`](RleTree::insert_internal)
@@ -513,6 +532,7 @@ where
                 cb,
                 lhs_handle,
                 lhs_size,
+                CursorMode::Fst,
                 fst,
                 Some(snd),
                 updates_callback,
@@ -565,6 +585,7 @@ where
                     cb,
                     lhs_handle,
                     lhs_size,
+                    CursorMode::Fst,
                     SliceSize::new(new, size),
                     None,
                     updates_callback,
@@ -576,14 +597,32 @@ where
                 let fst = SliceSize::new(r, rhs_size);
                 updates_callback(TraverseUpdate::insert(&lhs_handle));
                 let mut new_callback = TraverseUpdate::skip_insertions(updates_callback);
-                Self::insert_rhs(store, cb, lhs_handle, mid_size, fst, None, &mut new_callback)
+                Self::insert_rhs(
+                    store,
+                    cb,
+                    lhs_handle,
+                    mid_size,
+                    CursorMode::Lhs,
+                    fst,
+                    None,
+                    &mut new_callback,
+                )
             }
             // Couldn't join with either lhs or rhs. Need to insert both original slice AND new rhs
             Err((m, r)) => {
                 let fst = SliceSize::new(m, mid_size);
                 let snd = SliceSize::new(r, rhs_size);
 
-                Self::insert_rhs(store, cb, lhs_handle, lhs_size, fst, Some(snd), updates_callback)
+                Self::insert_rhs(
+                    store,
+                    cb,
+                    lhs_handle,
+                    lhs_size,
+                    CursorMode::Fst,
+                    fst,
+                    Some(snd),
+                    updates_callback,
+                )
             }
         }
     }
@@ -920,9 +959,10 @@ where
         cursor_builder: CursorBuilder<'c>,
         right_of: SliceHandle<ty::Unknown, borrow::Mut<'t>, I, S, P, M>,
         new_lhs_size: I,
+        cursor_mode: CursorMode,
         fst: SliceSize<I, S>,
         snd: Option<SliceSize<I, S>>,
-        updates_callback: &mut dyn FnMut(TraverseUpdate<I, S, P, M>),
+        updates_callback: &mut (dyn FnMut(TraverseUpdate<I, S, P, M>)),
     ) -> PostInsertResult<'t, I, S, P, M> {
         // If we're inserting to the right of the particular slice, we have to traverse down to the
         // leftmost leaf in the child right of `right_of` (if it's not yet in a leaf).
@@ -956,108 +996,161 @@ where
                 }
             }
         };
+        let leaf_height = next_leaf.height(); // stored for later
 
-        let mut map_cursor;
-        let mut map_shift_lhs;
-        let mut map_sizes;
+        /////////////////////////////////////////////////////////////
+        // Mapping closures                                        //
+        // ---                                                     //
+        // The rest of this function is basically just a set of    //
+        // closures to use as the fields of the state mapper. Some //
+        // of them are only used in certain circumstances.         //
+        /////////////////////////////////////////////////////////////
+
+        macro_rules! ty {
+            (NodeHandle) => { NodeHandle<ty::Unknown, _, I, S, P, M> };
+        }
+
         let handled_shift = Cell::new(false);
 
-        let leaf_height = next_leaf.height(); // stored for later
-        let (override_lhs_size, mapper) = match lhs_height == leaf_height {
-            true => (Some(new_lhs_size), BubbledInsertState::identity()),
-            false => {
-                map_cursor =
-                    |node: &NodeHandle<_, _, _, _, _, M>, mut builder: CursorBuilder| match node
-                        .height()
-                        == lhs_height
-                    {
-                        false => (),
-                        // FIXME: there's some extra handling needed here when the cursor isn't on the
-                        // same side as the inserted value. Also this isn't correct when the value that
-                        // we *should* point to is currently removed. Tracking that requires modifying
-                        // `updates_callback` as well.
-                        true => builder.reset(),
-                    };
+        // If the bubble state *will* change the node at the height of `lhs`, then we need to
+        // change the way that it internally calculates positions. The case for equal heights is
+        // already handled above with `override_lhs_size`.
+        //
+        // This callback is only used when `lhs_height != leaf_height`.
+        let mut map_shift_lhs = |lhs: &ty![NodeHandle], shift: Option<_>| {
+            debug_assert!(shift.is_none());
 
-                // If the bubble state *will* change the node at the height of `lhs`, then we need
-                // to change the way that it internally calculates positions. The case for equal
-                // heights is already handled above with `override_lhs_size`.
-                map_shift_lhs = |lhs: &NodeHandle<_, _, _, _, _, M>, shift: Option<_>| {
-                    debug_assert!(shift.is_none());
-
-                    if lhs.height() + 1 == lhs_height {
-                        handled_shift.set(true);
-                        Some(BubbleLhs {
-                            pos: lhs_pos,
-                            old_size: old_lhs_size,
-                            new_size: new_lhs_size,
-                        })
-                    } else {
-                        None
-                    }
-                };
-
-                map_sizes = |node: &mut NodeHandle<_, _, _, _, _, M>,
-                             child_or_key,
-                             mut sizes: fix::OpUpdateStateSizes<_>| {
-                    if node.height() != lhs_height || handled_shift.get() {
-                        return sizes;
-                    }
-
-                    let old_lhs_end = lhs_pos.add_right(old_lhs_size);
-                    let new_lhs_end = lhs_pos.add_right(new_lhs_size);
-
-                    let pos = sizes.override_pos.unwrap_or_else(|| match child_or_key {
-                        // SAFETY: docs for `OpUpdateState` guarantee that `k_idx` is within bounds
-                        // for `node`.
-                        ChildOrKey::Key(k_idx) => unsafe { node.leaf().key_pos(k_idx) },
-                        ChildOrKey::Child(c_idx) => {
-                            let next_key_pos: I = node
-                                .leaf()
-                                .try_key_pos(c_idx)
-                                .unwrap_or_else(|| node.leaf().subtree_size());
-                            next_key_pos.sub_left(sizes.old_size)
-                        }
-                    });
-
-                    let diff = pos.sub_left(old_lhs_end);
-                    sizes.old_size = sizes.old_size.add_left(diff).add_left(old_lhs_size);
-                    sizes.new_size = sizes.new_size.add_left(diff).add_left(new_lhs_size);
-                    sizes.override_pos = Some(lhs_pos);
-
-                    // We're currently at key `lhs_k_idx`, so we want to manually shift all of the
-                    // keys from `lhs_k_idx + 1` to the last key before what's automatically
-                    // handled.
-                    //
-                    // However, because we know we just inserted to the right-hand side of `lhs`,
-                    // we know that we only actually need to shift a single key -- if at all. We
-                    // shift the key at `lhs_k_idx + 1` so long as `state.child_or_key` is
-                    // `ChildOrKey::Key((_, _))`.
-                    if let ChildOrKey::Key(_) = child_or_key {
-                        // SAFETY: the calls to `key_pos` and `set_single_key_pos` both require
-                        // only that `lhs_k_idx + 1` is a valid key index. Because (a) `node` is at
-                        // the same height as `lhs` and (b) any splits are not continued at this
-                        // height, we know that the index in `ChildOrKey::Key` must be equal to
-                        // `lhs_k_idx + 1`. The documentation for `PostInsertTraversalState`
-                        // guarantees that such a key index will be valid.
-                        unsafe {
-                            let pos = node.leaf().key_pos(lhs_k_idx + 1);
-                            let new_pos = pos.sub_left(old_lhs_end).add_left(new_lhs_end);
-                            node.set_single_key_pos(lhs_k_idx + 1, new_pos);
-                        }
-                    }
-
-                    sizes
-                };
-
-                (None, MapBubbledInsertState {
-                    post_op: MapOpUpdateState {
-                        cursor: Some(&mut map_cursor),
-                        sizes: Some(&mut map_sizes),
-                    },
-                    shift_lhs: Some(&mut map_shift_lhs),
+            if lhs.height() + 1 == lhs_height {
+                handled_shift.set(true);
+                Some(BubbleLhs {
+                    pos: lhs_pos,
+                    old_size: old_lhs_size,
+                    new_size: new_lhs_size,
                 })
+            } else {
+                None
             }
+        };
+
+        let mut map_sizes =
+            |node: &mut ty![NodeHandle], child_or_key, mut sizes: fix::OpUpdateStateSizes<_>| {
+                if node.height() != lhs_height || handled_shift.get() {
+                    return sizes;
+                }
+
+                let old_lhs_end = lhs_pos.add_right(old_lhs_size);
+                let new_lhs_end = lhs_pos.add_right(new_lhs_size);
+
+                let pos = sizes.override_pos.unwrap_or_else(|| match child_or_key {
+                    // SAFETY: docs for `OpUpdateState` guarantee that `k_idx` is within bounds
+                    // for `node`.
+                    ChildOrKey::Key(k_idx) => unsafe { node.leaf().key_pos(k_idx) },
+                    ChildOrKey::Child(c_idx) => {
+                        let next_key_pos: I = node
+                            .leaf()
+                            .try_key_pos(c_idx)
+                            .unwrap_or_else(|| node.leaf().subtree_size());
+                        next_key_pos.sub_left(sizes.old_size)
+                    }
+                });
+
+                let diff = pos.sub_left(old_lhs_end);
+                sizes.old_size = sizes.old_size.add_left(diff).add_left(old_lhs_size);
+                sizes.new_size = sizes.new_size.add_left(diff).add_left(new_lhs_size);
+                sizes.override_pos = Some(lhs_pos);
+
+                // We're currently at key `lhs_k_idx`, so we want to manually shift all of the keys
+                // from `lhs_k_idx + 1` to the last key before what's automatically handled.
+                //
+                // However, because we know we just inserted to the right-hand side of `lhs`, we
+                // know that we only actually need to shift a single key -- if at all. We shift the
+                // key at `lhs_k_idx + 1` so long as `state.child_or_key` is
+                // `ChildOrKey::Key((_, _))`.
+                if let ChildOrKey::Key(_) = child_or_key {
+                    // SAFETY: the calls to `key_pos` and `set_single_key_pos` both require only
+                    // that `lhs_k_idx + 1` is a valid key index. Because (a) `node` is at the same
+                    // height as `lhs` and (b) any splits are not continued at this height, we know
+                    // that the index in `ChildOrKey::Key` must be equal to `lhs_k_idx + 1`. The
+                    // documentation for `PostInsertTraversalState` guarantees that such a key
+                    // index will be valid.
+                    unsafe {
+                        let pos = node.leaf().key_pos(lhs_k_idx + 1);
+                        let new_pos = pos.sub_left(old_lhs_end).add_left(new_lhs_end);
+                        node.set_single_key_pos(lhs_k_idx + 1, new_pos);
+                    }
+                }
+
+                sizes
+            };
+
+        // Track the position of the inserted `fst`, so that we can update
+        let fst_handle: Cell<Option<(node::NodePtr<I, S, P, M>, u8, u8)>> = Cell::new(None);
+
+        let remap_cursor = cursor_mode == CursorMode::Lhs && !cursor_builder.is_nop();
+
+        let mut new_updates_callback;
+        let updates_callback: &mut dyn FnMut(TraverseUpdate<I, S, P, M>) = if remap_cursor {
+            new_updates_callback = |upd: TraverseUpdate<I, S, P, M>| {
+                match (&upd, fst_handle.get()) {
+                    (&TraverseUpdate::Insertion { ptr, height, idx }, None) => {
+                        fst_handle.set(Some((ptr, height, idx)));
+                    }
+                    (
+                        TraverseUpdate::Move { old_ptr, old_range, new_ptr, new_height, new_range },
+                        Some((fst_ptr, _, fst_idx)),
+                    ) if *old_ptr == fst_ptr && old_range.contains(&fst_idx) => {
+                        let new_idx = new_range.start + (old_range.start - fst_idx);
+
+                        fst_handle.set(Some((*new_ptr, *new_height, new_idx)));
+                    }
+                    _ => (),
+                }
+
+                updates_callback(upd);
+            };
+            &mut new_updates_callback
+        } else {
+            updates_callback
+        };
+
+        let mut map_cursor = |node: &ty![NodeHandle], mut builder: CursorBuilder| {
+            if node.height() == lhs_height {
+                builder.reset();
+            }
+        };
+
+        let mut map_cursor_side = |lhs: &ty![NodeHandle], mut side| {
+            if lhs.height() == lhs_height {
+                match fst_handle.get() {
+                    None => side = Some(Side::Left),
+                    Some((ptr, _, 0)) if ptr != lhs.ptr() => side = None,
+                    _ => (),
+                }
+            }
+            side
+        };
+
+        let mut mapper = MapBubbledInsertState {
+            post_op: MapOpUpdateState {
+                cursor: Some(&mut map_cursor),
+                sizes: Some(&mut map_sizes),
+            },
+            cursor_side: Some(&mut map_cursor_side),
+            shift_lhs: Some(&mut map_shift_lhs),
+        };
+
+        if !remap_cursor {
+            mapper.post_op.cursor = None;
+            mapper.cursor_side = None;
+        }
+
+        let override_lhs_size = match lhs_height == leaf_height {
+            true => {
+                mapper.post_op.sizes = None;
+                mapper.shift_lhs = None;
+                Some(new_lhs_size)
+            }
+            false => None,
         };
 
         // SAFETY: `do_insert_no_join` requires that `insert_idx <= next_leaf.leaf().len()`, which
@@ -1496,7 +1589,8 @@ where
                     rhs: rhs.erase_type(),
                     old_size: old_node_size,
                     shift_lhs: None,
-                    insertion_side: None,
+                    cursor_side: None,
+                    inserted: false,
                     cursor_builder,
                 }
             }
@@ -1549,7 +1643,8 @@ where
                     rhs: rhs.erase_type(),
                     old_size: old_node_size,
                     shift_lhs: None,
-                    insertion_side: Some(Side::Left),
+                    cursor_side: Some(Side::Left),
+                    inserted: true,
                     cursor_builder,
                 }
             }
@@ -1630,7 +1725,8 @@ where
                     rhs: rhs.erase_type(),
                     old_size: old_node_size,
                     shift_lhs: None,
-                    insertion_side: Some(side),
+                    cursor_side: Some(side),
+                    inserted: true,
                     cursor_builder,
                 }
             }
@@ -1752,7 +1848,8 @@ where
             rhs: rhs.erase_type(),
             old_size,
             shift_lhs: None,
-            insertion_side,
+            cursor_side: insertion_side,
+            inserted: insertion_side.is_some(),
             cursor_builder,
         }
     }
@@ -1817,7 +1914,7 @@ where
             Err(lhs) => {
                 assert!(self.shift_lhs.is_none(), "internal error: this is a bug");
 
-                if let Some(side) = self.insertion_side {
+                if let Some(side) = self.cursor_side {
                     self.cursor_builder.prepend_to_path(PathComponent {
                         // `Side` is explicitly tagged so that Side::Left = 0 and Side::Right = 1
                         child_idx: side as u8,
@@ -1879,11 +1976,11 @@ where
             // SAFETY: `into_slice_handle` requires that `key_idx < parent.leaf().len()`, which
             // we've already guaranteed by insertion.
             let handle = unsafe { parent.borrow().into_slice_handle(lhs_child_idx).erase_type() };
-            let make_update = match self.insertion_side {
+            let make_update = match self.inserted {
                 // Already inserted our value; we're putting something else back
-                Some(_) => TraverseUpdate::put_back,
+                true => TraverseUpdate::put_back,
                 // This is an initial insertion of the target value
-                None => TraverseUpdate::insert,
+                false => TraverseUpdate::insert,
             };
             updates_callback(make_update(&handle));
 
@@ -1892,7 +1989,7 @@ where
             // We have to do this because we're lying to `OpUpdateState` about where the insertion
             // is in order to get it to use the correct key position for shifting and it won't
             // update the cursor if we don't say it's in a `Child`.
-            if let Some(side) = self.insertion_side {
+            if let Some(side) = self.cursor_side {
                 self.cursor_builder
                     .prepend_to_path(PathComponent { child_idx: lhs_child_idx + side as u8 });
             }
@@ -2069,26 +2166,21 @@ where
             // At this point, we know that our value has definitely been inserted -- it was either
             // a key or child from `self.lhs/`self.rhs`, or `self.key`. We didn't take anything out
             // of `self.{lhs,rhs}`, so we don't need to worry about the pointer becoming invalid.
-            match self.insertion_side {
-                Some(s) => {
-                    self.cursor_builder
-                        .prepend_to_path(PathComponent { child_idx: new_key_idx + s as u8 });
-                }
-                // the insertion was in `self.key`. There isn't much we need to do because the
-                // cursor can't be written to yet.
-                None => {
-                    // SAFETY: `into_slice_handle` requires that
-                    // `new_key_idx < insert_into.leaf().len()`, which is guaranteed by
-                    // `insert_key_and_child`.
-                    let inserted_handle =
-                        unsafe { insert_into.borrow().into_slice_handle(new_key_idx) };
-
-                    updates_callback(TraverseUpdate::insert(&inserted_handle));
-
-                    // Don't have to update `self.partial_cursor` because the value got inserted as
-                    // a key, not a child.
-                }
+            if let Some(s) = self.cursor_side {
+                self.cursor_builder
+                    .prepend_to_path(PathComponent { child_idx: new_key_idx + s as u8 });
             }
+
+            // Signal the insertion:
+            let make_update = match self.inserted {
+                true => TraverseUpdate::put_back,
+                false => TraverseUpdate::insert,
+            };
+
+            // SAFETY: `into_slice_handle` requires that `new_key_idx < insert_into.leaf().len()`,
+            // which is guaranteed by `insert_key_and_child`.
+            let inserted_handle = unsafe { insert_into.borrow().into_slice_handle(new_key_idx) };
+            updates_callback(make_update(&inserted_handle));
 
             BubbleStepResult::KeepGoing(BubbledInsertState {
                 lhs: parent.erase_type(),
@@ -2097,7 +2189,8 @@ where
                 rhs: rhs.erase_type(),
                 old_size: old_parent_size,
                 shift_lhs: None,
-                insertion_side: Some(side),
+                inserted: true,
+                cursor_side: Some(side),
                 cursor_builder: self.cursor_builder,
             })
         } else {
@@ -2180,7 +2273,7 @@ where
 
             // If `self.insertion_side` was `None` (i.e. the insertion was in `self.key`), then
             // it's still there. We only need to do anything if `self.insertion_side` is not `None`
-            if let Some(side) = self.insertion_side {
+            if let Some(side) = self.cursor_side {
                 // In this case, the `side` associated with the insertion remained the same;
                 // `self.lhs` ended up at the end of its node, and `self.rhs` ended up at the
                 // beginning of the next.
@@ -2203,7 +2296,8 @@ where
                 rhs: rhs.erase_type(),
                 old_size: old_parent_size,
                 shift_lhs: None,
-                insertion_side: self.insertion_side,
+                cursor_side: self.cursor_side,
+                inserted: self.inserted,
                 cursor_builder: self.cursor_builder,
             })
         }
@@ -2229,6 +2323,12 @@ where
     P: RleTreeConfig<I, S, M>,
 {
     pub(super) post_op: <OpUpdateState<'t, 'c, I, S, P, M> as MapState>::Map<'f>,
+    pub(super) cursor_side: Option<
+        &'f mut dyn FnMut(
+            &NodeHandle<ty::Unknown, borrow::Mut<'t>, I, S, P, M>,
+            Option<Side>,
+        ) -> Option<Side>,
+    >,
     pub(super) shift_lhs: Option<
         &'f mut dyn FnMut(
             &NodeHandle<ty::Unknown, borrow::Mut<'t>, I, S, P, M>,
@@ -2249,6 +2349,7 @@ where
     {
         MapBubbledInsertState {
             post_op: <OpUpdateState<'t, 'c, I, S, P, M> as MapState>::identity(),
+            cursor_side: None,
             shift_lhs: None,
         }
     }
@@ -2257,6 +2358,10 @@ where
     where
         Self: 'f,
     {
+        if let Some(cursor_side) = f.cursor_side.as_mut() {
+            self.cursor_side = cursor_side(&self.lhs, self.cursor_side)
+        }
+
         if let Some(map_cursor) = f.post_op.cursor.as_mut() {
             map_cursor(&self.lhs, self.cursor_builder.reborrow());
         }
