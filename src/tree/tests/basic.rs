@@ -469,3 +469,101 @@ fn auto_fuzz_19_bubble_deferred_insert() {
     );
     assert!(std::panic::catch_unwind(move || { tree_0.insert(0, Constant('A'), 0) }).is_err());
 }
+
+#[test]
+#[allow(unused_variables, unused_mut)]
+fn auto_fuzz_20_bubbled_insert_split_in_parent() {
+    let mut tree_0: BasicFuzzTree<3> = RleTree::new_empty();
+    tree_0.insert(0, Constant('K'), 32);
+    tree_0.insert(26, Constant('B'), 2);
+    tree_0.insert(2, Constant('C'), 2);
+    tree_0.insert(2, Constant('G'), 2);
+    tree_0.insert(2, Constant('C'), 2);
+    tree_0.insert(2, Constant('I'), 2);
+    tree_0.insert(2, Constant('C'), 2);
+    tree_0.insert(10, Constant('C'), 2);
+    tree_0.insert(2, Constant('C'), 2);
+    tree_0.insert(2, Constant('C'), 2);
+    tree_0.insert(2, Constant('G'), 2);
+    tree_0.insert(2, Constant('C'), 2);
+    tree_0.insert(0, Constant('C'), 2);
+    {
+        let entry = tree_0.get(2);
+        assert_eq!(entry.range(), 2..4);
+        assert_eq!(entry.slice(), &Constant('K'));
+        assert_eq!(entry.cursor::<BoundedCursor>(), tree_0.cursor_to(2));
+    }
+    tree_0.insert(2, Constant('C'), 2);
+    tree_0.insert(10, Constant('C'), 2);
+    tree_0.insert(2, Constant('C'), 2);
+    tree_0.insert(2, Constant('C'), 2);
+    tree_0.insert(2, Constant('G'), 2);
+    tree_0.insert(2, Constant('C'), 2);
+    tree_0.insert(2, Constant('C'), 2);
+    tree_0.insert(1, Constant('A'), 10);
+    {
+        let entry = tree_0.get(2);
+        assert_eq!(entry.range(), 1..11);
+        assert_eq!(entry.slice(), &Constant('A'));
+        assert_eq!(entry.cursor::<BoundedCursor>(), tree_0.cursor_to(2));
+    }
+    tree_0.insert(2, Constant('C'), 2);
+    tree_0.insert(2, Constant('I'), 2);
+    tree_0.insert(2, Constant('C'), 2);
+    tree_0.insert(10, Constant('C'), 2);
+    tree_0.insert(2, Constant('C'), 2);
+    tree_0.insert(2, Constant('C'), 2);
+    tree_0.insert(2, Constant('G'), 2);
+    tree_0.insert(2, Constant('C'), 2);
+    tree_0.insert(0, Constant('C'), 2);
+    {
+        let entry = tree_0.get(2);
+        assert_eq!(entry.range(), 0..3);
+        assert_eq!(entry.slice(), &Constant('C'));
+        assert_eq!(entry.cursor::<BoundedCursor>(), tree_0.cursor_to(2));
+    }
+    tree_0.insert(2, Constant('C'), 2);
+    tree_0.insert(10, Constant('C'), 2);
+    tree_0.insert(2, Constant('C'), 2);
+    tree_0.insert(2, Constant('C'), 2);
+    tree_0.insert(2, Constant('G'), 2);
+    tree_0.insert(2, Constant('C'), 2);
+    tree_0.insert(2, Constant('C'), 2);
+    tree_0.insert(2, Constant('C'), 2);
+    tree_0.insert(2, Constant('A'), 2);
+    tree_0.insert(2, Constant('C'), 2);
+    tree_0.insert(1, Constant('C'), 2);
+    tree_0.insert(10, Constant('A'), 2);
+    tree_0.insert(2, Constant('C'), 2);
+    tree_0.insert(2, Constant('C'), 2);
+    tree_0.insert(2, Constant('C'), 2);
+    {
+        let entry = tree_0.get(13);
+        assert_eq!(entry.range(), 12..14);
+        assert_eq!(entry.slice(), &Constant('A'));
+        assert_eq!(entry.cursor::<BoundedCursor>(), tree_0.cursor_to(13));
+    }
+    {
+        let entry = tree_0.get(13);
+        assert_eq!(entry.range(), 12..14);
+        assert_eq!(entry.slice(), &Constant('A'));
+        assert_eq!(entry.cursor::<BoundedCursor>(), tree_0.cursor_to(13));
+    }
+    {
+        let entry = tree_0.get(13);
+        assert_eq!(entry.range(), 12..14);
+        assert_eq!(entry.slice(), &Constant('A'));
+        assert_eq!(entry.cursor::<BoundedCursor>(), tree_0.cursor_to(13));
+    }
+    tree_0.insert(2, Constant('A'), 6);
+    {
+        let entry = tree_0.get(1);
+        assert_eq!(entry.range(), 0..2);
+        assert_eq!(entry.slice(), &Constant('C'));
+        assert_eq!(entry.cursor::<BoundedCursor>(), tree_0.cursor_to(1));
+    }
+    assert_eq!(
+        tree_0.insert_with_cursor::<BoundedCursor>(Cursor::new_empty(), 66, Constant('X'), 36),
+        tree_0.cursor_to(66),
+    );
+}

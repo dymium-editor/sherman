@@ -2281,9 +2281,9 @@ where
                 // All we need to do here is record the child index for the cursor.
 
                 let child_idx = match side {
-                    Side::Left => 0,
+                    Side::Right => 0,
                     // There are `M` keys in `parent`, so the index of the last child is also `M`
-                    Side::Right => M as u8,
+                    Side::Left => M as u8,
                 };
 
                 self.cursor_builder.prepend_to_path(PathComponent { child_idx });
