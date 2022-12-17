@@ -343,3 +343,160 @@ fn auto_fuzz_3_iter_over_child_with_bad_parent_index() {
         }
     }
 }
+
+#[test]
+#[allow(unused_variables, unused_mut)]
+fn auto_fuzz_4_iter_inner_child_good_parent_bad_idx() {
+    let mut tree_0: CowFuzzTree<3> = RleTree::new_empty();
+    tree_0.insert(0, Constant('D'), 16);
+    tree_0.insert(2, Constant('C'), 134);
+    tree_0.insert(39, Constant('H'), 2);
+    tree_0.insert(3, Constant('M'), 6);
+    tree_0.insert(7, Constant('H'), 7);
+    tree_0.insert(38, Constant('W'), 7);
+    tree_0.insert(168, Constant('H'), 7);
+    {
+        let entry = tree_0.get(0);
+        assert_eq!(entry.range(), 0..2);
+        assert_eq!(entry.slice(), &Constant('D'));
+    }
+    tree_0.insert(37, Constant('H'), 2);
+    let mut tree_1 = tree_0.clone();
+    {
+        let entry = tree_0.get(3);
+        assert_eq!(entry.range(), 3..7);
+        assert_eq!(entry.slice(), &Constant('M'));
+    }
+    tree_0.insert(2, Constant('C'), 50);
+    {
+        let entry = tree_0.get(7);
+        assert_eq!(entry.range(), 2..53);
+        assert_eq!(entry.slice(), &Constant('C'));
+    }
+    tree_0.insert(3, Constant('M'), 6);
+    tree_1.insert(7, Constant('H'), 7);
+    let mut tree_2 = tree_0.clone();
+    {
+        let mut iter = tree_0.iter(..);
+        {
+            let item = iter.next_back().unwrap();
+            assert_eq!(item.range(), 233..237);
+            assert_eq!(item.size(), 4);
+            assert_eq!(item.slice(), &Constant('D'));
+        }
+        {
+            let item = iter.next_back().unwrap();
+            assert_eq!(item.range(), 226..233);
+            assert_eq!(item.size(), 7);
+            assert_eq!(item.slice(), &Constant('H'));
+        }
+        {
+            let item = iter.next().unwrap();
+            assert_eq!(item.range(), 0..2);
+            assert_eq!(item.size(), 2);
+            assert_eq!(item.slice(), &Constant('D'));
+        }
+        {
+            let item = iter.next().unwrap();
+            assert_eq!(item.range(), 2..3);
+            assert_eq!(item.size(), 1);
+            assert_eq!(item.slice(), &Constant('C'));
+        }
+    }
+    assert!(std::panic::catch_unwind(move || { tree_0.insert(7, Constant('H'), 38) }).is_err());
+    tree_1.insert(7, Constant('M'), 7);
+    {
+        let entry = tree_2.get(0);
+        assert_eq!(entry.range(), 0..2);
+        assert_eq!(entry.slice(), &Constant('D'));
+    }
+    tree_2.insert(7, Constant('C'), 3);
+    {
+        let entry = tree_1.get(3);
+        assert_eq!(entry.range(), 3..14);
+        assert_eq!(entry.slice(), &Constant('M'));
+    }
+    tree_1.insert(2, Constant('C'), 50);
+    {
+        let entry = tree_1.get(7);
+        assert_eq!(entry.range(), 2..53);
+        assert_eq!(entry.slice(), &Constant('C'));
+    }
+    tree_1.insert(3, Constant('M'), 6);
+    assert!(std::panic::catch_unwind(move || { tree_2.insert(255, Constant('V'), 255) }).is_err());
+    {
+        let mut iter = tree_1.iter(..);
+        {
+            let item = iter.next_back().unwrap();
+            assert_eq!(item.range(), 247..251);
+            assert_eq!(item.size(), 4);
+            assert_eq!(item.slice(), &Constant('D'));
+        }
+        {
+            let item = iter.next_back().unwrap();
+            assert_eq!(item.range(), 240..247);
+            assert_eq!(item.size(), 7);
+            assert_eq!(item.slice(), &Constant('H'));
+        }
+        {
+            let item = iter.next_back().unwrap();
+            assert_eq!(item.range(), 230..240);
+            assert_eq!(item.size(), 10);
+            assert_eq!(item.slice(), &Constant('D'));
+        }
+        {
+            let item = iter.next_back().unwrap();
+            assert_eq!(item.range(), 133..230);
+            assert_eq!(item.size(), 97);
+            assert_eq!(item.slice(), &Constant('C'));
+        }
+        {
+            let item = iter.next_back().unwrap();
+            assert_eq!(item.range(), 131..133);
+            assert_eq!(item.size(), 2);
+            assert_eq!(item.slice(), &Constant('H'));
+        }
+        {
+            let item = iter.next_back().unwrap();
+            assert_eq!(item.range(), 117..131);
+            assert_eq!(item.size(), 14);
+            assert_eq!(item.slice(), &Constant('C'));
+        }
+        {
+            let item = iter.next_back().unwrap();
+            assert_eq!(item.range(), 110..117);
+            assert_eq!(item.size(), 7);
+            assert_eq!(item.slice(), &Constant('W'));
+        }
+        {
+            let item = iter.next().unwrap();
+            assert_eq!(item.range(), 0..2);
+            assert_eq!(item.size(), 2);
+            assert_eq!(item.slice(), &Constant('D'));
+        }
+        {
+            let item = iter.next_back().unwrap();
+            assert_eq!(item.range(), 109..110);
+            assert_eq!(item.size(), 1);
+            assert_eq!(item.slice(), &Constant('C'));
+        }
+        {
+            let item = iter.next_back().unwrap();
+            assert_eq!(item.range(), 107..109);
+            assert_eq!(item.size(), 2);
+            assert_eq!(item.slice(), &Constant('H'));
+        }
+        {
+            let item = iter.next().unwrap();
+            assert_eq!(item.range(), 2..3);
+            assert_eq!(item.size(), 1);
+            assert_eq!(item.slice(), &Constant('C'));
+        }
+        {
+            let item = iter.next_back().unwrap();
+            assert_eq!(item.range(), 86..107); // <- problem!
+            assert_eq!(item.size(), 21);
+            assert_eq!(item.slice(), &Constant('C'));
+        }
+    }
+}

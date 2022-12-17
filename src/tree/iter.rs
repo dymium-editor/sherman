@@ -383,8 +383,8 @@ where
                     // is a valid key index, so +1 is a valid child index.
                     let child = unsafe { parent.into_child(c_idx) };
                     if P::COW {
-                        match child.leaf().parent().map(|p| p.ptr) {
-                            Some(p) if p != node.ptr() => {
+                        match child.leaf().parent().map(|p| (p.ptr, p.idx_in_parent)) {
+                            Some(pair) if pair != (node.ptr(), c_idx) => {
                                 self.stack.push((parent.erase_type(), c_idx))
                             }
                             _ => (),
@@ -472,8 +472,8 @@ where
                     // child index.
                     let child = unsafe { parent.into_child(c_idx) };
                     if P::COW {
-                        match child.leaf().parent().map(|p| p.ptr) {
-                            Some(p) if p != node.ptr() => {
+                        match child.leaf().parent().map(|p| (p.ptr, p.idx_in_parent)) {
+                            Some(pair) if pair != (node.ptr(), c_idx) => {
                                 self.stack.push((parent.erase_type(), c_idx));
                             }
                             _ => (),
