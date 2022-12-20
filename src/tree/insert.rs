@@ -826,7 +826,7 @@ where
         fst: SliceSize<I, S>,
         snd: Option<SliceSize<I, S>>,
         updates_callback: UpdatesCallback<I, S, P, M>,
-        state_map: <BubbledInsertState<'t, 'c, I, S, P, M> as MapState>::Map<'m>,
+        map_state: <BubbledInsertState<'t, 'c, I, S, P, M> as MapState>::Map<'m>,
     ) -> PostInsertResult<'t, I, S, P, M> {
         // SAFETY: Guaranteed by caller
         unsafe {
@@ -858,7 +858,7 @@ where
                 )
             };
             let early_exit = None;
-            return bubble_state.finish(store, state_map, updates_callback, early_exit);
+            return bubble_state.finish(store, map_state, updates_callback, early_exit);
         }
 
         // Otherwise, "easy" case: just add the slice(s) to the node
@@ -929,7 +929,7 @@ where
             cursor_builder,
         };
 
-        post_op_state.finish(state_map.post_op, None);
+        post_op_state.finish(map_state.post_op, None);
         PostInsertResult::Done
     }
 
