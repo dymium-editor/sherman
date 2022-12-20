@@ -7,7 +7,9 @@ use std::cell::Cell;
 use std::cmp::Ordering;
 use std::ops::ControlFlow;
 
-use super::fix::{self, MapOpUpdateState, MapState, OpUpdateState, TraverseUpdate};
+use super::fix::{
+    self, MapOpUpdateState, MapState, OpUpdateState, TraverseUpdate, UpdatesCallback,
+};
 use super::fix::{shift_keys_auto, shift_keys_decrease, shift_keys_increase, ShiftKeys};
 use super::node::{self, borrow, ty, ChildOrKey, NodeHandle, SliceHandle, Type};
 use super::{search_step, NodeBox, SharedNodeBox, Side, SliceSize};
@@ -443,7 +445,7 @@ where
         insertion_point: InsertionPoint<'t, I, S, P, M>,
         slice: S,
         size: I,
-        updates_callback: &mut dyn FnMut(TraverseUpdate<I, S, P, M>),
+        updates_callback: UpdatesCallback<I, S, P, M>,
     ) -> PostInsertResult<'t, I, S, P, M> {
         match insertion_point {
             // SAFETY: `do_insert_full_edge` requires that `edge_ins.new_k_idx` is less than or
@@ -473,7 +475,7 @@ where
         insert: EdgeInsert<'t, I, S, P, M>,
         slice: S,
         size: I,
-        updates_callback: &mut dyn FnMut(TraverseUpdate<I, S, P, M>),
+        updates_callback: UpdatesCallback<I, S, P, M>,
     ) -> PostInsertResult<'t, I, S, P, M> {
         unsafe { weak_assert!(insert.new_k_idx <= insert.node.leaf().len()) }
 
@@ -513,7 +515,7 @@ where
         mut info: SplitKeyInsert<'t, I, S, P, M>,
         slice: S,
         slice_size: I,
-        updates_callback: &mut dyn FnMut(TraverseUpdate<I, S, P, M>),
+        updates_callback: UpdatesCallback<I, S, P, M>,
     ) -> PostInsertResult<'t, I, S, P, M> {
         let key_size = info.handle.slice_size();
 
@@ -649,7 +651,7 @@ where
         slice: S,
         slice_size: I,
         adjacent_keys: AdjacentKeys<'t, I, S, P, M>,
-        updates_callback: &mut dyn FnMut(TraverseUpdate<I, S, P, M>),
+        updates_callback: UpdatesCallback<I, S, P, M>,
     ) -> Result<PostInsertResult<'t, I, S, P, M>, S> {
         // Broadly speaking, there's four cases here:
         //  1. `slice` doesn't join with either of `adjacent_keys` -- returns Err(slice)
@@ -823,7 +825,7 @@ where
         override_lhs_size: Option<I>,
         fst: SliceSize<I, S>,
         snd: Option<SliceSize<I, S>>,
-        updates_callback: &mut dyn FnMut(TraverseUpdate<I, S, P, M>),
+        updates_callback: UpdatesCallback<I, S, P, M>,
         state_map: <BubbledInsertState<'t, 'c, I, S, P, M> as MapState>::Map<'m>,
     ) -> PostInsertResult<'t, I, S, P, M> {
         // SAFETY: Guaranteed by caller
@@ -962,7 +964,7 @@ where
         cursor_mode: CursorMode,
         fst: SliceSize<I, S>,
         snd: Option<SliceSize<I, S>>,
-        updates_callback: &mut (dyn FnMut(TraverseUpdate<I, S, P, M>)),
+        updates_callback: UpdatesCallback<I, S, P, M>,
     ) -> PostInsertResult<'t, I, S, P, M> {
         // If we're inserting to the right of the particular slice, we have to traverse down to the
         // leftmost leaf in the child right of `right_of` (if it's not yet in a leaf).
@@ -1089,7 +1091,7 @@ where
         let remap_cursor = cursor_mode == CursorMode::Lhs && !cursor_builder.is_nop();
 
         let mut new_updates_callback;
-        let updates_callback: &mut dyn FnMut(TraverseUpdate<I, S, P, M>) = if remap_cursor {
+        let updates_callback: UpdatesCallback<I, S, P, M> = if remap_cursor {
             new_updates_callback = |upd: TraverseUpdate<I, S, P, M>| {
                 match (&upd, fst_handle.get()) {
                     (&TraverseUpdate::Insertion { ptr, height, idx }, None) => {
@@ -1317,7 +1319,7 @@ where
         mut override_lhs_size: Option<I>,
         fst: SliceSize<I, S>,
         snd: Option<SliceSize<I, S>>,
-        updates_callback: &mut dyn FnMut(TraverseUpdate<I, S, P, M>),
+        updates_callback: UpdatesCallback<I, S, P, M>,
     ) -> BubbledInsertState<'t, 'c, I, S, P, M> {
         // There's a few cases here to determine where we split the node, depending both on
         // `new_key_idx` and `node.leaf().len()`. We'll illustrate them all, pretending for now
@@ -1753,7 +1755,7 @@ where
         override_lhs_size: Option<I>,
         fst: SliceSize<I, S>,
         snd: SliceSize<I, S>,
-        updates_callback: &mut dyn FnMut(TraverseUpdate<I, S, P, M>),
+        updates_callback: UpdatesCallback<I, S, P, M>,
     ) -> BubbledInsertState<'t, 'c, I, S, P, M> {
         // SAFETY: these are all guaranteed by the caller in some form. refer to the individual
         // comments for more information.
@@ -1877,7 +1879,7 @@ where
         mut self,
         store: &mut P::SliceRefStore,
         mut map: <BubbledInsertState<'t, 'c, I, S, P, M> as MapState>::Map<'m>,
-        updates_callback: &mut dyn FnMut(TraverseUpdate<I, S, P, M>),
+        updates_callback: UpdatesCallback<I, S, P, M>,
         early_exit: Option<&mut dyn FnMut(&OpUpdateState<'t, 'c, I, S, P, M>) -> ControlFlow<()>>,
     ) -> PostInsertResult<'t, I, S, P, M>
     where
@@ -1899,7 +1901,7 @@ where
     fn do_upward_step(
         mut self,
         store: &mut P::SliceRefStore,
-        updates_callback: &mut dyn FnMut(TraverseUpdate<I, S, P, M>),
+        updates_callback: UpdatesCallback<I, S, P, M>,
     ) -> BubbleStepResult<'t, 'c, I, S, P, M> {
         let lhs_size = self.lhs.leaf().subtree_size();
         let new_total_size = lhs_size

@@ -7,7 +7,7 @@
 //!
 //! * [`MapState`] - a helper trait for creating and using state mapping callbacks
 //! * [`TraverseUpdate`] - used with the [`apply_to_ref`] method to track [`SliceHandle`] positions
-//!   without other algorithms needing to be aware of them
+//!   without other algorithms needing to be aware of them. See also: [`UpdatesCallback`].
 //! * [`OpUpdateState`] - provides general "shift positions around after we've done an operation"
 //!   handling, for use in a variety of contexts.
 //! * [`ShiftKeys`] - provides a some tools to shift a range of positions in a node, with the
@@ -189,6 +189,10 @@ pub(super) enum TraverseUpdate<I, S, P: RleTreeConfig<I, S, M>, const M: usize> 
         idx: u8,
     },
 }
+
+/// Standard type definition for callback functions handling [`TraverseUpdate`]s
+pub(super) type UpdatesCallback<'f, I, S, P, const M: usize> =
+    &'f mut dyn FnMut(TraverseUpdate<I, S, P, M>);
 
 #[cfg(test)]
 impl<I, S, P, const M: usize> Debug for TraverseUpdate<I, S, P, M>
