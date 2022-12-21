@@ -456,14 +456,9 @@ pub(super) struct OpUpdateState<'t, 'c, I, S, P: RleTreeConfig<I, S, M>, const M
 
     /// Cursor representing the path to the deepest node containing the change
     ///
-    /// This cursor is often empty.
-    ///
-    /// ---
-    ///
-    /// In theory, it's entirely possible to use `inserted_slice` to build a cursor after the fact
-    /// and get the exact path to the insertion. In practice, this involves doing a second upwards
-    /// tree traversal, so we opt for an imperfect "good enough" solution that minimizes additional
-    /// costs.
+    /// In theory, it's entirely possible to use a `SliceHandle` referencing the inserted slice to
+    /// build a cursor after the fact and get the exact path to the insertion. In practice, this
+    /// involves doing a second upwards tree traversal, so we opted for the harder solution.
     pub(super) cursor_builder: CursorBuilder<'c>,
 }
 
