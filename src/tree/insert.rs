@@ -96,9 +96,7 @@ where
         let owned_root = root.handle.make_unique();
 
         // With clone on write, we often have unreliable parent pointers. One piece of this is that
-        // it *may* be possible for our root node to have an existing parent pointer. This
-        // shouldn't *really* happen, but we should have this here until it's proven that it can't
-        // happen.
+        // drain can cause our root node to have a parent pointer.
         if P::COW {
             owned_root.borrow_mut().remove_parent();
         }

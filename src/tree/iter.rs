@@ -87,6 +87,10 @@ where
     /// This can only occur when COW is enabled, and so control flow around `stack` typically
     /// checks `P::COW` first.
     stack: Vec<(NodeHandle<ty::Unknown, borrow::Immut<'t>, I, S, P, M>, u8)>,
+    /// The height of the root node
+    ///
+    /// This is also only checked when COW is enabled.
+    root_height: u8,
     head: SliceHandle<ty::Unknown, borrow::Immut<'t>, I, S, P, M>,
     /// The absolute end position of `head`
     end_pos: I,
@@ -256,6 +260,7 @@ where
         cursor: Option<C>,
         target: IncludedOrExcludedBound<I>,
     ) -> IterStack<'t, I, S, P, M> {
+        let root_height = root.height();
         let mut stack = Vec::new();
         let mut cursor = cursor.map(|c| c.into_path());
         let mut head_node = root;
@@ -333,7 +338,12 @@ where
                 ChildOrKey::Key((k_idx, k_pos)) => {
                     let slice_handle = unsafe { head_node.into_slice_handle(k_idx) };
                     let slice_end = head_pos.add_right(k_pos).add_right(slice_handle.slice_size());
-                    return IterStack { stack, end_pos: slice_end, head: slice_handle };
+                    return IterStack {
+                        stack,
+                        root_height,
+                        end_pos: slice_end,
+                        head: slice_handle,
+                    };
                 }
                 ChildOrKey::Child((c_idx, c_pos)) => {
                     let node = match head_node.into_typed() {
@@ -429,6 +439,9 @@ where
                                 self.stack.pop();
                                 Some((h, c_idx))
                             }
+                            _ if child.height() == self.root_height => {
+                                panic_internal_error_or_bad_index::<I>();
+                            }
                             _ => None,
                         },
                     };
@@ -518,6 +531,9 @@ where
                             Some((h, c_idx)) if h.height() == child.height() + 1 => {
                                 self.stack.pop();
                                 Some((h, c_idx))
+                            }
+                            _ if child.height() == self.root_height => {
+                                panic_internal_error_or_bad_index::<I>();
                             }
                             _ => None,
                         },
