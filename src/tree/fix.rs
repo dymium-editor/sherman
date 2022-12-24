@@ -552,7 +552,7 @@ where
         // `node.leaf().len()`. This can be verified by looking at the code above; `from` is either
         // set to `k_idx + 1` or to `c_idx`, both of which exactly meet the required bound.
         unsafe {
-            shift_keys_increase(&mut node, ShiftKeys {
+            shift_keys_auto(&mut node, ShiftKeys {
                 from: first_key_after,
                 pos,
                 old_size: self.old_size,
