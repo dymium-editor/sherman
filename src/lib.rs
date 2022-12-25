@@ -33,15 +33,20 @@
 //!
 //! ### Feature flags
 //!
-//! There is currently just one feature flag -- `nightly`. This opt-in feature enables some minor
-//! improvements (notably: implementing `Drop` for [`RleTree`] with `#[may_dangle]`), but requires
-//! nightly rustc.
+//! This crate provides the following _public_ feature flags:
+//!
+//! * `serde` — *opt-in*, enables [`serde`] support
+//! * `nightly` — *opt-in*, enables some minor improvements (notably: implementing `Drop` for
+//!   [`RleTree`] with `#[may_dangle]`). Requries nightly rustc.
+//!
+//! We also use the `fuzz` feature flag, just for testing.
 //!
 //! ### Naming
 //!
 //! This library is named after [General Sherman], a tree in Sequoia National Park that's the
 //! current largest tree on Earth by volume.
 //!
+//! [`serde`]: https://docs.rs/serde
 //! [General Sherman]: https://en.wikipedia.org/wiki/General_Sherman_(tree)
 
 #![deny(unsafe_op_in_unsafe_fn, rustdoc::broken_intra_doc_links)]
@@ -70,6 +75,9 @@ mod cursor;
 mod public_traits;
 mod recycle;
 mod tree;
+
+#[cfg(feature = "serde")]
+mod serde;
 
 pub use cursor::{BoundedCursor, Cursor, NoCursor, PathComponent};
 pub use public_traits::{DirectionalAdd, DirectionalSub, Index, Slice, Zero};
