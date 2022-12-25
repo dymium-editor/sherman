@@ -2,11 +2,6 @@
 
 dir="$(git rev-parse --show-toplevel)"
 
-# Override for temporary work
-if [[ "$GIT_HOOK_FORCE_TEMP_COMMIT" == "yes" ]]; then
-    exit 0
-fi
-
 # Check that there's some commits in the first place
 if [[ -n $(git rev-list -n 1 --all) ]]; then
     # Ensure that we're only actually looking at the state of the repo as
