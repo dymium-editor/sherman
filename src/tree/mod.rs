@@ -164,6 +164,7 @@ where
     P: RleTreeConfig<I, S, M>,
 {
     handle: ManuallyDrop<NodeHandle<ty::Unknown, borrow::Owned, I, S, P, M>>,
+    len: usize,
     refs_store: <P as RleTreeConfig<I, S, M>>::SliceRefStore,
 }
 
@@ -350,6 +351,7 @@ where
         RleTree {
             root: Some(Root {
                 handle: ManuallyDrop::new(handle),
+                len: 1,
                 refs_store: P::SliceRefStore::new(store_handle),
             }),
         }
@@ -360,6 +362,17 @@ where
         match self.root.as_ref() {
             Some(root) => root.handle.leaf().subtree_size(),
             None => I::ZERO,
+        }
+    }
+
+    /// Returns the number of slices contained in the tree -- equivalent to the number of elements
+    /// [`.iter(..)`](Self::iter) will produce
+    ///
+    /// This method is O(1).
+    pub fn number_of_slices(&self) -> usize {
+        match self.root.as_ref() {
+            Some(root) => root.len,
+            None => 0,
         }
     }
 
@@ -760,6 +773,7 @@ where
             Some(root) => RleTree {
                 root: Some(Root {
                     handle: ManuallyDrop::new(root.handle.as_immut().deep_clone().erase_unique()),
+                    len: root.len,
                     refs_store: Default::default(),
                 }),
             },
@@ -781,6 +795,7 @@ impl<I, S: Clone, const M: usize> Clone for RleTree<I, S, param::AllowCow, M> {
                 RleTree {
                     root: Some(Root {
                         handle: ManuallyDrop::new(handle),
+                        len: root.len,
                         // refs_store will be empty because this is a COW-enabled tree
                         refs_store: Default::default(),
                     }),
@@ -1076,15 +1091,17 @@ where
             None => return,
         };
 
-        Self::validate_node(root.handle.borrow(), &mut Vec::new(), None)
+        let total_count = Self::validate_node(root.handle.borrow(), &mut Vec::new(), None);
+        assert_eq!(total_count, root.len);
     }
 
-    /// Called by `validate` to check a node
+    /// Called by `validate` to check a node. Returns the total number of slices contained in the
+    /// subtree rooted at the node
     fn validate_node(
         node: NodeHandle<ty::Unknown, borrow::Immut, I, S, P, M>,
         path: &mut Vec<ChildOrKey<u8, u8>>,
         parent: Option<(NonNull<()>, u8)>,
-    ) {
+    ) -> usize {
         valid_assert!(path: path.is_empty() != node.leaf().parent().is_some());
         valid_assert!(path: node.leaf().len() >= 1);
         valid_assert!(path: path.is_empty() || node.leaf().len() >= M as u8);
@@ -1102,11 +1119,11 @@ where
         }
     }
 
-    /// Called by `validate_node` to check a leaf node
+    /// Called by `validate_node` to check a leaf node. Returns the number of slices
     fn validate_leaf(
         node: NodeHandle<ty::Leaf, borrow::Immut, I, S, P, M>,
         path: &mut Vec<ChildOrKey<u8, u8>>,
-    ) {
+    ) -> usize {
         let poss = node.leaf().keys_pos_slice();
         valid_assert_eq!(path: poss[0], I::ZERO);
 
@@ -1117,24 +1134,29 @@ where
         }
 
         valid_assert!(path: poss[poss.len() - 1] < node.leaf().subtree_size());
+        node.leaf().len() as usize
     }
 
-    /// Called by `validate_internal` to check an internal node
+    /// Called by `validate_internal` to check an internal node. Returns the total number of slices
+    /// contained in the subtree rooted at the node
     fn validate_internal(
         node: NodeHandle<ty::Internal, borrow::Immut, I, S, P, M>,
         path: &mut Vec<ChildOrKey<u8, u8>>,
-    ) {
+    ) -> usize {
         let poss = node.leaf().keys_pos_slice();
 
         let this_ptr = node.ptr().cast();
 
+        let mut number_of_slices = 0;
+
         path.push(ChildOrKey::Child(0));
         // SAFETY: internal nodes are guaranteed to have at least one child
         let first_child = unsafe { node.borrow().into_child(0) };
-        Self::validate_node(first_child, path, Some((this_ptr, 0)));
+        number_of_slices += Self::validate_node(first_child, path, Some((this_ptr, 0)));
         path.pop();
 
         for i in 0..node.leaf().len() {
+            number_of_slices += 1; // add each key
             path.push(ChildOrKey::Key(i));
             // SAFETY: `i` is a valid key index, so it's also a valid child index.
             let previous_child_size = unsafe { node.child_size(i) };
@@ -1150,7 +1172,7 @@ where
             let ci = i + 1;
             path.push(ChildOrKey::Child(ci));
             // SAFETY: `i` is a valid key index and there's always one more child than key
-            Self::validate_node(
+            number_of_slices += Self::validate_node(
                 unsafe { node.borrow().into_child(ci) },
                 path,
                 Some((this_ptr, ci)),
@@ -1163,5 +1185,7 @@ where
         valid_assert!(path: last_child_size < node.leaf().subtree_size());
         let last_child_start = node.leaf().subtree_size().sub_right(last_child_size);
         valid_assert!(path: poss[poss.len() - 1] < last_child_start);
+
+        number_of_slices
     }
 }

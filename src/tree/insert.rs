@@ -122,6 +122,7 @@ where
                 Self::do_insert_full(
                     &mut root.refs_store,
                     cursor_builder,
+                    &mut root.len,
                     insertion_point,
                     slice,
                     size,
@@ -139,6 +140,7 @@ where
                 Self::do_insert_full(
                     &mut root.refs_store,
                     cursor_builder,
+                    &mut root.len,
                     insertion_point,
                     slice,
                     size,
@@ -440,6 +442,7 @@ where
     unsafe fn do_insert_full<'t, 'c>(
         store: &mut P::SliceRefStore,
         cb: CursorBuilder<'c>,
+        tree_len: &mut usize,
         insertion_point: InsertionPoint<'t, I, S, P, M>,
         slice: S,
         size: I,
@@ -449,12 +452,22 @@ where
             // SAFETY: `do_insert_full_edge` requires that `edge_ins.new_k_idx` is less than or
             // equal to `edge_ins.node.leaf().len()`, which is guaranteed by the safety
             // requirements for this function.
+            #[rustfmt::skip]
             ChildOrKey::Child(edge_ins) => unsafe {
-                Self::do_insert_full_edge(store, cb, edge_ins, slice, size, updates_callback)
+                Self::do_insert_full_edge(
+                    store, cb, tree_len,
+                    edge_ins,
+                    slice, size,
+                    updates_callback,
+                )
             },
-            ChildOrKey::Key(split_ins) => {
-                Self::do_insert_full_split_key(store, cb, split_ins, slice, size, updates_callback)
-            }
+            #[rustfmt::skip]
+            ChildOrKey::Key(split_ins) => Self::do_insert_full_split_key(
+                store, cb, tree_len,
+                split_ins,
+                slice, size,
+                updates_callback,
+            ),
         }
     }
 
@@ -470,6 +483,7 @@ where
     unsafe fn do_insert_full_edge<'t, 'c>(
         store: &mut P::SliceRefStore,
         mut cursor_builder: CursorBuilder<'c>,
+        tree_len: &mut usize,
         insert: EdgeInsert<'t, I, S, P, M>,
         slice: S,
         size: I,
@@ -480,16 +494,21 @@ where
         match Self::do_insert_full_edge_try_join(
             store,
             cursor_builder.reborrow(),
+            tree_len,
             slice,
             size,
             insert.adjacent_keys,
             updates_callback,
         ) {
+            // If we successfully joined, we don't need to update `len`, because the number of
+            // values stayed the same.
             Ok(update_state) => update_state,
             // SAFETY: `do_insert_full_edge_no_join` requires that `insert.new_k_idx` is less than
             // or equal to `insert.node.leaf().len()`, which is guaranteed by the
             #[rustfmt::skip]
             Err(slice) => unsafe {
+                *tree_len += 1; // No joining means +1 value
+
                 Self::do_insert_full_edge_no_join(
                     store,
                     cursor_builder,
@@ -510,6 +529,7 @@ where
     fn do_insert_full_split_key<'t, 'c>(
         store: &mut P::SliceRefStore,
         cb: CursorBuilder<'c>,
+        tree_len: &mut usize,
         mut info: SplitKeyInsert<'t, I, S, P, M>,
         slice: S,
         slice_size: I,
@@ -524,6 +544,7 @@ where
 
         // Fast path: no need to try joining.
         if !S::MAY_JOIN {
+            *tree_len += 2;
             let (mid, mid_size) = (slice, slice_size);
             let fst = SliceSize::new(mid, mid_size);
             let snd = SliceSize::new(rhs, rhs_size);
@@ -579,6 +600,7 @@ where
             }
             // Couldn't join with lhs, but slice + rhs joined. Still need to insert those:
             Ok(new) => {
+                *tree_len += 1;
                 let size = mid_size.add_right(rhs_size);
                 Self::insert_rhs(
                     store,
@@ -593,6 +615,7 @@ where
             }
             // Couldn't join with rhs, but did join with lhs. Still need to insert rhs:
             Err((l, r)) if joined_with_lhs => {
+                *tree_len += 1;
                 lhs_handle.fill_hole(l);
                 let fst = SliceSize::new(r, rhs_size);
                 updates_callback(TraverseUpdate::insert(&lhs_handle));
@@ -610,6 +633,7 @@ where
             }
             // Couldn't join with either lhs or rhs. Need to insert both original slice AND new rhs
             Err((m, r)) => {
+                *tree_len += 2;
                 let fst = SliceSize::new(m, mid_size);
                 let snd = SliceSize::new(r, rhs_size);
 
@@ -646,6 +670,7 @@ where
     fn do_insert_full_edge_try_join<'t, 'c>(
         store: &mut P::SliceRefStore,
         cursor_builder: CursorBuilder<'c>,
+        tree_len: &mut usize,
         slice: S,
         slice_size: I,
         adjacent_keys: AdjacentKeys<'t, I, S, P, M>,
@@ -741,6 +766,7 @@ where
                         // we have something a little bit more complex to handle because we're now
                         // *missing* a value in the tree, so we have to propagate that deletion.
                         Ok(new) => {
+                            *tree_len -= 1;
                             // Fill `lhs` so that we can perform the deletion at `rhs`
                             lhs.fill_hole(new);
                             // Also, update `store` so that we appropriately redirect `rhs` to
