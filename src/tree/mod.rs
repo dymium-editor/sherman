@@ -355,7 +355,7 @@ where
         }
     }
 
-    /// Returns the total size of the tree -- i.e. the sum of the sizes of all the sizes
+    /// Returns the total size of the tree -- i.e. the sum of the sizes of all the slices
     pub fn size(&self) -> I {
         match self.root.as_ref() {
             Some(root) => root.handle.leaf().subtree_size(),
