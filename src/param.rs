@@ -33,7 +33,7 @@ pub struct AllowCow(PhantomData<()>);
 /// Marker type to allow slice references in the [`RleTree`](crate::RleTree)
 ///
 /// **Note:** Trees parameterized by this type do not implement `Send` or `Sync`; supporting
-/// mutli-threaded slice references would be significantly more costly and we have not yet found a
+/// multi-threaded slice references would be significantly more costly and we have not yet found a
 /// use case for them.
 pub struct AllowSliceRefs(PhantomData<std::rc::Rc<()>>);
 
@@ -99,7 +99,7 @@ pub trait SupportsInsert<I, S, const M: usize>: sealed::YouCantImplementThis {
 ///
 /// | Parameter | Requirements |
 /// |-----------|--------------|
-/// | [`NoFeatures`] | [`RleTree`]s with this parameter can be thought of as analogous to `Box`es, `Vec`s, or `BTreeMap`s -- they aren't doing any funky stuff with concurrency, so they impement `Send` if the values they contain do. This requires only `I: Send` and `S: Send`. |
+/// | [`NoFeatures`] | [`RleTree`]s with this parameter can be thought of as analogous to `Box`es, `Vec`s, or `BTreeMap`s -- they aren't doing any funky stuff with concurrency, so they implement `Send` if the values they contain do. This requires only `I: Send` and `S: Send`. |
 /// | [`AllowCow`] | [`RleTree`]s with this parameter are roughly analogous to `Arc`s. Because sending a COW-enabled tree across threads doesn't clone the value, we can view a reference to a value from multiple threads, meaning that we must have `I: Send + Sync` **and** `S: Send + Sync`. |
 /// | [`AllowSliceRefs`] | [`RleTree`]s with this enabled will never implement `Send`. Our mechanisms for handling [`SliceRef`]s are not synchronized (they internally use `Cell` and others), so it is never safe to implement `Send` for a slice ref-enabled [`RleTree`]. |
 ///
@@ -180,7 +180,7 @@ pub trait StrongCount: sealed::YouCantImplementThis {
     ///
     /// Because of how multithreading works, this method is can only ever say "yes" or
     /// "probably not" -- another thread might decrement the strong count, making this instance
-    /// unqiue between the method's result being calculated vs returned.
+    /// unique between the method's result being calculated vs returned.
     ///
     /// However, if this instance *is* unique, it's guaranteed to stay that way until outside
     /// action changes that fact.

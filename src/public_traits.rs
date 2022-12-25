@@ -152,7 +152,7 @@ pub trait Zero {
 /// ## Directional Arithmetic -- Precise semantics
 //
 // TODO: There's some work that could be done here to clarify the relationship between indexes and
-// ranges. The essential idea is that indexes are offsets, and offsets are attched to unique
+// ranges. The essential idea is that indexes are offsets, and offsets are attached to unique
 // ranges, so operations on indexes require that the ranges line up right.
 ///
 /// This section gets a little bit notation-heavy. This is only really intended to be used if
@@ -215,7 +215,7 @@ pub trait Zero {
 /// All of the above properties are expected to be *logically* valid over an infinite-ish range in
 /// either direction (i.e., including negative numbers), but may *in practice* fail to produce
 /// values outside of a certain range (e.g., above a maximum value, or below zero). This allows us
-/// to still reason about [`Index`]es using negative numbers without requring that the types
+/// to still reason about [`Index`]es using negative numbers without requiring that the types
 /// themselves be signed.
 ///
 /// The justification for most of the properties should hopefully make sense, but distributivity

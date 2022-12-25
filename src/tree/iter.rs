@@ -285,7 +285,7 @@ where
 
                                 // SAFETY: key indexes returned from `search_step` are guaranteed
                                 // to be in bounds; we checked above that `k_idx != 0`, so
-                                // subtracting one won't overlflow: `k_idx - 1` is still in bounds.
+                                // subtracting one won't overflow: `k_idx - 1` is still in bounds.
                                 let lhs_k_pos = unsafe { n.leaf().key_pos(k_idx - 1) };
                                 ChildOrKey::Key((k_idx - 1, lhs_k_pos))
                             }

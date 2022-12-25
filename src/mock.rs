@@ -30,7 +30,7 @@ pub struct Ref {
 
 #[derive(Debug)]
 struct RefMap {
-    // mapping StableId -> maybe value index. Guaranteed one vaule in `stable_indexes` per
+    // mapping StableId -> maybe value index. Guaranteed one value in `stable_indexes` per
     // element in `Mock.runs`
     stable_indexes: Vec<Option<usize>>,
     // mapping RefId -> StableId

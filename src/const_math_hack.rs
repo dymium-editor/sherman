@@ -70,7 +70,7 @@ pub unsafe trait ArrayHack: Sized {
         unsafe { weak_assert!(idx <= Self::LEN) };
 
         // So, pointer::add requires some interesting things about its input -- notably that the
-        // offset (i.e. `idx * size_of::<T>()`) can't overflow an `isize`. We can't guarnatee this
+        // offset (i.e. `idx * size_of::<T>()`) can't overflow an `isize`. We can't guarantee this
         // for arbitrary types on arbitrary architectures (technically it can occur), but we *can*
         // decide at compile-time if this can occur.
         //

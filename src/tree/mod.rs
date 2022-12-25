@@ -79,7 +79,7 @@ pub const DEFAULT_MIN_KEYS: usize = 5;
 /// So the simplest version of this type would just represent a mapping `usize -> T`, where `T`
 /// implements `PartialEq + Clone` and comparisons are handled by the tree. But to provide more
 /// flexibility, we instead have a mapping `I -> S`, where `I` implements [`Index`] (but is nearly
-/// always `usize`) and `S` implements [`Slice`], which provides utilites for joining and splitting
+/// always `usize`) and `S` implements [`Slice`], which provides utilities for joining and splitting
 /// runs (instead of with `PartialEq` and `Clone`).
 ///
 /// Before we go further, it may be helpful to see some examples.

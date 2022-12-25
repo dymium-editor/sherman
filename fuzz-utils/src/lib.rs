@@ -93,7 +93,7 @@ pub enum SliceRefCommand<I, S> {
     MakeRef {
         id: TreeId,
         index: I,
-        // if accessing at the index shoudn't panic, the `RefId`
+        // if accessing at the index shouldn't panic, the `RefId`
         ref_id: Result<RefId, ()>,
     },
     InsertRef {

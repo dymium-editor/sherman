@@ -37,7 +37,7 @@
 //!
 //! * `serde` — *opt-in*, enables [`serde`] support
 //! * `nightly` — *opt-in*, enables some minor improvements (notably: implementing `Drop` for
-//!   [`RleTree`] with `#[may_dangle]`). Requries nightly rustc.
+//!   [`RleTree`] with `#[may_dangle]`). Requires nightly rustc.
 //!
 //! We also use the `fuzz` feature flag, just for testing.
 //!

@@ -50,7 +50,7 @@ where
         // exception. We'll try to have comments explaining some of the more hairy stuff.
         //
         // This function is mostly high-level edge-case handling; all of the tree traversal &
-        // shfiting stuff is done in other functions. The other lower-level functions are also
+        // shifting stuff is done in other functions. The other lower-level functions are also
         // exposed so that algorithms that - in their own edge cases - require insertion can use
         // them.
 
@@ -111,7 +111,7 @@ where
         //
         let insertion_point = Self::find_insertion_point(owned_root.borrow_mut(), cursor_path, idx);
 
-        // Inseriton algorith, Part 2: do the thing
+        // Inseriton algorithm, Part 2: do the thing
         let (post_insert_result, mut insertion) = if P::SLICE_REFS {
             let mut insertion = None;
             let mut u = unsafe { TraverseUpdate::apply_to_ref(&mut insertion) };
@@ -274,7 +274,7 @@ where
     /// If provided, `shift_lhs` overrides the position and size of `lhs` during size calculations
     /// for [`do_upward_step`]
     ///
-    /// Setting `shift_lhs` allows the default size calcuation of the left-hand node's size
+    /// Setting `shift_lhs` allows the default size calculation of the left-hand node's size
     /// (usually done using `self.old_size`) to be overridden
     ///
     /// [`do_upward_step`]: Self::do_upward_step
@@ -741,7 +741,7 @@ where
                     let mut joined_with_lhs = false;
                     let (mid_slice, mid_size) = match lhs_slice.try_join(slice) {
                         Ok(new) => {
-                            // Can't fill the hole in `lhs` yet; stil need to try to join with
+                            // Can't fill the hole in `lhs` yet; still need to try to join with
                             // `rhs`.
                             joined_with_lhs = true;
                             (new, lhs_size.add_right(slice_size))
@@ -1219,7 +1219,7 @@ where
     ///
     /// If this method returns a [`ChildOrKey::Key`], `idx` is contained within the returned key
     /// *and not at either of its borders*. Otherwise, if it returns a [`ChildOrKey::Child`], which
-    /// points to the border between two keys at which the value shoulld be inserted.
+    /// points to the border between two keys at which the value should be inserted.
     ///
     /// **Note:** `cursor_hints` is received as an `impl Iterator` instead of the `Cursor` directly
     /// so that cursor types with the same [`PathIter`] associated type will use the same
@@ -1439,7 +1439,7 @@ where
         //        ║ A │ B │ C ║ ╚═══╝ ║ / │ + │ E ║
         //        ╚═══╧═══╧═══╝       ╚═══╧═══╧═══╝
         //
-        // There's also two suprise cases we can get with `M = 1` and `snd = Some(_)`:
+        // There's also two surprise cases we can get with `M = 1` and `snd = Some(_)`:
         //
         //   Case S1 — `M = 1` and `new_key_idx = 0` and `snd = Some(_)` and `len = 1`:
         //              ╔═══╗
@@ -1458,7 +1458,7 @@ where
         // We have to choose *a* midpoint, even if we'll replace it later. It's more efficient to
         // move the midpoint to the end of the left-hand node (rather than shift all the keys of
         // `rhs` after adding it there). So: where when there's two equivalent options, we pick the
-        // one that avoids unecessarily pushing something into the beginning of `rhs`. This isn't
+        // one that avoids unnecessarily pushing something into the beginning of `rhs`. This isn't
         // possible for cases S1 or S2, but we can handle those separately.
         let midpoint_idx: u8;
         let insert_at: Result<Side, Side>; // Err(_) gives the direction of unbalance if `snd` is
@@ -1649,7 +1649,7 @@ where
                 }
 
                 // SAFETY: the `push_key`s above guarantee that `node.leaf().len()` is at least two
-                // greater than `mp_idx` (i.e. `mp_idx + 1 < node.leaf().len()`), which is requried
+                // greater than `mp_idx` (i.e. `mp_idx + 1 < node.leaf().len()`), which is required
                 // by the calls to `into_slice_handle`.
                 unsafe {
                     let midpoint_slice = node.borrow().into_slice_handle(mp_idx);

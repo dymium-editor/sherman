@@ -148,7 +148,7 @@ where
 ///
 /// [`SliceRefStore`]: super::slice_ref::SliceRefStore
 pub(super) enum TraverseUpdate<I, S, P: RleTreeConfig<I, S, M>, const M: usize> {
-    /// Records that an insertion occured.
+    /// Records that an insertion occurred.
     ///
     /// There are some operations that generate multiple insertion operations. It's typically the
     /// responsibility of the provided callback to filter them out appropriately.
@@ -324,7 +324,7 @@ where
     /// ## Safety
     ///
     /// The caller guarantees that all values provided to the callback accurately reflect changes
-    /// occuring in the tree. This can be assumed for most functions.
+    /// occurring in the tree. This can be assumed for most functions.
     pub(super) unsafe fn apply_to_ref(
         slice_ref: &mut Option<SliceHandle<ty::Unknown, borrow::SliceRef, I, S, P, M>>,
     ) -> impl '_ + FnMut(TraverseUpdate<I, S, P, M>) {

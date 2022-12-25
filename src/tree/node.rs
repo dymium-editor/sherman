@@ -339,7 +339,7 @@ pub(super) mod borrow {
     impl AsMut for Dropping {}
     impl<'a> AsMut for Mut<'a> {}
 
-    /// Helper trait that allows us to take actions requring `SupportsInsert` only for mutable
+    /// Helper trait that allows us to take actions requiring `SupportsInsert` only for mutable
     /// borrows
     ///
     /// The implementation for `Mut` requires `P: SupportsInsert`, and sets `Param = P`. The
@@ -1185,7 +1185,7 @@ where
                     }),
                 };
 
-                // Before we return, we have to overwite the parent pointers in all of this node's
+                // Before we return, we have to overwrite the parent pointers in all of this node's
                 // children.
                 let mut handle: NodeHandle<ty::Internal, borrow::UniqueOwned, _, _, _, M> =
                     NodeHandle {
@@ -1978,7 +1978,7 @@ where
         unsafe { weak_assert!(idx <= self.leaf().len()) };
 
         // SAFETY: the condition above guarantees that `idx <= self.leaf.len`, which is the section
-        // fo the node that's initialized.
+        // of the node that's initialized.
         let ptr = unsafe { self.internal().child_ptrs.get_unchecked(idx as usize).assume_init() };
 
         NodeHandle {
@@ -2635,7 +2635,7 @@ fn alloc_aligned<T>(val: T) -> NonNull<T> {
 ///
 /// ## Safety
 ///
-/// `ptr` must correspond to the result of a prior successfull allocation of a value with the same
+/// `ptr` must correspond to the result of a prior successful allocation of a value with the same
 /// type, from `alloc_aligned`. `ptr` cannot have been deallocated yet.
 unsafe fn dealloc_aligned<T>(ptr: NonNull<T>) {
     let layout = Layout::new::<T>()
@@ -3028,7 +3028,7 @@ where
             // `Leaf.holes`
             [Some(_), None] => unsafe { weak_unreachable!() },
             [Some(hx), Some(hy)] => match hx == idx_plus_one || hy == idx_plus_one {
-                true => panic!("cannot take slice: it is curently a hole"),
+                true => panic!("cannot take slice: it is currently a hole"),
                 false => panic!("cannot take slice: already at capacity for holes"),
             },
         };
