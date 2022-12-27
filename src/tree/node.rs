@@ -710,8 +710,8 @@ type ChildArray<T, const M: usize> = hack::Add<hack::Mul<[T; 2], M>, [T; 1]>; //
 //
 //   * RleTree docs
 //   * fn assert_reasonable_m (in 'src/tree/mod.rs')
-//   * fn RleTree::do_insert_no_join (in 'src/tree/mod.rs')
-//   * fn BubbledInsertState::do_upward_step (in 'src/tree/mod.rs')
+//   * fn RleTree::do_insert_full_edge_no_join{,split} (in 'src/tree/insert.rs')
+//   * fn BubbledInsertState::do_upward_step (in 'src/tree/insert.rs')
 #[cfg(test)]
 const _: () = {
     assert!(KeyArray::<u8, 4>::LEN == 4 * 2);
