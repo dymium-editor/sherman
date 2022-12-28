@@ -1263,7 +1263,7 @@ where
     /// It must, of course, also be safe to produce the `&mut Leaf`, although this safety is
     /// already guaranteed by the methods on handles with `borrow::Mut`.
     ///
-    /// It is safe for `func` tly allowed to panic.
+    /// It is explicitly safe for `func` to panic.
     ///
     /// [`RefId`]: super::slice_ref::RefId
     pub(super) unsafe fn with_mut<R>(
