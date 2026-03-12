@@ -1,9 +1,6 @@
-# Sherman — a truly monstrous tree type
+# Sherman — a monstrous tree type
 
-It turns out that in the production of an editor, sometimes specialized data structures are
-used. Sometimes data structures are similar enough that they can be united into a single
-abstract type, with parameterizations to suit the original needs. This crate primarily exports
-a single type -- `RleTree` -- which represents the collection of all features
+WIP. This is horror of a datastructure.
 
 ### Notable features
 
@@ -19,12 +16,7 @@ a single type -- `RleTree` -- which represents the collection of all features
 
 And of course, all of these features are zero-cost when not in use: the tree is constructed in
 such a way so that only the instances that actually *do* use these extra feature (like node
-references or concurrent COW) have to pay the cost of them. And the cost of each individual
-feature has been minimized as much as is possible.
-
-For a more detailed explanation on how we're able to pull this off,
-[ARCHITECTURE.md](ARCHITECTURE.md) gives a high-level overview of all the moving pieces to this
-crate.
+references or concurrent COW) have to pay the cost of them.
 
 ### Naming
 

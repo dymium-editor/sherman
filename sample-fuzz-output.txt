@@ -1,0 +1,150 @@
+INFO: Running with entropic power schedule (0xFF, 100).
+INFO: Seed: 2404518588
+INFO: Loaded 1 modules   (1766 inline 8-bit counters): 1766 [0x55d1a10f6fe0, 0x55d1a10f76c6), 
+INFO: Loaded 1 PC tables (1766 PCs): 1766 [0x55d1a10f76c8,0x55d1a10fe528), 
+INFO:        0 files found in /home/em/dymium/sherman/avl/fuzz/corpus/basic
+INFO: -max_len is not provided; libFuzzer will not generate inputs larger than 4096 bytes
+INFO: A corpus is not provided, starting from an empty corpus
+#2	INITED cov: 90 ft: 91 corp: 1/1b exec/s: 0 rss: 42Mb
+#8	NEW    cov: 91 ft: 92 corp: 2/3b lim: 4 exec/s: 0 rss: 42Mb L: 2/2 MS: 1 CopyPart-
+	NEW_FUNC[1/6]: 0x55d1a10404e0 in core::ptr::drop_in_place::<sherman::tree::RleTree<u8, sherman::Constant<sherman::fuzz::UpperLetter>>> /home/em/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ptr/mod.rs:809
+	NEW_FUNC[2/6]: 0x55d1a1040850 in core::ptr::drop_in_place::<sherman::fuzz::fake::Fake<u8, sherman::Constant<sherman::fuzz::UpperLetter>>> /home/em/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ptr/mod.rs:809
+#9	NEW    cov: 136 ft: 139 corp: 3/5b lim: 4 exec/s: 0 rss: 44Mb L: 2/2 MS: 1 ChangeByte-
+#16	NEW    cov: 138 ft: 145 corp: 4/6b lim: 4 exec/s: 0 rss: 44Mb L: 1/2 MS: 2 ChangeByte-EraseBytes-
+#43	NEW    cov: 143 ft: 151 corp: 5/10b lim: 4 exec/s: 0 rss: 45Mb L: 4/4 MS: 2 InsertByte-CopyPart-
+	NEW_FUNC[1/2]: 0x55d1a103fae0 in core::ptr::drop_in_place::<core::option::Option<sherman::tree::node::NodeHandle<sherman::tree::borrow::UniqueOwned<sherman::tree::node::Node<u8, sherman::Constant<sherman::fuzz::UpperLetter>>>>>> /home/em/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ptr/mod.rs:809
+	NEW_FUNC[2/2]: 0x55d1a10498a0 in <alloc::raw_vec::RawVec<(u8, core::option::Option<sherman::Constant<sherman::fuzz::UpperLetter>>)>>::grow_one /home/em/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs:186
+#178	NEW    cov: 171 ft: 191 corp: 6/14b lim: 4 exec/s: 0 rss: 45Mb L: 4/4 MS: 5 ChangeByte-ChangeBit-ChangeByte-ChangeBit-CMP- DE: "\000\000"-
+#526	NEW    cov: 178 ft: 225 corp: 7/20b lim: 6 exec/s: 0 rss: 45Mb L: 6/6 MS: 3 ChangeBit-ChangeBinInt-CrossOver-
+	NEW_FUNC[1/1]: 0x55d1a1045e50 in sherman::tree::search_step::<u8, sherman::Constant<sherman::fuzz::UpperLetter>> /home/em/dymium/sherman/avl/src/tree/mod.rs:209
+#575	NEW    cov: 205 ft: 256 corp: 8/26b lim: 6 exec/s: 0 rss: 45Mb L: 6/6 MS: 4 InsertRepeatedBytes-ChangeBit-CopyPart-PersAutoDict- DE: "\000\000"-
+#641	NEW    cov: 211 ft: 262 corp: 9/32b lim: 6 exec/s: 0 rss: 45Mb L: 6/6 MS: 1 ChangeByte-
+#717	NEW    cov: 212 ft: 263 corp: 10/37b lim: 6 exec/s: 0 rss: 46Mb L: 5/6 MS: 1 EraseBytes-
+#777	REDUCE cov: 212 ft: 263 corp: 10/36b lim: 6 exec/s: 0 rss: 46Mb L: 5/6 MS: 5 ChangeBit-CopyPart-CrossOver-ChangeBinInt-EraseBytes-
+#986	NEW    cov: 214 ft: 265 corp: 11/44b lim: 8 exec/s: 0 rss: 46Mb L: 8/8 MS: 4 ShuffleBytes-InsertRepeatedBytes-ShuffleBytes-CopyPart-
+#1077	NEW    cov: 214 ft: 268 corp: 12/51b lim: 8 exec/s: 0 rss: 46Mb L: 7/8 MS: 1 InsertByte-
+#1108	NEW    cov: 215 ft: 272 corp: 13/59b lim: 8 exec/s: 0 rss: 46Mb L: 8/8 MS: 1 CopyPart-
+	NEW_FUNC[1/2]: 0x55d1a1041930 in sherman::tree::run_insert::<u8, sherman::Constant<sherman::fuzz::UpperLetter>> /home/em/dymium/sherman/avl/src/tree/mod.rs:248
+	NEW_FUNC[2/2]: 0x55d1a104a360 in <sherman::tree::node::NodeHandle<sherman::tree::borrow::Mut<sherman::tree::node::Node<u8, sherman::Constant<sherman::fuzz::UpperLetter>>>>>::insert_rhs /home/em/dymium/sherman/avl/src/tree/node.rs:457
+#1181	NEW    cov: 252 ft: 325 corp: 14/67b lim: 8 exec/s: 0 rss: 46Mb L: 8/8 MS: 3 ChangeBit-PersAutoDict-CrossOver- DE: "\000\000"-
+#1237	NEW    cov: 285 ft: 380 corp: 15/75b lim: 8 exec/s: 0 rss: 46Mb L: 8/8 MS: 1 ChangeBinInt-
+#1246	NEW    cov: 285 ft: 392 corp: 16/83b lim: 8 exec/s: 0 rss: 46Mb L: 8/8 MS: 4 CrossOver-ShuffleBytes-CrossOver-ShuffleBytes-
+#1248	NEW    cov: 285 ft: 393 corp: 17/90b lim: 8 exec/s: 0 rss: 46Mb L: 7/8 MS: 2 PersAutoDict-InsertByte- DE: "\000\000"-
+	NEW_FUNC[1/1]: 0x55d1a1040b20 in core::ptr::drop_in_place::<sherman::tree::node::NodeHandle<sherman::tree::borrow::UniqueOwned<sherman::tree::node::Node<u8, sherman::Constant<sherman::fuzz::UpperLetter>>>>> /home/em/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ptr/mod.rs:809
+#1252	NEW    cov: 292 ft: 401 corp: 18/98b lim: 8 exec/s: 0 rss: 48Mb L: 8/8 MS: 4 ChangeBit-CrossOver-ChangeBinInt-CopyPart-
+#1285	NEW    cov: 292 ft: 414 corp: 19/106b lim: 8 exec/s: 0 rss: 48Mb L: 8/8 MS: 3 CrossOver-ChangeByte-CrossOver-
+#1363	NEW    cov: 292 ft: 436 corp: 20/114b lim: 8 exec/s: 0 rss: 48Mb L: 8/8 MS: 3 InsertByte-PersAutoDict-CopyPart- DE: "\000\000"-
+#1467	NEW    cov: 294 ft: 438 corp: 21/122b lim: 8 exec/s: 0 rss: 49Mb L: 8/8 MS: 4 InsertByte-ChangeBit-ShuffleBytes-CrossOver-
+	NEW_FUNC[1/1]: 0x55d1a104a060 in <sherman::tree::node::NodeHandle<sherman::tree::borrow::Mut<sherman::tree::node::Node<u8, sherman::Constant<sherman::fuzz::UpperLetter>>>>>::insert_lhs /home/em/dymium/sherman/avl/src/tree/node.rs:435
+#1518	NEW    cov: 303 ft: 448 corp: 22/130b lim: 8 exec/s: 0 rss: 49Mb L: 8/8 MS: 1 ChangeBinInt-
+#1704	NEW    cov: 304 ft: 449 corp: 23/138b lim: 8 exec/s: 0 rss: 49Mb L: 8/8 MS: 1 ChangeBit-
+	NEW_FUNC[1/1]: 0x55d1a1049480 in <sherman::tree::node::NodeHandle<sherman::tree::borrow::Mut<sherman::tree::node::Node<u8, sherman::Constant<sherman::fuzz::UpperLetter>>>>>::value_range /home/em/dymium/sherman/avl/src/tree/node.rs:231
+#1782	NEW    cov: 315 ft: 460 corp: 24/146b lim: 8 exec/s: 0 rss: 49Mb L: 8/8 MS: 3 CMP-CopyPart-ChangeByte- DE: "Z\000\000\000"-
+#2101	NEW    cov: 317 ft: 463 corp: 25/156b lim: 11 exec/s: 0 rss: 49Mb L: 10/10 MS: 4 EraseBytes-InsertRepeatedBytes-ChangeByte-CopyPart-
+#2110	NEW    cov: 317 ft: 480 corp: 26/167b lim: 11 exec/s: 0 rss: 49Mb L: 11/11 MS: 4 InsertRepeatedBytes-InsertByte-CrossOver-CopyPart-
+#2126	NEW    cov: 317 ft: 485 corp: 27/178b lim: 11 exec/s: 0 rss: 49Mb L: 11/11 MS: 1 CopyPart-
+#2207	NEW    cov: 321 ft: 489 corp: 28/188b lim: 11 exec/s: 0 rss: 49Mb L: 10/11 MS: 1 CrossOver-
+#2265	NEW    cov: 321 ft: 534 corp: 29/197b lim: 11 exec/s: 0 rss: 49Mb L: 9/11 MS: 3 ChangeBit-PersAutoDict-InsertByte- DE: "\000\000"-
+#2267	NEW    cov: 323 ft: 586 corp: 30/208b lim: 11 exec/s: 0 rss: 49Mb L: 11/11 MS: 2 InsertByte-InsertByte-
+#2473	REDUCE cov: 323 ft: 586 corp: 30/207b lim: 11 exec/s: 0 rss: 50Mb L: 7/11 MS: 1 EraseBytes-
+#2800	NEW    cov: 328 ft: 613 corp: 31/221b lim: 14 exec/s: 0 rss: 50Mb L: 14/14 MS: 2 CopyPart-CrossOver-
+#2816	NEW    cov: 328 ft: 623 corp: 32/233b lim: 14 exec/s: 0 rss: 50Mb L: 12/14 MS: 1 InsertByte-
+#2903	NEW    cov: 328 ft: 640 corp: 33/247b lim: 14 exec/s: 0 rss: 50Mb L: 14/14 MS: 2 ChangeByte-CopyPart-
+#2940	NEW    cov: 329 ft: 643 corp: 34/261b lim: 14 exec/s: 0 rss: 50Mb L: 14/14 MS: 2 CMP-ChangeBinInt- DE: "\377\377\377Q"-
+#2954	NEW    cov: 329 ft: 644 corp: 35/274b lim: 14 exec/s: 0 rss: 50Mb L: 13/14 MS: 4 ChangeByte-CrossOver-ChangeByte-InsertByte-
+#2981	NEW    cov: 332 ft: 647 corp: 36/286b lim: 14 exec/s: 0 rss: 50Mb L: 12/14 MS: 2 ChangeByte-InsertByte-
+#3148	NEW    cov: 336 ft: 651 corp: 37/298b lim: 14 exec/s: 0 rss: 50Mb L: 12/14 MS: 2 ChangeBit-CrossOver-
+#3170	NEW    cov: 338 ft: 654 corp: 38/312b lim: 14 exec/s: 0 rss: 50Mb L: 14/14 MS: 2 InsertByte-CMP- DE: "A\000"-
+#3187	NEW    cov: 338 ft: 656 corp: 39/324b lim: 14 exec/s: 0 rss: 50Mb L: 12/14 MS: 2 CrossOver-InsertRepeatedBytes-
+#3358	NEW    cov: 340 ft: 658 corp: 40/338b lim: 14 exec/s: 0 rss: 51Mb L: 14/14 MS: 1 InsertRepeatedBytes-
+#3369	NEW    cov: 340 ft: 659 corp: 41/352b lim: 14 exec/s: 0 rss: 51Mb L: 14/14 MS: 1 InsertRepeatedBytes-
+#3609	NEW    cov: 342 ft: 664 corp: 42/366b lim: 14 exec/s: 0 rss: 51Mb L: 14/14 MS: 5 CopyPart-CrossOver-ChangeBit-EraseBytes-CopyPart-
+
+thread '<unnamed>' (63422) panicked at /home/em/dymium/sherman/avl/src/fuzz/arbitrary_operation.rs:225:21:
+assertion `left == right` failed
+  left: 0..38
+ right: 38..76
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+fatal runtime error: failed to initiate panic, error 5, aborting
+==63422== ERROR: libFuzzer: deadly signal
+    #0 0x55d1a1018931 in __sanitizer_print_stack_trace /rustc/llvm/src/llvm-project/compiler-rt/lib/asan/asan_stack.cpp:87:3
+    #1 0x55d1a1067327 in fuzzer::PrintStackTrace() /home/em/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libfuzzer-sys-0.4.12/libfuzzer/FuzzerUtil.cpp:210:38
+    #2 0x55d1a10594d5 in fuzzer::Fuzzer::CrashCallback() /home/em/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libfuzzer-sys-0.4.12/libfuzzer/FuzzerLoop.cpp:231:18
+    #3 0x55d1a10594d5 in fuzzer::Fuzzer::CrashCallback() /home/em/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libfuzzer-sys-0.4.12/libfuzzer/FuzzerLoop.cpp:226:6
+    #4 0x7f7c8332f2cf  (/usr/lib/libc.so.6+0x3e2cf) (BuildId: 7a8d41a2df4fde040b4c6ac2832311ab645a1e41)
+    #5 0x7f7c83389a2b in __pthread_kill_implementation /usr/src/debug/glibc/glibc/nptl/pthread_kill.c:43:17
+    #6 0x7f7c8332f19f in raise /usr/src/debug/glibc/glibc/signal/../sysdeps/posix/raise.c:26:13
+    #7 0x7f7c833165fd in abort /usr/src/debug/glibc/glibc/stdlib/abort.c:77:3
+    #8 0x55d1a10d4849 in std::sys::pal::unix::abort_internal /rustc/80282b130679a654eaa22f028a908c51be53d436/library/std/src/sys/pal/unix/mod.rs:305:14
+    #9 0x55d1a10d3678 in std::process::abort /rustc/80282b130679a654eaa22f028a908c51be53d436/library/std/src/process.rs:2536:5
+    #10 0x55d1a10c439a in __rustc::rust_panic /rustc/80282b130679a654eaa22f028a908c51be53d436/library/std/src/rt.rs:57:13
+    #11 0x55d1a10d3934 in std::panicking::panic_with_hook /rustc/80282b130679a654eaa22f028a908c51be53d436/library/std/src/panicking.rs:850:5
+    #12 0x55d1a10c3e47 in std::panicking::panic_handler::{closure#0} /rustc/80282b130679a654eaa22f028a908c51be53d436/library/std/src/panicking.rs:698:13
+    #13 0x55d1a10bbe08 in std::sys::backtrace::__rust_end_short_backtrace::<std::panicking::panic_handler::{closure#0}, !> /rustc/80282b130679a654eaa22f028a908c51be53d436/library/std/src/sys/backtrace.rs:182:18
+    #14 0x55d1a10c45cc in __rustc::rust_begin_unwind /rustc/80282b130679a654eaa22f028a908c51be53d436/library/std/src/panicking.rs:689:5
+    #15 0x55d1a10e62eb in core::panicking::panic_fmt /rustc/80282b130679a654eaa22f028a908c51be53d436/library/core/src/panicking.rs:80:14
+    #16 0x55d1a10e61c2 in core::panicking::assert_failed_inner /rustc/80282b130679a654eaa22f028a908c51be53d436/library/core/src/panicking.rs:439:17
+    #17 0x55d1a10417f3 in core::panicking::assert_failed::<core::ops::range::Range<u8>, core::ops::range::Range<u8>> /home/em/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/panicking.rs:394:5
+    #18 0x55d1a104b878 in execute_assert<u8, sherman::Constant<sherman::fuzz::UpperLetter>> /home/em/dymium/sherman/avl/src/fuzz/arbitrary_operation.rs:225:21
+    #19 0x55d1a104b878 in execute_assert<sherman::fuzz::arbitrary_operation::BasicOperation<u8, sherman::Constant<sherman::fuzz::UpperLetter>>> /home/em/dymium/sherman/avl/src/fuzz/arbitrary_operation.rs:94:33
+    #20 0x55d1a104b878 in basic::_::__libfuzzer_sys_run /home/em/dymium/sherman/avl/fuzz/fuzz_targets/basic.rs:10:9
+    #21 0x55d1a10503d1 in rust_fuzzer_test_input /home/em/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libfuzzer-sys-0.4.12/src/lib.rs:363:60
+    #22 0x55d1a1051e04 in {closure#0} /home/em/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libfuzzer-sys-0.4.12/src/lib.rs:62:9
+    #23 0x55d1a1051e04 in std::panicking::catch_unwind::do_call::<libfuzzer_sys::test_input_wrap::{closure#0}, i32> /home/em/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panicking.rs:581:40
+    #24 0x55d1a1052a68 in __rust_try libfuzzer_sys.73b682ec845a7556-cgu.0
+    #25 0x55d1a10514ed in catch_unwind<i32, libfuzzer_sys::test_input_wrap::{closure_env#0}> /home/em/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panicking.rs:544:19
+    #26 0x55d1a10514ed in catch_unwind<libfuzzer_sys::test_input_wrap::{closure_env#0}, i32> /home/em/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panic.rs:359:14
+    #27 0x55d1a10514ed in LLVMFuzzerTestOneInput /home/em/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libfuzzer-sys-0.4.12/src/lib.rs:60:22
+    #28 0x55d1a1059a68 in fuzzer::Fuzzer::ExecuteCallback(unsigned char const*, unsigned long) /home/em/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libfuzzer-sys-0.4.12/libfuzzer/FuzzerLoop.cpp:619:15
+    #29 0x55d1a105e571 in fuzzer::Fuzzer::RunOne(unsigned char const*, unsigned long, bool, fuzzer::InputInfo*, bool, bool*) /home/em/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libfuzzer-sys-0.4.12/libfuzzer/FuzzerLoop.cpp:516:22
+    #30 0x55d1a1060f22 in fuzzer::Fuzzer::MutateAndTestOne() /home/em/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libfuzzer-sys-0.4.12/libfuzzer/FuzzerLoop.cpp:765:25
+    #31 0x55d1a1062897 in fuzzer::Fuzzer::Loop(std::vector<fuzzer::SizedFile, std::allocator<fuzzer::SizedFile>>&) /home/em/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libfuzzer-sys-0.4.12/libfuzzer/FuzzerLoop.cpp:910:21
+    #32 0x55d1a108c1d1 in fuzzer::FuzzerDriver(int*, char***, int (*)(unsigned char const*, unsigned long)) /home/em/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libfuzzer-sys-0.4.12/libfuzzer/FuzzerDriver.cpp:923:10
+    #33 0x55d1a107a292 in main /home/em/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libfuzzer-sys-0.4.12/libfuzzer/FuzzerMain.cpp:20:30
+    #34 0x7f7c833186c0 in __libc_start_call_main /usr/src/debug/glibc/glibc/csu/../sysdeps/nptl/libc_start_call_main.h:59:16
+    #35 0x7f7c833187f8 in __libc_start_main /usr/src/debug/glibc/glibc/csu/../csu/libc-start.c:360:3
+    #36 0x55d1a0f83d64 in _start (/home/em/dymium/sherman/avl/fuzz/target/x86_64-unknown-linux-gnu/release/basic+0x6ad64) (BuildId: 148fb5025ab325747f12dc92dc2ce9daf8ca8080)
+
+NOTE: libFuzzer has rudimentary signal handlers.
+      Combine libFuzzer with AddressSanitizer or similar for better crash reports.
+SUMMARY: libFuzzer: deadly signal
+MS: 5 CopyPart-CrossOver-CopyPart-CopyPart-EraseBytes-; base unit: 9f927bab847b82804592b35f1971a0503edc268e
+0x5f,0x0,0x0,0x28,0x5f,0x26,0x26,0x26,0x26,0x26,0x5f,
+_\000\000(_&&&&&_
+artifact_prefix='/home/em/dymium/sherman/avl/fuzz/artifacts/basic/'; Test unit written to /home/em/dymium/sherman/avl/fuzz/artifacts/basic/crash-191a9c8ff14cc463e81346aad463abe2dcb4fdbb
+Base64: XwAAKF8mJiYmJl8=
+
+────────────────────────────────────────────────────────────────────────────────
+
+Failing input:
+
+	fuzz/artifacts/basic/crash-191a9c8ff14cc463e81346aad463abe2dcb4fdbb
+
+Output of `std::fmt::Debug`:
+
+	#[test]
+	#[allow(unused_variables, unused_mut)]
+	fn test_case() {
+	   let mut tree: RleTree<u8, Constant<char>> = RleTree::new_empty();
+	   tree.insert(0, Constant('A'), 40);
+	   tree.insert(38, Constant('M'), 38);
+	   {
+	       let entry = tree.get(38);
+	       assert_eq!(entry.range(), 38..76);
+	       assert_eq!(entry.slice(), Constant('M'));
+	   }
+	   assert!(std::panic::catch_unwind(move || tree.insert(0, Constant('A'), 0)).is_err());
+	}
+	
+
+Reproduce with:
+
+	cargo fuzz run basic fuzz/artifacts/basic/crash-191a9c8ff14cc463e81346aad463abe2dcb4fdbb
+
+Minimize test case with:
+
+	cargo fuzz tmin basic fuzz/artifacts/basic/crash-191a9c8ff14cc463e81346aad463abe2dcb4fdbb
+
+────────────────────────────────────────────────────────────────────────────────
+
+Error: Fuzz target exited with exit status: 77
