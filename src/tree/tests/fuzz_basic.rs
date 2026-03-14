@@ -62,7 +62,7 @@ fn test_07_insert_risk_overflow_rhs_edge() {
 }
 
 #[test]
-fn test_08_split_split_get_boundary() {
+fn test_08_insert_nonempty_lhs_edge() {
     let mut tree: RleTree<u8, Constant<char>> = RleTree::new_empty();
     tree.insert(0, Constant('B'), 6);
     tree.insert(1, Constant('T'), 167);
@@ -70,6 +70,18 @@ fn test_08_split_split_get_boundary() {
     {
         let entry = tree.get(0);
         assert_eq!(entry.range(), 0..1);
+        assert_eq!(entry.slice(), &Constant('B'));
+    }
+}
+
+#[test]
+fn test_09_get_rhs_edge() {
+    let mut tree: RleTree<u8, Constant<char>> = RleTree::new_empty();
+    tree.insert(0, Constant('Q'), 92);
+    tree.insert(92, Constant('B'), 14);
+    {
+        let entry = tree.get(92);
+        assert_eq!(entry.range(), 92..106);
         assert_eq!(entry.slice(), &Constant('B'));
     }
 }

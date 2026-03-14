@@ -148,31 +148,38 @@ where
         let mut node = root.handle.borrow();
         let mut target = idx;
 
-        loop {
+        let (range, offset_in_range) = loop {
             match search_step(node.borrow(), target) {
                 SearchResult::Lhs { offset } => {
                     target = offset;
-                    node = node.into_lhs().expect(
-                        "`SearchResult::Lhs` implies that the left-hand child should exist",
+                    node = node
+                        .into_lhs()
+                        .expect("`SearchResult::Lhs` implies the left-hand child should exist");
+                }
+                SearchResult::RhsEdge => {
+                    target = I::ZERO;
+                    node = node.into_rhs().expect(
+                        "`SearchResult::RhsEdge` implies the right-hand child should exist",
                     );
                 }
                 SearchResult::Rhs { offset } => {
                     target = offset;
-                    node = node.into_rhs().expect(
-                        "`SearchResult::Lhs` implies that the left-hand child should exist",
-                    );
+                    node = node
+                        .into_rhs()
+                        .expect("`SearchResult::Rhs` implies the right-hand child should exist");
                 }
-                SearchResult::Value { range, offset_in_range } => {
-                    // Found the value!
-                    // To reconstruct the *absolute* positions of the slice, we can subtract
-                    // offset from idx to get the absolute position of range.start (and therefore
-                    // range.end as well.
-                    let abs_start = idx.sub_right(offset_in_range);
-                    let abs_end = abs_start.add_right(range.end.sub_left(range.start));
-                    return SliceEntry { range: abs_start..abs_end, slice: node };
-                }
+                SearchResult::LhsEdge => break (node.value_range(), I::ZERO),
+                SearchResult::Value { range, offset_in_range } => break (range, offset_in_range),
             }
-        }
+        };
+
+        // Found the value!
+        // To reconstruct the *absolute* positions of the slice, we can subtract
+        // offset from idx to get the absolute position of range.start (and therefore
+        // range.end as well.
+        let abs_start = idx.sub_right(offset_in_range);
+        let abs_end = abs_start.add_right(range.end.sub_left(range.start));
+        SliceEntry { range: abs_start..abs_end, slice: node }
     }
 
     /// Inserts the slice at position `idx`, shifting all later entries by `size`
@@ -219,7 +226,9 @@ where
 #[derive(Debug)]
 enum SearchResult<I> {
     Lhs { offset: I },
+    LhsEdge,
     Value { range: Range<I>, offset_in_range: I },
+    RhsEdge,
     Rhs { offset: I },
 }
 
@@ -230,6 +239,10 @@ fn search_step<I: Index, S>(node: node::HandleImmut<I, S>, target: I) -> SearchR
         SearchResult::Lhs { offset: target }
     } else if target > value_range.end {
         SearchResult::Rhs { offset: target.sub_left(value_range.end) }
+    } else if target == value_range.start {
+        SearchResult::LhsEdge
+    } else if target == value_range.end {
+        SearchResult::RhsEdge
     } else {
         SearchResult::Value {
             offset_in_range: target.sub_left(value_range.start),
@@ -345,18 +358,13 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
                 // Recurse into RHS child:
                 Ok(child) => (child, ControlFlow::Continue(Self { target: offset, ..self })),
                 // No RHS, even though our search told us we were outside the range of this value.
-                Err(_) if offset != I::ZERO => crate::panic_internal_error_or_bad_index::<I>(
-                    "search step returned non-zero RHS without RHS child",
+                Err(_) => crate::panic_internal_error_or_bad_index::<I>(
+                    "search step returned RHS without RHS child",
                 ),
-                Err(n) => self.step_edge_rhs(n),
             },
+            SearchResult::LhsEdge => self.step_edge_lhs(node),
+            SearchResult::RhsEdge => self.step_edge_rhs(node),
             SearchResult::Value { range, offset_in_range } => {
-                if self.target == range.end {
-                    return self.step_edge_rhs(node);
-                } else if self.target == range.start {
-                    return self.step_edge_lhs(node);
-                }
-
                 self.step_split_value(node, range, offset_in_range)
             }
         }
