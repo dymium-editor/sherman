@@ -7,6 +7,7 @@ mod arbitrary_operation;
 mod as_rust;
 mod fake;
 
+pub use crate::tree::tests::CharRange;
 pub use arbitrary_operation::{ArbitraryOp, BasicOperation, OpSequence};
 pub use as_rust::{RustExpr, RustType};
 pub use fake::Fake;

@@ -12,8 +12,7 @@ mod entry;
 mod fix;
 mod node;
 
-#[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use entry::SliceEntry;
 use node::Side;
@@ -604,6 +603,8 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
                     let new_subtree_size = parent.subtree_size().sub_right(removed_size);
                     parent.set_subtree_size(new_subtree_size);
 
+                    parent = fix::fix_mut(parent);
+
                     // recurse upwards
                     upward_child = parent;
                 }
@@ -700,6 +701,8 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
 
                     let new_subtree_size = parent.subtree_size().sub_left(removed_size);
                     parent.set_subtree_size(new_subtree_size);
+
+                    parent = fix::fix_mut(parent);
 
                     // recurse upwards
                     upward_child = parent;

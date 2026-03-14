@@ -1,4 +1,4 @@
-//! Tests generated from fuzzing with `BasicOperation`
+//! Tests generated from fuzzing for `BasicOperation<u8, Constant<UpperLetter>>`
 
 use crate::{Constant, RleTree};
 

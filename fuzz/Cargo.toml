@@ -17,3 +17,10 @@ path = "fuzz_targets/basic.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "basic_range"
+path = "fuzz_targets/basic_range.rs"
+test = false
+doc = false
+bench = false
