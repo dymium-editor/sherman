@@ -1,3 +1,5 @@
+#![allow(clippy::type_complexity)]
+
 use std::fmt::{self, Debug};
 use std::ops::{ControlFlow, Range};
 
@@ -214,6 +216,7 @@ where
     }
 }
 
+#[derive(Debug)]
 enum SearchResult<I> {
     Lhs { offset: I },
     Value { range: Range<I>, offset_in_range: I },
@@ -733,47 +736,48 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
         let node_lhs_size = range.start;
         let node_rhs_size = original_size.sub_left(range.end);
 
-        let (this_lhs, this_rhs) = node.take_value().split_at(offset_in_range);
-        let lhs_size = offset_in_range;
-        let rhs_size = range.end.sub_left(offset_in_range); // original_size.sub_left(node_lhs_size).sub_left(lhs_size);
+        let (split_lhs, split_rhs) = node.take_value().split_at(offset_in_range);
+        let split_lhs_size = offset_in_range;
+        let split_rhs_size = range.end.sub_left(range.start).sub_left(offset_in_range);
 
         let replacement: S;
         let replacement_size: I;
         let to_insert: Option<(InsertionValue<I, S>, Option<InsertionValue<I, S>>)>;
 
         // Try joining `slice` to lhs:
-        match this_lhs.try_join(self.fst_value.slice) {
+        match split_lhs.try_join(self.fst_value.slice) {
             Ok(new_value) => {
                 // Joined with LHS. Try to re-join with RHS.
-                match new_value.try_join(this_rhs) {
+                match new_value.try_join(split_rhs) {
                     Ok(final_value) => {
                         // Successfully joined all three pieces. Nothing left to do.
                         replacement = final_value;
                         replacement_size =
-                            lhs_size.add_right(self.fst_value.size).add_right(rhs_size);
+                            split_lhs_size.add_right(self.fst_value.size).add_right(split_rhs_size);
                         to_insert = None;
                     }
                     Err((lhs, rhs)) => {
                         // Joined LHS+slice but not RHS. We'll have to re-insert it.
                         replacement = lhs;
-                        replacement_size = lhs_size.add_right(self.fst_value.size);
-                        to_insert = Some((InsertionValue { slice: rhs, size: rhs_size }, None));
+                        replacement_size = split_lhs_size.add_right(self.fst_value.size);
+                        to_insert =
+                            Some((InsertionValue { slice: rhs, size: split_rhs_size }, None));
                     }
                 }
             }
             Err((lhs, slice)) => {
                 // Couldn't join with LHS. Try joining with RHS.
                 replacement = lhs;
-                replacement_size = lhs_size;
+                replacement_size = split_lhs_size;
 
-                match slice.try_join(this_rhs) {
+                match slice.try_join(split_rhs) {
                     Ok(new_value) => {
                         // Joined slice+RHS but not with LHS. We'll have to re-insert
                         // slice+RHS.
                         to_insert = Some((
                             InsertionValue {
                                 slice: new_value,
-                                size: self.fst_value.size.add_right(rhs_size),
+                                size: self.fst_value.size.add_right(split_rhs_size),
                             },
                             None,
                         ));
@@ -781,7 +785,7 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
                     Err((slice, rhs)) => {
                         to_insert = Some((
                             InsertionValue { slice, size: self.fst_value.size },
-                            Some(InsertionValue { slice: rhs, size: rhs_size }),
+                            Some(InsertionValue { slice: rhs, size: split_rhs_size }),
                         ));
                     }
                 }

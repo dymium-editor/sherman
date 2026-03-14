@@ -107,9 +107,9 @@ where
             .map(|(ptr, side)| (DebugHex(ptr.as_ptr().addr()), side));
         s.field("parent", &format_args!("{parent:?}"));
         s.field("subtree_size", self.inner.get::<f![B::subtree_size]>());
-        s.field("value", &format_args!("{:?}", self.inner.get::<f![B::value]>()));
         s.field("height", self.inner.get::<f![B::height]>());
         s.field("lhs", self.inner.get::<f![B::lhs]>());
+        s.field("value", &format_args!("{:?}", self.inner.get::<f![B::value]>()));
         s.field("rhs", self.inner.get::<f![B::rhs]>());
         s.finish()
     }

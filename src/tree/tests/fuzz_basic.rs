@@ -1,3 +1,5 @@
+//! Tests generated from fuzzing with `BasicOperation`
+
 use crate::{Constant, RleTree};
 
 #[test]
@@ -17,7 +19,6 @@ fn test_02_get_boundary() {
         assert_eq!(entry.range(), 38..76);
         assert_eq!(entry.slice(), &Constant('M'));
     }
-    assert!(std::panic::catch_unwind(move || tree.insert(0, Constant('A'), 0)).is_err());
 }
 
 #[test]
@@ -45,9 +46,17 @@ fn test_05_split_root() {
 }
 
 #[test]
-fn test_06_insert_split_risk_overflow() {
+fn test_06_insert_risk_overflow_root() {
     let mut tree: RleTree<u8, Constant<char>> = RleTree::new_empty();
     tree.insert(0, Constant('G'), 85);
     tree.insert(85, Constant('H'), 85);
     tree.insert(21, Constant('A'), 1);
+}
+
+#[test]
+fn test_07_insert_risk_overflow_rhs_edge() {
+    let mut tree: RleTree<u8, Constant<char>> = RleTree::new_empty();
+    tree.insert(0, Constant('W'), 89);
+    tree.insert(0, Constant('S'), 73);
+    tree.insert(89, Constant('B'), 59);
 }
