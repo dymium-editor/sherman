@@ -60,3 +60,16 @@ fn test_07_insert_risk_overflow_rhs_edge() {
     tree.insert(0, Constant('S'), 73);
     tree.insert(89, Constant('B'), 59);
 }
+
+#[test]
+fn test_08_split_split_get_boundary() {
+    let mut tree: RleTree<u8, Constant<char>> = RleTree::new_empty();
+    tree.insert(0, Constant('B'), 6);
+    tree.insert(1, Constant('T'), 167);
+    tree.insert(1, Constant('A'), 44);
+    {
+        let entry = tree.get(0);
+        assert_eq!(entry.range(), 0..1);
+        assert_eq!(entry.slice(), &Constant('B'));
+    }
+}

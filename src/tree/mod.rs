@@ -228,7 +228,7 @@ fn search_step<I: Index, S>(node: node::HandleImmut<I, S>, target: I) -> SearchR
 
     if target < value_range.start {
         SearchResult::Lhs { offset: target }
-    } else if target >= value_range.end {
+    } else if target > value_range.end {
         SearchResult::Rhs { offset: target.sub_left(value_range.end) }
     } else {
         SearchResult::Value {
@@ -414,7 +414,7 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
         // Couldn't join; recurse into the child or insert a new one.
         match node.into_lhs() {
             // Recurse into LHS child:
-            Ok(child) => (child, ControlFlow::Continue(Self { target: I::ZERO, ..self })),
+            Ok(child) => (child, ControlFlow::Continue(Self { target: self.target, ..self })),
             // No LHS, insert a new one:
             Err(n) => {
                 let mut new_lhs =
