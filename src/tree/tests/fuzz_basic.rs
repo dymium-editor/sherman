@@ -35,3 +35,21 @@ fn test_04_boundary_insert_repeat_rotate_left_right() {
     tree.insert(37, Constant('L'), 37);
     tree.insert(37, Constant('A'), 38);
 }
+
+#[test]
+fn test_05_split_root() {
+    let mut tree: RleTree<u8, Constant<char>> = RleTree::new_empty();
+    tree.insert(0, Constant('C'), 8);
+    tree.insert(2, Constant('P'), 10);
+    tree.insert(10, Constant('K'), 8);
+}
+
+#[test]
+fn test_06_insert_split_risk_overflow() {
+    let mut tree: RleTree<u8, Constant<char>> = RleTree::new_empty();
+    tree.insert(0, Constant('G'), 85);
+    tree.insert(85, Constant('H'), 85);
+    enable_debug!();
+    println!("root = {:?}\n", tree.root());
+    tree.insert(21, Constant('A'), 1);
+}

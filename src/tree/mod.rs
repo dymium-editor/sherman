@@ -230,13 +230,24 @@ fn search_step<I: Index, S>(node: node::HandleImmut<I, S>, target: I) -> SearchR
     }
 }
 
-#[derive(Debug)]
 struct DownwardInsertState<I, S> {
     target: I,
     fst_value: InsertionValue<I, S>,
     snd_value: Option<InsertionValue<I, S>>,
     allow_joining: bool,
     already_split_once: bool,
+}
+
+impl<I: Debug, S: Debug> Debug for DownwardInsertState<I, S> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let mut s = f.debug_struct("DownwardInsertState");
+        s.field("target", &self.target);
+        s.field("fst_value", &format_args!("{:?}", self.fst_value));
+        s.field("snd_value", &format_args!("{:?}", self.snd_value));
+        s.field("allow_joining", &self.allow_joining);
+        s.field("already_split_once", &self.already_split_once);
+        s.finish()
+    }
 }
 
 #[derive(Debug)]
@@ -399,6 +410,7 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
                         .borrow_mut()
                         .insert_rhs(node::NodeHandle::alloc_new(snd_value.slice, snd_value.size));
                     new_lhs.set_subtree_size(self.fst_value.size.add_right(snd_value.size));
+                    new_lhs = fix::fix_owned(new_lhs);
                 }
 
                 let child = n.insert_lhs(new_lhs);
