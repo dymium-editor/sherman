@@ -76,8 +76,6 @@ pub use tree::RleTree;
 pub struct Constant<T>(pub T);
 
 impl<Idx, T: Clone + PartialEq> Slice<Idx> for Constant<T> {
-    const MAY_JOIN: bool = true;
-
     fn split_at(self, _idx: Idx) -> (Self, Self) {
         (self.clone(), self)
     }

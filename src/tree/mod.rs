@@ -203,7 +203,12 @@ where
             }
         };
 
-        run_insert(root.handle.borrow_mut(), DownwardInsertState::new(idx, slice, size));
+        run_insert(
+            root.handle.borrow_mut(),
+            None,
+            false,
+            DownwardInsertState::new(idx, slice, size),
+        );
         root.handle = fix::fix_owned(root.handle);
         self.root = Some(root);
     }
@@ -267,6 +272,8 @@ struct UpwardInsertState<I> {
 /// Upward traversal will terminate at `root`, and `root`'s subtree size will be updated to match.
 fn run_insert<'t, I: Index, S: Slice<I>>(
     root: node::HandleMut<'t, I, S>,
+    root_subtree_size: Option<I>,
+    mut force_edge_rhs: bool,
     state: DownwardInsertState<I, S>,
 ) -> node::HandleMut<'t, I, S> {
     let root_addr = root.addr();
@@ -275,24 +282,29 @@ fn run_insert<'t, I: Index, S: Slice<I>>(
     let mut node = root;
 
     let mut up_state = loop {
-        match down_state.step(node) {
-            (n, ControlFlow::Continue(s)) => {
-                node = n;
-                down_state = s;
-            }
-            (n, ControlFlow::Break(up_state)) => {
-                node = n;
-                break up_state;
-            }
+        let (n, cf) = if force_edge_rhs {
+            force_edge_rhs = false;
+            down_state.step_edge_rhs(node)
+        } else {
+            down_state.step(node)
+        };
+        node = n;
+        match cf {
+            ControlFlow::Continue(s) => down_state = s,
+            ControlFlow::Break(up_state) => break up_state,
         }
     };
 
     while node.addr() != root_addr {
-        assert!(node.parent_addr().is_some());
+        let parent_addr = node.parent_addr().expect("parent addr should be Some(_)");
 
         node = fix::fix_mut(node);
 
-        (node, up_state) = up_state.step(node);
+        let override_size = match parent_addr == root_addr {
+            true => root_subtree_size,
+            false => None,
+        };
+        (node, up_state) = up_state.step(node, override_size);
     }
 
     if node.parent_addr().is_some() {
@@ -355,7 +367,7 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
     ) -> (node::HandleMut<I, S>, ControlFlow<UpwardInsertState<I>, Self>) {
         // Target is on the edge of this node and LHS subtree; try joining the slice with this
         // node.
-        if S::MAY_JOIN && self.allow_joining {
+        if self.allow_joining {
             debug_assert!(self.snd_value.is_none());
 
             match self.fst_value.slice.try_join(node.take_value()) {
@@ -428,7 +440,7 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
     ) -> (node::HandleMut<I, S>, ControlFlow<UpwardInsertState<I>, Self>) {
         // Target is on the edge of this node and RHS subtree; try joining the slice
         // with this node.
-        if S::MAY_JOIN && self.allow_joining {
+        if self.allow_joining {
             debug_assert!(self.snd_value.is_none());
 
             match node.take_value().try_join(self.fst_value.slice) {
@@ -717,81 +729,79 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
             crate::panic_internal_error_or_bad_index::<I>("would double-split on insert");
         }
 
-        let original_size = range.end.sub_left(range.start);
+        let original_size = node.subtree_size();
         let node_lhs_size = range.start;
         let node_rhs_size = original_size.sub_left(range.end);
 
         let (this_lhs, this_rhs) = node.take_value().split_at(offset_in_range);
         let lhs_size = offset_in_range;
-        let rhs_size = original_size.sub_left(lhs_size);
+        let rhs_size = range.end.sub_left(offset_in_range); // original_size.sub_left(node_lhs_size).sub_left(lhs_size);
 
         let replacement: S;
         let replacement_size: I;
         let to_insert: Option<(InsertionValue<I, S>, Option<InsertionValue<I, S>>)>;
 
         // Try joining `slice` to lhs:
-        if S::MAY_JOIN {
-            match this_lhs.try_join(self.fst_value.slice) {
-                Ok(new_value) => {
-                    // Joined with LHS. Try to re-join with RHS.
-                    match new_value.try_join(this_rhs) {
-                        Ok(final_value) => {
-                            // Successfully joined all three pieces. Nothing left to do.
-                            replacement = final_value;
-                            replacement_size =
-                                lhs_size.add_right(self.fst_value.size).add_right(rhs_size);
-                            to_insert = None;
-                        }
-                        Err((lhs, rhs)) => {
-                            // Joined LHS+slice but not RHS. We'll have to re-insert it.
-                            replacement = lhs;
-                            replacement_size = lhs_size.add_right(self.fst_value.size);
-                            to_insert = Some((InsertionValue { slice: rhs, size: rhs_size }, None));
-                        }
+        match this_lhs.try_join(self.fst_value.slice) {
+            Ok(new_value) => {
+                // Joined with LHS. Try to re-join with RHS.
+                match new_value.try_join(this_rhs) {
+                    Ok(final_value) => {
+                        // Successfully joined all three pieces. Nothing left to do.
+                        replacement = final_value;
+                        replacement_size =
+                            lhs_size.add_right(self.fst_value.size).add_right(rhs_size);
+                        to_insert = None;
                     }
-                }
-                Err((lhs, slice)) => {
-                    // Couldn't join with LHS. Try joining with RHS.
-                    replacement = lhs;
-                    replacement_size = lhs_size;
-
-                    match slice.try_join(this_rhs) {
-                        Ok(new_value) => {
-                            // Joined slice+RHS but not with LHS. We'll have to re-insert
-                            // slice+RHS.
-                            to_insert = Some((
-                                InsertionValue {
-                                    slice: new_value,
-                                    size: self.fst_value.size.add_right(rhs_size),
-                                },
-                                None,
-                            ));
-                        }
-                        Err((slice, rhs)) => {
-                            to_insert = Some((
-                                InsertionValue { slice, size: self.fst_value.size },
-                                Some(InsertionValue { slice: rhs, size: rhs_size }),
-                            ));
-                        }
+                    Err((lhs, rhs)) => {
+                        // Joined LHS+slice but not RHS. We'll have to re-insert it.
+                        replacement = lhs;
+                        replacement_size = lhs_size.add_right(self.fst_value.size);
+                        to_insert = Some((InsertionValue { slice: rhs, size: rhs_size }, None));
                     }
                 }
             }
-        } else {
-            // Joining was disallowed
-            replacement = this_lhs;
-            replacement_size = lhs_size;
-            to_insert =
-                Some((self.fst_value, Some(InsertionValue { slice: this_rhs, size: rhs_size })));
+            Err((lhs, slice)) => {
+                // Couldn't join with LHS. Try joining with RHS.
+                replacement = lhs;
+                replacement_size = lhs_size;
+
+                match slice.try_join(this_rhs) {
+                    Ok(new_value) => {
+                        // Joined slice+RHS but not with LHS. We'll have to re-insert
+                        // slice+RHS.
+                        to_insert = Some((
+                            InsertionValue {
+                                slice: new_value,
+                                size: self.fst_value.size.add_right(rhs_size),
+                            },
+                            None,
+                        ));
+                    }
+                    Err((slice, rhs)) => {
+                        to_insert = Some((
+                            InsertionValue { slice, size: self.fst_value.size },
+                            Some(InsertionValue { slice: rhs, size: rhs_size }),
+                        ));
+                    }
+                }
+            }
         }
 
         // Put everything back, maybe continue inserting.
         node.set_value(replacement);
 
         let old_subtree_size = original_size;
-        // Note: If we still have values to insert, `new_subtree_size` will be incorrect - for now.
-        // But we need to set the value accurately based on what's *currently* in the tree, so that
-        // `run_insert` will correctly set `subtree_size` AFTER adding the values to insert.
-        let new_subtree_size = node_lhs_size.add_right(replacement_size).add_right(node_rhs_size);
+        let insertion_size = match &to_insert {
+            None => I::ZERO,
+            Some((fst_value, None)) => fst_value.size,
+            Some((fst_value, Some(snd_value))) => fst_value.size.add_right(snd_value.size),
+        };
+
+        let new_subtree_size = node_lhs_size
+            .add_right(replacement_size)
+            .add_right(insertion_size)
+            .add_right(node_rhs_size);
         node.set_subtree_size(new_subtree_size);
 
         if let Some((fst_value, snd_value)) = to_insert {
@@ -800,8 +810,10 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
             // `run_insert` will stop at this node.
             node = run_insert(
                 node,
+                Some(new_subtree_size),
+                true,
                 DownwardInsertState {
-                    target: new_subtree_size,
+                    target: new_subtree_size.sub_right(node_rhs_size),
                     fst_value,
                     snd_value,
                     allow_joining: false, // already checked joining above.
@@ -815,7 +827,11 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
 }
 
 impl<I: Index> UpwardInsertState<I> {
-    fn step<S: Slice<I>>(self, node: node::HandleMut<I, S>) -> (node::HandleMut<I, S>, Self) {
+    fn step<S: Slice<I>>(
+        self,
+        node: node::HandleMut<I, S>,
+        override_parent_subtree_size: Option<I>,
+    ) -> (node::HandleMut<I, S>, Self) {
         let lower_old_subtree_size = self.old_size;
         let lower_new_subtree_size = node.subtree_size();
         let lower_addr = node.addr();
@@ -829,9 +845,11 @@ impl<I: Index> UpwardInsertState<I> {
                 assert_eq!(parent.borrow().into_lhs().map(|n| n.addr()), Some(lower_addr));
 
                 let old_parent_size = parent.subtree_size();
-                let new_parent_size = old_parent_size
-                    .sub_left(lower_old_subtree_size)
-                    .add_left(lower_new_subtree_size);
+                let new_parent_size = override_parent_subtree_size.unwrap_or_else(|| {
+                    old_parent_size
+                        .sub_left(lower_old_subtree_size)
+                        .add_left(lower_new_subtree_size)
+                });
                 parent.set_subtree_size(new_parent_size);
 
                 (parent, UpwardInsertState { old_size: old_parent_size })
@@ -840,9 +858,11 @@ impl<I: Index> UpwardInsertState<I> {
                 assert_eq!(parent.borrow().into_rhs().map(|n| n.addr()), Some(lower_addr));
 
                 let old_parent_size = parent.subtree_size();
-                let new_parent_size = old_parent_size
-                    .sub_right(lower_old_subtree_size)
-                    .add_right(lower_new_subtree_size);
+                let new_parent_size = override_parent_subtree_size.unwrap_or_else(|| {
+                    old_parent_size
+                        .sub_right(lower_old_subtree_size)
+                        .add_right(lower_new_subtree_size)
+                });
                 parent.set_subtree_size(new_parent_size);
 
                 (parent, UpwardInsertState { old_size: old_parent_size })

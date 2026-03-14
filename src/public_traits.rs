@@ -46,12 +46,6 @@ pub trait Index: Debug + Copy + Ord + DirectionalAdd + DirectionalSub {
 ///
 /// [`RleTree`]: crate::RleTree
 pub trait Slice<Idx>: Sized {
-    /// Optimization: If false, `try_join` will never be attempted, which allows [`RleTree`]
-    /// operations to skip somewhat-costly
-    ///
-    /// [`RleTree`]: crate::RleTree
-    const MAY_JOIN: bool;
-
     /// Splits the slice at given index, `self[..idx]` and `self[idx..]`.
     /// It can be assumed that the index is non-zero and less than the length of the slice, though
     /// you shouldn't rely upon this for unsafe code.
@@ -67,19 +61,17 @@ pub trait Slice<Idx>: Sized {
 
     /// Attempts to join two slices into one, returning `Ok(joined)` or `Err((self, other))`
     ///
-    /// This will *never* be called unless `MAY_JOIN` is `true`. The default implementation always
-    /// errors (i.e. never successfully joins).
-    ///
-    /// Additionally, if `MAY_JOIN` is true, this function will *always* be called whenever the
-    /// slice on either side of this one changes -- but only at most once. In general, we assume
-    /// that joining means there's *some* level of equality between slices, but that it may depend
-    /// on position. So the equality should be transitive if the ordering of slices isn't changed:
-    /// if `x.try_join(y)` succeeds but `y.try_join(z)` doesn't, then `x.try_join(y).try_join(z)`
-    /// shouldn't, either. However it could still be the case that `z.try_join(x.try_join(y))`
-    /// succeeds.
+    /// This function will *always* be called whenever the slice on either side of this one
+    /// changes, at most once. In general, we assume that joining means there's *some* level of
+    /// equality between slices, but that it may depend on position. So the equality should be
+    /// transitive if the ordering of slices isn't changed: if `x.try_join(y)` succeeds but
+    /// `y.try_join(z)` doesn't, then `x.try_join(y).try_join(z)` shouldn't, either. However it
+    /// could still be the case that `z.try_join(x.try_join(y))` succeeds.
     ///
     /// Any calls to this function will have `self` at a position immediately less than `other`, in
     /// order to uphold this notion of positions.
+    ///
+    /// The default implementation always errors (i.e. never successfully joins).
     fn try_join(self, other: Self) -> Result<Self, (Self, Self)> {
         Err((self, other))
     }

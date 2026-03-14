@@ -49,7 +49,5 @@ fn test_06_insert_split_risk_overflow() {
     let mut tree: RleTree<u8, Constant<char>> = RleTree::new_empty();
     tree.insert(0, Constant('G'), 85);
     tree.insert(85, Constant('H'), 85);
-    enable_debug!();
-    println!("root = {:?}\n", tree.root());
     tree.insert(21, Constant('A'), 1);
 }
