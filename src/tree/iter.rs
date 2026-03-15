@@ -95,6 +95,11 @@ where
         }
 
         let root = self.root.as_ref()?;
+        // Special case: skip search if we have an empty range at the start of the tree
+        if matches!(self.end, EndBound::Excluded(i) if i == I::ZERO) {
+            return None;
+        }
+
         let (node, range, offset_in_range) = super::search(root.reborrow(), self.end);
 
         let self_end = match self.end {

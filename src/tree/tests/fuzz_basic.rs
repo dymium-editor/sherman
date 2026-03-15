@@ -115,3 +115,13 @@ fn test_12_iter_end_edge_empty() {
         assert!(iter.next().is_none());
     }
 }
+
+#[test]
+fn test_13_iter_start_edge_empty() {
+    let mut tree: RleTree<u8, Constant<char>> = RleTree::new_empty();
+    tree.insert(0, Constant('Q'), 90);
+    {
+        let mut iter = tree.iter(0..0);
+        assert!(iter.next_back().is_none());
+    }
+}
