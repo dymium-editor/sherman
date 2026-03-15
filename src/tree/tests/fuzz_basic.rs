@@ -85,3 +85,23 @@ fn test_09_get_rhs_edge() {
         assert_eq!(entry.slice(), &Constant('B'));
     }
 }
+
+#[test]
+fn test_10_empty_iter() {
+    let tree: RleTree<u8, Constant<char>> = RleTree::new_empty();
+    let _iter = tree.iter(..);
+}
+
+#[test]
+fn test_11_iter_full_single_back() {
+    let mut tree: RleTree<u8, Constant<char>> = RleTree::new_empty();
+    tree.insert(0, Constant('V'), 78);
+    {
+        let mut iter = tree.iter(..);
+        {
+            let item = iter.next_back().unwrap();
+            assert_eq!(item.range(), 0..78);
+            assert_eq!(item.slice(), &Constant('V'));
+        }
+    }
+}

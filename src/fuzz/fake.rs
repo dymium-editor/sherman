@@ -48,6 +48,47 @@ impl<I: Index, S: Slice<I>> Fake<I, S> {
         (start..end, self.runs[idx].1.as_ref().unwrap())
     }
 
+    pub fn iter(&self, range: impl std::ops::RangeBounds<I>) -> FakeIter<'_, I, S> {
+        use std::ops::Bound;
+
+        let (start_pos, front_idx) = match range.start_bound() {
+            Bound::Unbounded => (I::ZERO, 0),
+            Bound::Excluded(_) => panic!("excluded start bound disallowed"),
+            Bound::Included(&i) => {
+                if i > self.size() {
+                    panic!("start index out of bounds");
+                }
+
+                let idx = match self.runs.binary_search_by_key(&i, |(i, ..)| *i) {
+                    Ok(i) => i + 1,
+                    Err(i) => i,
+                };
+
+                (i, idx)
+            }
+        };
+
+        let back_idx = match range.end_bound() {
+            Bound::Included(&idx) if idx >= self.size() || idx < start_pos => {
+                panic!("invalid range or end index out of bounds")
+            }
+            Bound::Excluded(&idx) if idx > self.size() || idx < start_pos => {
+                panic!("invalid range or end index out of bounds")
+            }
+
+            Bound::Unbounded => self.runs.len(),
+            Bound::Included(i) => match self.runs.binary_search_by_key(i, |(i, ..)| *i) {
+                Ok(i) => i + 2,
+                Err(i) => i + 1,
+            },
+            Bound::Excluded(i) => match self.runs.binary_search_by_key(i, |(i, ..)| *i) {
+                Ok(i) | Err(i) => i + 1,
+            },
+        };
+
+        FakeIter { runs: &self.runs, front_idx, back_idx }
+    }
+
     pub fn insert(&mut self, index: I, mut slice: S, size: I) {
         if size == I::ZERO {
             panic!("invalid insertion size");
@@ -136,5 +177,64 @@ impl<I: Index, S: Slice<I>> Fake<I, S> {
         for (i, ..) in self.runs.get_mut(idx + 1..).unwrap_or(&mut []) {
             *i = i.add_left(diff);
         }
+    }
+}
+
+pub struct FakeIter<'a, I, S> {
+    runs: &'a [(I, Option<S>)],
+    front_idx: usize,
+    back_idx: usize,
+}
+
+impl<'a, I, S> Iterator for FakeIter<'a, I, S>
+where
+    I: Index,
+{
+    type Item = (Range<I>, &'a S);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.front_idx >= self.back_idx {
+            return None;
+        }
+
+        let start = self.front_idx.checked_sub(1).map(|i| self.runs[i].0).unwrap_or(I::ZERO);
+
+        let (end, slice) = self.runs.get(self.front_idx)?;
+        self.front_idx += 1;
+
+        Some((start..*end, slice.as_ref().unwrap()))
+    }
+}
+
+impl<'a, I, S> DoubleEndedIterator for FakeIter<'a, I, S>
+where
+    I: Index,
+{
+    fn next_back(&mut self) -> Option<Self::Item> {
+        if self.front_idx >= self.back_idx {
+            return None;
+        }
+
+        self.back_idx -= 1;
+        let start = self.back_idx.checked_sub(1).map(|i| self.runs[i].0).unwrap_or(I::ZERO);
+
+        let (end, slice) = self.runs.get(self.back_idx)?;
+
+        Some((start..*end, slice.as_ref().unwrap()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Fake;
+    use crate::Constant;
+
+    #[test]
+    fn test_empty_iters() {
+        let fake: Fake<u8, Constant<char>> = Fake::new_empty();
+        assert_eq!(fake.iter(..).count(), 0);
+        assert_eq!(fake.iter(0..).count(), 0);
+        assert_eq!(fake.iter(..0).count(), 0);
+        assert_eq!(fake.iter(0..0).count(), 0);
     }
 }

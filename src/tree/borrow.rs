@@ -184,6 +184,11 @@ impl<B: Borrow> Borrowed<B> {
 }
 
 impl<'a, T> Borrowed<Immut<'a, T>> {
+    pub fn reborrow(&self) -> Self {
+        // SAFETY: Pointer is already valid because of the existence of `self`
+        unsafe { Self::from_non_null(self.ptr) }
+    }
+
     pub fn into_ref<F>(&self) -> F::Ref
     where
         F: Field<'a, Container = T>,

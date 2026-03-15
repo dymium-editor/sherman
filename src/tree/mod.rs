@@ -10,11 +10,13 @@ mod borrow;
 
 mod entry;
 mod fix;
+mod iter;
 mod node;
 
 pub(crate) mod tests;
 
-use entry::SliceEntry;
+pub use entry::SliceEntry;
+pub use iter::Iter;
 use node::Side;
 
 // @commit-fail redo these docs
@@ -100,8 +102,6 @@ where
         RleTree { root: Some(root) }
     }
 
-    #[cfg(test)]
-    #[allow(dead_code)]
     fn root(&self) -> Option<&Root<I, S>> {
         self.root.as_ref()
     }
@@ -144,41 +144,38 @@ where
             );
         };
 
-        let mut node = root.handle.borrow();
-        let mut target = idx;
+        let (node, range, offset_in_range) =
+            search(root.handle.borrow(), SearchBound::Included(idx));
 
-        let (range, offset_in_range) = loop {
-            match search_step(node.borrow(), target) {
-                SearchResult::Lhs { offset } => {
-                    target = offset;
-                    node = node
-                        .into_lhs()
-                        .expect("`SearchResult::Lhs` implies the left-hand child should exist");
-                }
-                SearchResult::RhsEdge => {
-                    target = I::ZERO;
-                    node = node.into_rhs().expect(
-                        "`SearchResult::RhsEdge` implies the right-hand child should exist",
-                    );
-                }
-                SearchResult::Rhs { offset } => {
-                    target = offset;
-                    node = node
-                        .into_rhs()
-                        .expect("`SearchResult::Rhs` implies the right-hand child should exist");
-                }
-                SearchResult::LhsEdge => break (node.value_range(), I::ZERO),
-                SearchResult::Value { range, offset_in_range } => break (range, offset_in_range),
-            }
-        };
-
-        // Found the value!
-        // To reconstruct the *absolute* positions of the slice, we can subtract
-        // offset from idx to get the absolute position of range.start (and therefore
-        // range.end as well.
+        // To reconstruct the absolute positions of the slice, we can subtract offset from idx to
+        // get the absolute position of range.start (and therefore range.end as well.
         let abs_start = idx.sub_right(offset_in_range);
         let abs_end = abs_start.add_right(range.end.sub_left(range.start));
         SliceEntry { range: abs_start..abs_end, slice: node }
+    }
+
+    /// Returns an iterator yielding all slices that intersect with the range
+    ///
+    /// The iterator is double-ended and produces [`SliceEntry`]s. Each entry's range *may* have
+    /// one or both bounds outside `range`, but *will* contain some overlap with the requested
+    /// `range`.
+    ///
+    /// ## Panics
+    ///
+    /// This method panics if any of the following are true:
+    ///
+    /// 1. The start of the range is greater than its end (or, greater than or equal, if the end is
+    ///    exclusive);
+    /// 2. The start of the range is less than `I::ZERO`;
+    /// 3. The end of the range is greater than `self.size()` if `Excluded`, or greater than or
+    ///    equal to `self.size()` if `Included`.
+    ///
+    /// ALSO: This method will panic if the start bound is `Excluded`.
+    pub fn iter<R>(&self, range: R) -> Iter<'_, I, S>
+    where
+        R: std::ops::RangeBounds<I>,
+    {
+        Iter::new(&self, range.start_bound(), range.end_bound())
     }
 
     /// Inserts the slice at position `idx`, shifting all later entries by `size`
@@ -248,6 +245,64 @@ fn search_step<I: Index, S>(node: node::HandleImmut<I, S>, target: I) -> SearchR
             range: value_range,
         }
     }
+}
+
+#[derive(Debug, Copy, Clone)]
+enum SearchBound<I> {
+    Included(I),
+    Excluded(I),
+}
+
+fn search<I: Index, S>(
+    root: node::HandleImmut<'_, I, S>,
+    target: SearchBound<I>,
+) -> (node::HandleImmut<'_, I, S>, Range<I>, I) {
+    let mut node = root;
+    let (mut target, exclusive) = match target {
+        SearchBound::Included(i) => (i, false),
+        SearchBound::Excluded(i) => (i, true),
+    };
+
+    let (range, offset_in_range) = loop {
+        match search_step(node.borrow(), target) {
+            SearchResult::Lhs { offset } => {
+                target = offset;
+                node = match node.into_lhs() {
+                    Some(n) => n,
+                    None => crate::panic_internal_error_or_bad_index::<I>(
+                        "`SearchResult::Lhs` implies the left-hand child should exist",
+                    ),
+                };
+            }
+            SearchResult::RhsEdge => {
+                if exclusive {
+                    let r = node.value_range();
+                    break (r.clone(), r.end);
+                } else {
+                    target = I::ZERO;
+                    node = match node.into_rhs() {
+                        Some(n) => n,
+                        None => crate::panic_internal_error_or_bad_index::<I>(
+                            "`SearchResult::RhsEdge` implies the right-hand child should exist",
+                        ),
+                    };
+                }
+            }
+            SearchResult::Rhs { offset } => {
+                target = offset;
+                node = match node.into_rhs() {
+                    Some(n) => n,
+                    None => crate::panic_internal_error_or_bad_index::<I>(
+                        "`SearchResult::Rhs` implies the right-hand child should exist",
+                    ),
+                };
+            }
+            SearchResult::LhsEdge => break (node.value_range(), I::ZERO),
+            SearchResult::Value { range, offset_in_range } => break (range, offset_in_range),
+        }
+    };
+
+    (node, range, offset_in_range)
 }
 
 struct DownwardInsertState<I, S> {

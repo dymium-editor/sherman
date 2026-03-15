@@ -59,7 +59,7 @@ mod public_traits;
 mod tree;
 
 pub use public_traits::{DirectionalAdd, DirectionalSub, Index, Slice, Zero};
-pub use tree::RleTree;
+pub use tree::{Iter, RleTree, SliceEntry};
 
 /// Helper implementation of [`Slice`] for *actual* run-length encoding - a run of identical values
 ///

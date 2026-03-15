@@ -14,8 +14,8 @@ fuzz-list:
 
 # Clean the fuzz corpus
 fuzz-clean-corpus:
-    rm -r fuzz/corpus/
-    rm -r fuzz/artifacts/
+    rm -rf fuzz/corpus/
+    rm -rf fuzz/artifacts/
 
 # Run a fuzzing target
 fuzz target:

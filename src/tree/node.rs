@@ -338,6 +338,11 @@ impl<B: NodeBorrow> NodeHandle<B> {
 }
 
 impl<'t, I, S> NodeHandle<borrow::Immut<'t, Node<I, S>>> {
+    /// Copies the `NodeHandle`
+    pub(super) fn reborrow(&self) -> Self {
+        NodeHandle { inner: self.inner.reborrow() }
+    }
+
     /// Returns a reference to the slice value for the node
     ///
     /// # Panics
@@ -351,6 +356,17 @@ impl<'t, I, S> NodeHandle<borrow::Immut<'t, Node<I, S>>> {
                 "internal error: `value` should not be None except during temporary operations"
             ),
         }
+    }
+
+    /// Produces a reference to this node's parent
+    pub(super) fn into_parent(self) -> Option<(Self, Side)> {
+        let parent = self.inner.into_ref::<f![Node::parent]>();
+        parent.map(|(p, side)| {
+            // SAFETY: `p` is properly aligned (like all node pointers are), and the invariants of
+            // the tree guarantee that `p` still points to a valid `Node`.
+            let inner = unsafe { <Borrowed<borrow::Immut<_>>>::from_non_null(p) };
+            (NodeHandle { inner }, side)
+        })
     }
 
     /// Returns an immutable handle to the left-hand child

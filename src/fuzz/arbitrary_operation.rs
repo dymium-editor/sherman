@@ -1,6 +1,6 @@
 use arbitrary::{Arbitrary, Unstructured};
 use std::fmt::{self, Debug};
-use std::ops::Range;
+use std::ops::{Bound, Range};
 use std::panic::{self, RefUnwindSafe, UnwindSafe};
 
 use crate::fuzz::{Fake, RustExpr, RustType};
@@ -142,6 +142,14 @@ pub enum BasicOperation<I, S> {
         /// returned by `get()`.
         expected: Result<(Range<I>, S), ()>,
     },
+    /// `tree.iter((start, end))`
+    Iter {
+        start: Bound<I>,
+        end: Bound<I>,
+        /// If the call to `iter()` should panic, then `Err(())`; otherwise, the sequence of
+        /// operations on the iterator, and their expected results.
+        access: Result<Vec<IterOperation<I, S>>, ()>,
+    },
     /// `tree.insert(index, slice, size)`
     Insert {
         index: I,
@@ -152,6 +160,17 @@ pub enum BasicOperation<I, S> {
     },
     /// `tree.validate_balance()`
     Validate,
+}
+
+pub struct IterOperation<I, S> {
+    direction: IterDirection,
+    value: Option<(Range<I>, S)>,
+}
+
+#[derive(Arbitrary)]
+enum IterDirection {
+    Front,
+    Back,
 }
 
 impl<I, S> ArbitraryOp for BasicOperation<I, S>
@@ -182,7 +201,7 @@ where
         u: &mut Unstructured<'_>,
         mut fake: Fake<I, S>,
     ) -> arbitrary::Result<(Self, Option<Fake<I, S>>)> {
-        match u.int_in_range(0..=2)? {
+        match u.int_in_range(0..=3)? {
             // BasicOperation::Get
             0 => {
                 let index = I::arbitrary(u)?;
@@ -197,8 +216,49 @@ where
 
                 Ok((BasicOperation::Get { index, expected }, new_state))
             }
-            // BasicOperation::Insert
+            // BasicOperation::Iter
             1 => {
+                let start = match u.int_in_range(0..=1)? {
+                    0 => Bound::Unbounded,
+                    1 => Bound::Included(I::arbitrary(u)?),
+                    _ => unreachable!(),
+                };
+                let end = match u.int_in_range(0..=2)? {
+                    0 => Bound::Unbounded,
+                    1 => Bound::Included(I::arbitrary(u)?),
+                    2 => Bound::Excluded(I::arbitrary(u)?),
+                    _ => unreachable!(),
+                };
+
+                let access_directions = u.arbitrary::<Vec<IterDirection>>()?;
+                let result = expect_might_panic(move || {
+                    let mut iter = fake.iter((start, end));
+                    let mut access = Vec::new();
+                    for direction in access_directions {
+                        let v = match direction {
+                            IterDirection::Front => iter.next(),
+                            IterDirection::Back => iter.next_back(),
+                        };
+
+                        access.push(IterOperation {
+                            direction,
+                            value: v.map(|(r, s)| (r, s.clone())),
+                        });
+                    }
+                    drop(iter);
+
+                    (access, fake)
+                });
+
+                let (access, new_state) = match result {
+                    Ok((vals, fake)) => (Ok(vals), Some(fake)),
+                    Err(_) => (Err(()), None),
+                };
+
+                Ok((BasicOperation::Iter { start, end, access }, new_state))
+            }
+            // BasicOperation::Insert
+            2 => {
                 let index = I::arbitrary(u)?;
                 let slice = S::arbitrary(u)?;
                 let size = I::arbitrary(u)?;
@@ -214,7 +274,7 @@ where
 
                 Ok((BasicOperation::Insert { index, slice, size, panics }, new_state))
             }
-            2 => Ok((BasicOperation::Validate, Some(fake))),
+            3 => Ok((BasicOperation::Validate, Some(fake))),
             v => unreachable!("bad BasicOperation variant {v}"),
         }
     }
@@ -231,6 +291,26 @@ where
                 }
                 Err(()) => {
                     assert!(expect_might_panic(|| tree.get(index)).is_err());
+                    None
+                }
+            },
+            &BasicOperation::Iter { start, end, ref access } => match access {
+                Ok(seq) => {
+                    let mut iter = tree.iter((start, end));
+                    for op in seq {
+                        let item = match op.direction {
+                            IterDirection::Front => iter.next(),
+                            IterDirection::Back => iter.next_back(),
+                        };
+
+                        let actual = item.map(|entry| (entry.range(), entry.slice().clone()));
+                        assert_eq!(actual, op.value);
+                    }
+                    drop(iter);
+                    Some(tree)
+                }
+                Err(()) => {
+                    assert!(expect_might_panic(|| tree.iter((start, end))).is_err());
                     None
                 }
             },
@@ -287,6 +367,56 @@ where
                     "    assert!(std::panic::catch_unwind(|| tree.get({index})).is_err());\n",
                     index = index.display_rust_expr(),
                 )),
+            },
+            BasicOperation::Iter { start, end, access } => {
+                let range = match (start, end) {
+                    (Bound::Unbounded, Bound::Unbounded) => format_args!(".."),
+                    (Bound::Unbounded, Bound::Excluded(e)) => format_args!("..{}", e.display_rust_expr()),
+                    (Bound::Unbounded, Bound::Included(e)) => format_args!("..={}", e.display_rust_expr()),
+                    (Bound::Excluded(_), _) => unreachable!(),
+                    (Bound::Included(s), Bound::Unbounded) => format_args!("{}..", s.display_rust_expr()),
+                    (Bound::Included(s), Bound::Excluded(e)) => format_args!("{}..{}", s.display_rust_expr(), e.display_rust_expr()),
+                    (Bound::Included(s), Bound::Included(e)) => format_args!("{}..={}", s.display_rust_expr(), e.display_rust_expr()),
+                };
+                match access {
+                    Ok(seq) if seq.is_empty() => f.write_fmt(format_args!("    let _iter = tree.iter({range});\n")),
+                    Ok(seq) => {
+                        // Sample output:
+                        //
+                        //   {
+                        //       let mut iter = tree.iter({range});
+                        //       {
+                        //           let item = iter.{method}().unwrap();
+                        //           assert_eq!(item.range(), {expected_range});
+                        //           assert_eq!(item.slice(), {expected_slice});
+                        //       }
+                        //       assert!(iter.{method}().is_none());
+                        //   }
+                        f.write_str("    {\n")?;
+                        f.write_fmt(format_args!("        let mut iter = tree.iter({range});\n"))?;
+                        for op in seq {
+                            let method = match op.direction {
+                                IterDirection::Front => "next",
+                                IterDirection::Back => "next_back",
+                            };
+
+                            match &op.value {
+                                None => f.write_fmt(format_args!("        assert!(iter.{method}().is_none());\n"))?,
+                                Some((range, slice)) => {
+                                    f.write_str("        {\n")?;
+                                    f.write_fmt(format_args!("            let item = iter.{method}().unwrap();\n"))?;
+                                    f.write_fmt(format_args!("            assert_eq!(item.range(), {});\n", range.display_rust_expr()))?;
+                                    f.write_fmt(format_args!("            assert_eq!(item.slice(), &{});\n", slice.display_rust_expr()))?;
+                                    f.write_str("        }\n")?;
+                                },
+                            }
+                        }
+                        f.write_str("    }\n")
+                    },
+                    Err(()) => f.write_fmt(format_args!(
+                        "    assert!(std::panic::catch_unwind(|| tree.iter({range})).is_err());\n",
+                    )),
+                }
             },
             BasicOperation::Insert { index, slice, size, panics } => match panics {
                 false => f.write_fmt(format_args!(
