@@ -277,7 +277,7 @@ fn search<I: Index, S>(
             SearchResult::RhsEdge => {
                 if exclusive {
                     let r = node.value_range();
-                    break (r.clone(), r.end);
+                    break (r.clone(), r.end.sub_left(r.start));
                 } else {
                     target = I::ZERO;
                     node = match node.into_rhs() {
