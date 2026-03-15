@@ -76,6 +76,11 @@ where
         }
 
         let root = self.root.as_ref()?;
+        // Special case: skip search if we have an empty range at the end of the tree
+        if self.start == root.subtree_size() {
+            return None;
+        }
+
         let (node, range, offset_in_range) =
             super::search(root.reborrow(), EndBound::Included(self.start));
 

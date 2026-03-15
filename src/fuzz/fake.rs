@@ -81,8 +81,10 @@ impl<I: Index, S: Slice<I>> Fake<I, S> {
                 Ok(i) => i + 2,
                 Err(i) => i + 1,
             },
+            Bound::Excluded(&i) if i == I::ZERO => 0,
             Bound::Excluded(i) => match self.runs.binary_search_by_key(i, |(i, ..)| *i) {
-                Ok(i) | Err(i) => i + 1,
+                Ok(i) => i + 1,
+                Err(i) => i + 1,
             },
         };
 
@@ -180,6 +182,7 @@ impl<I: Index, S: Slice<I>> Fake<I, S> {
     }
 }
 
+#[derive(Debug)]
 pub struct FakeIter<'a, I, S> {
     runs: &'a [(I, Option<S>)],
     front_idx: usize,
@@ -230,11 +233,32 @@ mod tests {
     use crate::Constant;
 
     #[test]
-    fn test_empty_iters() {
-        let fake: Fake<u8, Constant<char>> = Fake::new_empty();
+    fn test_empty_iter() {
+        let mut fake: Fake<u8, Constant<char>> = Fake::new_empty();
+        // Everything valid on an empty tree should return nothing
         assert_eq!(fake.iter(..).count(), 0);
+        assert_eq!(fake.iter(..).rev().count(), 0);
         assert_eq!(fake.iter(0..).count(), 0);
+        assert_eq!(fake.iter(0..).rev().count(), 0);
         assert_eq!(fake.iter(..0).count(), 0);
+        assert_eq!(fake.iter(..0).rev().count(), 0);
         assert_eq!(fake.iter(0..0).count(), 0);
+        assert_eq!(fake.iter(0..0).rev().count(), 0);
+
+        fake.insert(0, Constant('A'), 5);
+        fake.insert(5, Constant('B'), 5);
+
+        // Iterators at an edge should be empty:
+        assert_eq!(fake.iter(..0).count(), 0);
+        assert_eq!(fake.iter(..0).rev().count(), 0);
+        assert_eq!(fake.iter(5..5).count(), 0);
+        assert_eq!(fake.iter(5..5).rev().count(), 0);
+        assert_eq!(fake.iter(10..).count(), 0);
+        assert_eq!(fake.iter(10..).rev().count(), 0);
+        // ... but they should be non-empty if they're in the middle of a value
+        assert_eq!(fake.iter(2..2).count(), 1);
+        assert_eq!(fake.iter(2..2).rev().count(), 1);
+        assert_eq!(fake.iter(7..7).count(), 1);
+        assert_eq!(fake.iter(7..7).rev().count(), 1);
     }
 }

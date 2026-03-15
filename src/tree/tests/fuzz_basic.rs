@@ -105,3 +105,13 @@ fn test_11_iter_full_single_back() {
         }
     }
 }
+
+#[test]
+fn test_12_iter_end_edge_empty() {
+    let mut tree: RleTree<u8, Constant<char>> = RleTree::new_empty();
+    tree.insert(0, Constant('V'), 25);
+    {
+        let mut iter = tree.iter(25..);
+        assert!(iter.next().is_none());
+    }
+}
