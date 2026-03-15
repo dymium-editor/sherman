@@ -4,9 +4,9 @@ use std::ops::{Bound, Range};
 
 use crate::{Index, RleTree, Slice};
 
-use super::SearchBound as EndBound;
 use super::entry::SliceEntry;
 use super::node;
+use super::{SearchBound as EndBound, Side};
 
 /// An iterator over ranges of slices and their positions in an [`RleTree`]
 pub struct Iter<'t, I, S> {
@@ -116,22 +116,22 @@ where
     ) -> Option<(Range<I>, node::HandleImmut<'t, I, S>)> {
         let next_start_idx = range.end;
 
-        // Traverse up the tree until the node has an rhs child
-        loop {
-            match node.reborrow().into_rhs() {
-                Some(n) => {
-                    node = n;
+        if let Some(rhs) = node.reborrow().into_rhs() {
+            // If this node has a right-hand child, pursue that route, traversing into the
+            // left-most transitive child of THIS node's right-hand child:
+            node = rhs;
+            while let Some(lhs) = node.reborrow().into_lhs() {
+                node = lhs;
+            }
+        } else {
+            // ... otherwise (no right-hand child), we should traverse back up the tree until we
+            // find a parent that's to the right of THIS node (i.e. this node is lhs).
+            loop {
+                let (n, side) = node.into_parent()?;
+                node = n;
+                if side == Side::Lhs {
                     break;
                 }
-                None => (node, _) = node.into_parent()?,
-            }
-        }
-
-        // From the next rhs node, find the left-most child node
-        loop {
-            match node.reborrow().into_lhs() {
-                Some(n) => node = n,
-                None => break,
             }
         }
 
@@ -147,22 +147,22 @@ where
     ) -> Option<(Range<I>, node::HandleImmut<'t, I, S>)> {
         let next_end_idx = range.start;
 
-        // Traverse up the tree until the node has an lhs child
-        loop {
-            match node.reborrow().into_lhs() {
-                Some(n) => {
-                    node = n;
+        if let Some(lhs) = node.reborrow().into_lhs() {
+            // If this node has a left-hand child, pursue that route, traversing into the
+            // right-most transitive child of THIS node's left-hand child:
+            node = lhs;
+            while let Some(rhs) = node.reborrow().into_rhs() {
+                node = rhs;
+            }
+        } else {
+            // ... otherwise (no left-hand child), we should traverse back up the tree until we
+            // find a parent that's to the left of THIS node (i.e. this node is rhs)
+            loop {
+                let (n, side) = node.into_parent()?;
+                node = n;
+                if side == Side::Rhs {
                     break;
                 }
-                None => (node, _) = node.into_parent()?,
-            }
-        }
-
-        // From the next lhs node, find the right-most child node
-        loop {
-            match node.reborrow().into_rhs() {
-                Some(n) => node = n,
-                None => break,
             }
         }
 

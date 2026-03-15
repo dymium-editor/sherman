@@ -125,3 +125,24 @@ fn test_13_iter_start_edge_empty() {
         assert!(iter.next_back().is_none());
     }
 }
+
+#[test]
+fn test_14_basic_iter_several() {
+    let mut tree: RleTree<u8, Constant<char>> = RleTree::new_empty();
+    tree.insert(0, Constant('A'), 65);
+    tree.insert(1, Constant('N'), 10);
+    {
+        let mut iter = tree.iter(..);
+        {
+            let item = iter.next().unwrap();
+            assert_eq!(item.range(), 0..1);
+            assert_eq!(item.slice(), &Constant('A'));
+        }
+        {
+            enable_debug!();
+            let item = iter.next().unwrap();
+            assert_eq!(item.range(), 1..11);
+            assert_eq!(item.slice(), &Constant('N'));
+        }
+    }
+}
