@@ -297,7 +297,19 @@ fn search<I: Index, S>(
                     ),
                 };
             }
-            SearchResult::LhsEdge => break (node.value_range(), I::ZERO),
+            SearchResult::LhsEdge => {
+                if !exclusive {
+                    break (node.value_range(), I::ZERO);
+                } else {
+                    node = match node.into_lhs() {
+                        Some(n) => n,
+                        None => crate::panic_internal_error_or_bad_index::<I>(
+                            "`SearchResult::Lhs` implies the left-hand child should exist",
+                        ),
+                    };
+                    target = node.subtree_size();
+                }
+            }
             SearchResult::Value { range, offset_in_range } => break (range, offset_in_range),
         }
     };

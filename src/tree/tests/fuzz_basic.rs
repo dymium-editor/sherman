@@ -146,3 +146,19 @@ fn test_14_basic_iter_several() {
         }
     }
 }
+
+#[test]
+fn test_15_iter_aligned_end_boundary() {
+    let mut tree: RleTree<u8, Constant<char>> = RleTree::new_empty();
+    tree.insert(0, Constant('O'), 66);
+    tree.insert(0, Constant('A'), 10);
+    println!("root = {:#?}", tree.root());
+    {
+        let mut iter = tree.iter(..10);
+        {
+            let item = iter.next_back().unwrap();
+            assert_eq!(item.range(), 0..10);
+            assert_eq!(item.slice(), &Constant('A'));
+        }
+    }
+}
