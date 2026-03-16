@@ -890,18 +890,13 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
             // Insert the new value(s) - recursion will be bounded by the check at the top of THIS
             // function, which checks that we don't perform a second split.
             // `run_insert` will stop at this node.
-            node = run_insert(
-                node,
-                Some(new_subtree_size),
-                true,
-                DownwardInsertState {
-                    target: new_subtree_size.sub_right(node_rhs_size),
-                    fst_value,
-                    snd_value,
-                    allow_joining: false, // already checked joining above.
-                    already_split_once: true,
-                },
-            );
+            node = run_insert(node, Some(new_subtree_size), true, DownwardInsertState {
+                target: new_subtree_size.sub_right(node_rhs_size),
+                fst_value,
+                snd_value,
+                allow_joining: false, // already checked joining above.
+                already_split_once: true,
+            });
         }
 
         (node, ControlFlow::Break(UpwardInsertState { old_size: old_subtree_size }))
