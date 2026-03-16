@@ -245,8 +245,6 @@ where
                             value: v.map(|(r, s)| (r, s.clone())),
                         });
                     }
-                    drop(iter);
-
                     (access, fake)
                 });
 

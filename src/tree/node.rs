@@ -350,7 +350,7 @@ impl<'t, I, S> NodeHandle<borrow::Immut<'t, Node<I, S>>> {
     /// This method panics if the slice value is not currently present, e.g. due to a prior call to
     /// [`take_value`] without a corresponding [`set_value`].
     pub(super) fn value(&self) -> &'t S {
-        match self.inner.into_ref::<f![Node::value]>() {
+        match self.inner.reborrow().into_ref::<f![Node::value]>() {
             Some(v) => v,
             None => panic!(
                 "internal error: `value` should not be None except during temporary operations"

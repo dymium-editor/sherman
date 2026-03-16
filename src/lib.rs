@@ -9,14 +9,14 @@
 //!
 //! * Values are retrieved by global index
 //! * [`RleTree`] is named such for its run-length encoding -- individual entries in the tree
-//!     represent a uniform range of indexes
+//!   represent a uniform range of indexes
 //! * Efficient "shift" operations -- the details of the run-length encoding allow new ranges to be
-//!     inserted in the middle, shifting everything after them, in O(log n) time
+//!   inserted in the middle, shifting everything after them, in O(log n) time
 //! * Slice references -- the current position and value of a prior insertion can be fetched in
-//!     O(log n) time, with relatively little overhead (*conflicts with COW*)
+//!   O(log n) time, with relatively little overhead (*conflicts with COW*)
 //! * Wait-free concurrent clone-on-write -- [`RleTree`]s can be shared across threads, with
-//!     concurrent writes cloning only the path down to the changed node(s). (*conflicts with slice
-//!     references*)
+//!   concurrent writes cloning only the path down to the changed node(s). (*conflicts with slice
+//!   references*)
 //!
 //! And of course, all of these features are zero-cost when not in use: the tree is constructed in
 //! such a way so that only the instances that actually *do* use these extra feature (like node
