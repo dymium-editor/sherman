@@ -334,20 +334,25 @@ where
 
     fn as_ref(borrow: Borrowed<Immut<'a, Self::Container>>) -> Self::Ref {
         let container_ptr = borrow.ptr.as_ptr() as *const Self::Container;
-        // SAFETY: @commit-fail
-        let field_ptr = unsafe {
-            (container_ptr as *const u8).offset(F::offset() as isize) as *const F::FieldType
-        };
-        // SAFETY: @commit-fail
-        unsafe { &*field_ptr }
+        // SAFETY: Implementors of `BorrowableField` guarantee that `F::offset()` returns the
+        // actual offset of a field with type `F::FieldType`, so validity of the original
+        // `container_ptr` implies validity of `field_ptr`. And we know it's valid for the lifetime
+        // of `Self::Ref` because `Immut<'a, ...>` represents a borrow on the container with
+        // lifetime `'a`, which carries over to borrows on the fields.
+        unsafe {
+            let field_ptr =
+                (container_ptr as *const u8).offset(F::offset() as isize) as *const F::FieldType;
+            &*field_ptr
+        }
     }
 
     fn as_mut(borrow: Borrowed<Mut<'a, Self::Container>>) -> Self::Mut {
         let container_ptr = borrow.ptr.as_ptr() as *mut Self::Container;
-        // SAFETY: @commit-fail
-        let field_ptr =
-            unsafe { (container_ptr as *mut u8).offset(F::offset() as isize) as *mut F::FieldType };
-        // SAFETY: @commit-fail
-        unsafe { &mut *field_ptr }
+        // SAFETY: Same as for `as_ref()`.
+        unsafe {
+            let field_ptr =
+                (container_ptr as *mut u8).offset(F::offset() as isize) as *mut F::FieldType;
+            &mut *field_ptr
+        }
     }
 }
