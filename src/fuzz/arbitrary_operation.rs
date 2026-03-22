@@ -1,5 +1,5 @@
 use arbitrary::{Arbitrary, Unstructured};
-use std::fmt::{self, Debug};
+use std::fmt::{self, Debug, Display};
 use std::ops::{Bound, Range};
 use std::panic::{self, RefUnwindSafe, UnwindSafe};
 
@@ -158,6 +158,24 @@ pub enum BasicOperation<I, S> {
         /// Is this insertion expected to panic?
         panics: bool,
     },
+    /// `_ = tree.remove((start, end))`
+    ///
+    /// While this does return a new `RleTree`, we intentionally don't do anything with it.
+    /// We get decent coverage from `Drain` already, and it's better to keep the state simple here.
+    Remove {
+        start: Bound<I>,
+        end: Bound<I>,
+        /// Is this removal expected to panic
+        panics: bool,
+    },
+    /// `tree.drain((start, end))`
+    Drain {
+        start: Bound<I>,
+        end: Bound<I>,
+        /// If the call to `drain()` should panic, then `Err(())`; otherwise, the sequence of
+        /// operations on the iterator, and their expected results.
+        access: Result<Vec<IterOperation<I, S>>, ()>,
+    },
     /// `tree.validate_balance()`
     Validate,
 }
@@ -171,6 +189,39 @@ pub struct IterOperation<I, S> {
 enum IterDirection {
     Front,
     Back,
+}
+
+fn format_bounds<'b, I: RustExpr>(start: &'b Bound<I>, end: &'b Bound<I>) -> impl 'b + Display {
+    struct R<'b, I>(&'b Bound<I>, &'b Bound<I>);
+    impl<'b, I: RustExpr> Display for R<'b, I> {
+        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            match (self.0, self.1) {
+                (Bound::Unbounded, Bound::Unbounded) => f.write_str(".."),
+                (Bound::Unbounded, Bound::Excluded(e)) => {
+                    f.write_fmt(format_args!("..{}", e.display_rust_expr()))
+                }
+                (Bound::Unbounded, Bound::Included(e)) => {
+                    f.write_fmt(format_args!("..={}", e.display_rust_expr()))
+                }
+                (Bound::Excluded(_), _) => unreachable!(),
+                (Bound::Included(s), Bound::Unbounded) => {
+                    f.write_fmt(format_args!("{}..", s.display_rust_expr()))
+                }
+                (Bound::Included(s), Bound::Excluded(e)) => f.write_fmt(format_args!(
+                    "{}..{}",
+                    s.display_rust_expr(),
+                    e.display_rust_expr()
+                )),
+                (Bound::Included(s), Bound::Included(e)) => f.write_fmt(format_args!(
+                    "{}..={}",
+                    s.display_rust_expr(),
+                    e.display_rust_expr()
+                )),
+            }
+        }
+    }
+
+    R(start, end)
 }
 
 impl<I, S> ArbitraryOp for BasicOperation<I, S>
@@ -201,7 +252,7 @@ where
         u: &mut Unstructured<'_>,
         mut fake: Fake<I, S>,
     ) -> arbitrary::Result<(Self, Option<Fake<I, S>>)> {
-        match u.int_in_range(0..=3)? {
+        match u.int_in_range(0..=5)? {
             // BasicOperation::Get
             0 => {
                 let index = I::arbitrary(u)?;
@@ -272,7 +323,68 @@ where
 
                 Ok((BasicOperation::Insert { index, slice, size, panics }, new_state))
             }
-            3 => Ok((BasicOperation::Validate, Some(fake))),
+            // BasicOperation::Remove
+            3 => {
+                let start = match u.int_in_range(0..=1)? {
+                    0 => Bound::Unbounded,
+                    1 => Bound::Included(I::arbitrary(u)?),
+                    _ => unreachable!(),
+                };
+                let end = match u.int_in_range(0..=1)? {
+                    0 => Bound::Unbounded,
+                    1 => Bound::Excluded(I::arbitrary(u)?),
+                    _ => unreachable!(),
+                };
+
+                let result = expect_might_panic(move || {
+                    fake.remove((start, end));
+                    fake
+                });
+
+                let (panics, new_state) = match result {
+                    Ok(fake) => (false, Some(fake)),
+                    Err(_) => (true, None),
+                };
+
+                Ok((BasicOperation::Remove { start, end, panics }, new_state))
+            }
+            // BasicOperation::Drain
+            4 => {
+                let start = match u.int_in_range(0..=1)? {
+                    0 => Bound::Unbounded,
+                    1 => Bound::Included(I::arbitrary(u)?),
+                    _ => unreachable!(),
+                };
+                let end = match u.int_in_range(0..=1)? {
+                    0 => Bound::Unbounded,
+                    1 => Bound::Excluded(I::arbitrary(u)?),
+                    _ => unreachable!(),
+                };
+
+                let access_directions = u.arbitrary::<Vec<IterDirection>>()?;
+                let result = expect_might_panic(move || {
+                    let mut drain = fake.drain((start, end));
+                    let mut access = Vec::new();
+                    for direction in access_directions {
+                        let value = match direction {
+                            IterDirection::Front => drain.next(),
+                            IterDirection::Back => drain.next_back(),
+                        };
+                        access.push(IterOperation { direction, value });
+                    }
+                    drop(drain);
+                    (access, fake)
+                });
+
+                let (access, new_state) = match result {
+                    Ok((vals, fake)) => (Ok(vals), Some(fake)),
+                    Err(_) => (Err(()), None),
+                };
+
+                Ok((BasicOperation::Drain { start, end, access }, new_state))
+            }
+            // BasicOperation::Validate
+            5 => Ok((BasicOperation::Validate, Some(fake))),
             v => unreachable!("bad BasicOperation variant {v}"),
         }
     }
@@ -326,6 +438,40 @@ where
                     None
                 }
             },
+            BasicOperation::Remove { start, end, panics } => match panics {
+                false => {
+                    tree.remove((*start, *end));
+                    Some(tree)
+                }
+                true => {
+                    assert!(expect_might_panic(move || tree.remove((*start, *end))).is_err());
+                    None
+                }
+            },
+            BasicOperation::Drain { start, end, access } => match access {
+                Ok(seq) => {
+                    let mut drain = tree.drain((*start, *end));
+                    for op in seq {
+                        let item = match op.direction {
+                            IterDirection::Front => drain.next(),
+                            IterDirection::Back => drain.next_back(),
+                        };
+
+                        assert_eq!(item, op.value);
+                    }
+                    drop(drain);
+                    Some(tree)
+                }
+                Err(()) => {
+                    assert!(
+                        expect_might_panic(move || {
+                            _ = tree.drain((*start, *end));
+                        })
+                        .is_err()
+                    );
+                    None
+                }
+            },
             BasicOperation::Validate => {
                 tree.validate_balance();
                 Some(tree)
@@ -366,55 +512,51 @@ where
                     index = index.display_rust_expr(),
                 )),
             },
-            BasicOperation::Iter { start, end, access } => {
-                let range = match (start, end) {
-                    (Bound::Unbounded, Bound::Unbounded) => format_args!(".."),
-                    (Bound::Unbounded, Bound::Excluded(e)) => format_args!("..{}", e.display_rust_expr()),
-                    (Bound::Unbounded, Bound::Included(e)) => format_args!("..={}", e.display_rust_expr()),
-                    (Bound::Excluded(_), _) => unreachable!(),
-                    (Bound::Included(s), Bound::Unbounded) => format_args!("{}..", s.display_rust_expr()),
-                    (Bound::Included(s), Bound::Excluded(e)) => format_args!("{}..{}", s.display_rust_expr(), e.display_rust_expr()),
-                    (Bound::Included(s), Bound::Included(e)) => format_args!("{}..={}", s.display_rust_expr(), e.display_rust_expr()),
-                };
-                match access {
-                    Ok(seq) if seq.is_empty() => f.write_fmt(format_args!("    let _iter = tree.iter({range});\n")),
-                    Ok(seq) => {
-                        // Sample output:
-                        //
-                        //   {
-                        //       let mut iter = tree.iter({range});
-                        //       {
-                        //           let item = iter.{method}().unwrap();
-                        //           assert_eq!(item.range(), {expected_range});
-                        //           assert_eq!(item.slice(), {expected_slice});
-                        //       }
-                        //       assert!(iter.{method}().is_none());
-                        //   }
-                        f.write_str("    {\n")?;
-                        f.write_fmt(format_args!("        let mut iter = tree.iter({range});\n"))?;
-                        for op in seq {
-                            let method = match op.direction {
-                                IterDirection::Front => "next",
-                                IterDirection::Back => "next_back",
-                            };
+            BasicOperation::Iter { start, end, access } => match access {
+                Ok(seq) if seq.is_empty() => f.write_fmt(format_args!(
+                    "    let _ = tree.iter({range});\n",
+                    range = format_bounds(start, end),
+                )),
+                Ok(seq) => {
+                    // Sample output:
+                    //
+                    //   {
+                    //       let mut iter = tree.iter({range});
+                    //       {
+                    //           let item = iter.{method}().unwrap();
+                    //           assert_eq!(item.range(), {expected_range});
+                    //           assert_eq!(item.slice(), {expected_slice});
+                    //       }
+                    //       assert!(iter.{method}().is_none());
+                    //   }
+                    f.write_str("    {\n")?;
+                    f.write_fmt(format_args!(
+                        "        let mut iter = tree.iter({range});\n",
+                        range = format_bounds(start, end),
+                    ))?;
+                    for op in seq {
+                        let method = match op.direction {
+                            IterDirection::Front => "next",
+                            IterDirection::Back => "next_back",
+                        };
 
-                            match &op.value {
-                                None => f.write_fmt(format_args!("        assert!(iter.{method}().is_none());\n"))?,
-                                Some((range, slice)) => {
-                                    f.write_str("        {\n")?;
-                                    f.write_fmt(format_args!("            let item = iter.{method}().unwrap();\n"))?;
-                                    f.write_fmt(format_args!("            assert_eq!(item.range(), {});\n", range.display_rust_expr()))?;
-                                    f.write_fmt(format_args!("            assert_eq!(item.slice(), &{});\n", slice.display_rust_expr()))?;
-                                    f.write_str("        }\n")?;
-                                },
-                            }
+                        match &op.value {
+                            None => f.write_fmt(format_args!("        assert!(iter.{method}().is_none());\n"))?,
+                            Some((range, slice)) => {
+                                f.write_str("        {\n")?;
+                                f.write_fmt(format_args!("            let item = iter.{method}().unwrap();\n"))?;
+                                f.write_fmt(format_args!("            assert_eq!(item.range(), {});\n", range.display_rust_expr()))?;
+                                f.write_fmt(format_args!("            assert_eq!(item.slice(), &{});\n", slice.display_rust_expr()))?;
+                                f.write_str("        }\n")?;
+                            },
                         }
-                        f.write_str("    }\n")
-                    },
-                    Err(()) => f.write_fmt(format_args!(
-                        "    assert!(std::panic::catch_unwind(|| tree.iter({range})).is_err());\n",
-                    )),
-                }
+                    }
+                    f.write_str("    }\n")
+                },
+                Err(()) => f.write_fmt(format_args!(
+                    "    assert!(std::panic::catch_unwind(|| tree.iter({range})).is_err());\n",
+                    range = format_bounds(start, end),
+                )),
             },
             BasicOperation::Insert { index, slice, size, panics } => match panics {
                 false => f.write_fmt(format_args!(
@@ -428,6 +570,52 @@ where
                     index = index.display_rust_expr(),
                     slice = slice.display_rust_expr(),
                     size = size.display_rust_expr(),
+                )),
+            },
+            BasicOperation::Remove { start, end, panics } => match panics {
+                false => f.write_fmt(format_args!(
+                    "    _ = tree.remove({range});\n",
+                    range = format_bounds(start, end),
+                )),
+                true => f.write_fmt(format_args!(
+                    "    assert!(std::panic::catch_unwind(move || tree.remove({range})).is_err());\n",
+                    range = format_bounds(start, end),
+                )),
+            },
+            BasicOperation::Drain { start, end, access } => match access {
+                Ok(seq) if seq.is_empty() => f.write_fmt(format_args!(
+                    "    let _ = tree.drain({range});\n",
+                    range = format_bounds(start, end),
+                )),
+                Ok(seq) => {
+                    // Sample output:
+                    //
+                    //   {
+                    //       let mut drain = tree.drain({range});
+                    //       assert_eq!(drain.{method}(), Some(({expected_range}, {expected_slice})));
+                    //       assert_eq!(drain.{method}(), None);
+                    //   }
+                    f.write_str("    {\n")?;
+                    f.write_fmt(format_args!(
+                        "        let mut drain = tree.drain({range});\n",
+                        range = format_bounds(start, end),
+                    ))?;
+                    for op in seq {
+                        let method = match op.direction {
+                            IterDirection::Front => "next",
+                            IterDirection::Back => "next_back",
+                        };
+
+                        f.write_fmt(format_args!(
+                            "        assert_eq!(drain.{method}(), {expected});\n",
+                            expected = op.value.display_rust_expr(),
+                        ))?;
+                    }
+                    f.write_str("    }\n")
+                },
+                Err(()) => f.write_fmt(format_args!(
+                    "    assert!(std::panic::catch_unwind(move || drop(tree.drain({range}))).is_err());\n",
+                    range = format_bounds(start, end),
                 )),
             },
             BasicOperation::Validate => f.write_fmt(format_args!(

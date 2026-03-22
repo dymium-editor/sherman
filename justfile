@@ -1,5 +1,8 @@
 MIRIFLAGS := '-Zmiri-tree-borrows'
 
+fmt:
+    cargo +nightly fmt
+
 # Run unit tests (without miri)
 test:
     RUST_BACKTRACE=1 cargo +nightly test --features=nightly

@@ -8,14 +8,18 @@ use crate::{Index, Slice};
 #[macro_use]
 mod borrow;
 
+mod drain;
 mod entry;
 mod fix;
 mod iter;
 mod node;
+mod remove;
 
 pub(crate) mod tests;
 
+pub use drain::Drain;
 pub use entry::SliceEntry;
+use fix::FixMode;
 pub use iter::Iter;
 use node::Side;
 
@@ -214,8 +218,61 @@ where
             false,
             DownwardInsertState::new(idx, slice, size),
         );
-        root.handle = fix::fix_owned(root.handle);
+        root.handle = fix::fix_owned(root.handle, FixMode::Normal);
         self.root = Some(root);
+    }
+
+    /// Removes a range of values from the tree, returning a new [`RleTree`] representing them.
+    ///
+    /// To process the removed values, use [`drain`](Self::drain).
+    ///
+    /// ## Panics
+    ///
+    /// This method panics if:
+    ///
+    /// * The range's start bound is exclusive
+    /// * The range's **end bound is inclusive** (e.g. `1..=3`)
+    /// * The range's start bound is less than `I::ZERO`
+    /// * The range's end bound is greater than the [`size`](Self::size) of the tree
+    /// * The range's start bound is greater than its end bound
+    ///
+    /// We cannot allow inclusive end bounds because that would require an increment operator to
+    /// transform into an equivalent exclusive end bound, and index types might not necessarily
+    /// have a natural definition of "increment".
+    pub fn remove<R>(&mut self, range: R) -> Self
+    where
+        R: std::ops::RangeBounds<I>,
+    {
+        let range = remove::check_bounds(self, "remove", range.start_bound(), range.end_bound());
+        let removed = remove::remove(self, range.clone());
+        match removed {
+            None => Self::new_empty(),
+            Some(remove::Removed::Slice(s)) => Self::new(s, range.end.sub_left(range.start)),
+            Some(remove::Removed::Tree(t)) => RleTree { root: Some(Root { handle: t }) },
+        }
+    }
+
+    /// Removes a range of values from the tree, returning an iterator over the values
+    ///
+    /// All values in the range will be removed, whether or not the iterator is exhausted.
+    /// If the values are not needed, use [`remove`](Self::remove) instead.
+    ///
+    /// ## Panics
+    ///
+    /// This method panics under the same conditions as [`remove`](Self::remove):
+    ///
+    /// * The range's start bound is exclusive
+    /// * The range's **end bound is inclusive** (e.g. `1..=3`)
+    /// * The range's start bound is less than `I::ZERO`
+    /// * The range's end bound is greater than the [`size`](Self::size) of the tree
+    /// * The range's start bound is greater than its end bound
+    pub fn drain<R>(&mut self, range: R) -> Drain<I, S>
+    where
+        R: std::ops::RangeBounds<I>,
+    {
+        let range = remove::check_bounds(self, "drain", range.start_bound(), range.end_bound());
+        let removed = remove::remove(self, range.clone());
+        Drain::new(range.start, range.end, removed)
     }
 }
 
@@ -304,7 +361,7 @@ fn search<I: Index, S>(
                     node = match node.into_lhs() {
                         Some(n) => n,
                         None => crate::panic_internal_error_or_bad_index::<I>(
-                            "`SearchResult::Lhs` implies the left-hand child should exist",
+                            "`SearchResult::LhsEdge` implies the left-hand child should exist",
                         ),
                     };
                     target = node.subtree_size();
@@ -344,7 +401,7 @@ struct InsertionValue<I, S> {
 }
 
 #[derive(Debug)]
-struct UpwardInsertState<I> {
+struct UpwardUpdateState<I> {
     old_size: I,
 }
 
@@ -380,7 +437,7 @@ fn run_insert<'t, I: Index, S: Slice<I>>(
     while node.addr() != root_addr {
         let parent_addr = node.parent_addr().expect("parent addr should be Some(_)");
 
-        node = fix::fix_mut(node);
+        node = fix::fix_mut(node, FixMode::Normal);
 
         let override_size = match parent_addr == root_addr {
             true => root_subtree_size,
@@ -389,8 +446,8 @@ fn run_insert<'t, I: Index, S: Slice<I>>(
         (node, up_state) = up_state.step(node, override_size);
     }
 
-    if node.parent_addr().is_some() {
-        node = fix::fix_mut(node);
+    if node.has_parent() {
+        node = fix::fix_mut(node, FixMode::Normal);
     }
 
     node
@@ -410,7 +467,7 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
     fn step(
         self,
         node: node::HandleMut<I, S>,
-    ) -> (node::HandleMut<I, S>, ControlFlow<UpwardInsertState<I>, Self>) {
+    ) -> (node::HandleMut<I, S>, ControlFlow<UpwardUpdateState<I>, Self>) {
         match search_step(node.borrow(), self.target) {
             SearchResult::Lhs { offset } => match node.into_lhs() {
                 // Recurse into LHS child:
@@ -441,7 +498,7 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
     fn step_edge_lhs(
         mut self,
         mut node: node::HandleMut<I, S>,
-    ) -> (node::HandleMut<I, S>, ControlFlow<UpwardInsertState<I>, Self>) {
+    ) -> (node::HandleMut<I, S>, ControlFlow<UpwardUpdateState<I>, Self>) {
         // Target is on the edge of this node and LHS subtree; try joining the slice with this
         // node.
         if self.allow_joining {
@@ -479,7 +536,7 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
                     node.set_subtree_size(new_subtree_size);
                     return (
                         node,
-                        ControlFlow::Break(UpwardInsertState { old_size: old_subtree_size }),
+                        ControlFlow::Break(UpwardUpdateState { old_size: old_subtree_size }),
                     );
                 }
             }
@@ -499,12 +556,12 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
                         .borrow_mut()
                         .insert_rhs(node::NodeHandle::alloc_new(snd_value.slice, snd_value.size));
                     new_lhs.set_subtree_size(self.fst_value.size.add_right(snd_value.size));
-                    new_lhs = fix::fix_owned(new_lhs);
+                    new_lhs = fix::fix_owned(new_lhs, FixMode::Normal);
                 }
 
                 let child = n.insert_lhs(new_lhs);
 
-                (child, ControlFlow::Break(UpwardInsertState { old_size: I::ZERO }))
+                (child, ControlFlow::Break(UpwardUpdateState { old_size: I::ZERO }))
             }
         }
     }
@@ -514,7 +571,7 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
     fn step_edge_rhs(
         mut self,
         mut node: node::HandleMut<I, S>,
-    ) -> (node::HandleMut<I, S>, ControlFlow<UpwardInsertState<I>, Self>) {
+    ) -> (node::HandleMut<I, S>, ControlFlow<UpwardUpdateState<I>, Self>) {
         // Target is on the edge of this node and RHS subtree; try joining the slice
         // with this node.
         if self.allow_joining {
@@ -551,7 +608,7 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
                     node.set_subtree_size(new_subtree_size);
                     return (
                         node,
-                        ControlFlow::Break(UpwardInsertState { old_size: old_subtree_size }),
+                        ControlFlow::Break(UpwardUpdateState { old_size: old_subtree_size }),
                     );
                 }
             }
@@ -575,7 +632,7 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
 
                 let child = n.insert_rhs(new_rhs);
 
-                (child, ControlFlow::Break(UpwardInsertState { old_size: I::ZERO }))
+                (child, ControlFlow::Break(UpwardUpdateState { old_size: I::ZERO }))
             }
         }
     }
@@ -670,7 +727,7 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
                     let new_subtree_size = parent.subtree_size().sub_right(removed_size);
                     parent.set_subtree_size(new_subtree_size);
 
-                    parent = fix::fix_mut(parent);
+                    parent = fix::fix_mut(parent, FixMode::Normal);
 
                     // recurse upwards
                     upward_child = parent;
@@ -769,7 +826,7 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
                     let new_subtree_size = parent.subtree_size().sub_left(removed_size);
                     parent.set_subtree_size(new_subtree_size);
 
-                    parent = fix::fix_mut(parent);
+                    parent = fix::fix_mut(parent, FixMode::Normal);
 
                     // recurse upwards
                     upward_child = parent;
@@ -783,7 +840,7 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
         mut node: node::HandleMut<I, S>,
         range: Range<I>,
         offset_in_range: I,
-    ) -> (node::HandleMut<I, S>, ControlFlow<UpwardInsertState<I>, Self>) {
+    ) -> (node::HandleMut<I, S>, ControlFlow<UpwardUpdateState<I>, Self>) {
         // At this point: the value is in the middle of the range, so we need to split this
         // node.
         // We'll end up with something like:
@@ -807,7 +864,7 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
             //
             // So if we get to here (needing to perform a split) finding that we ALREADY split
             // once, then something has gone wrong.
-            crate::panic_internal_error_or_bad_index::<I>("would double-split on insert");
+            crate::panic_internal_error_or_bad_index::<I>("would double-split");
         }
 
         let original_size = node.subtree_size();
@@ -904,11 +961,11 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
             );
         }
 
-        (node, ControlFlow::Break(UpwardInsertState { old_size: old_subtree_size }))
+        (node, ControlFlow::Break(UpwardUpdateState { old_size: old_subtree_size }))
     }
 }
 
-impl<I: Index> UpwardInsertState<I> {
+impl<I: Index> UpwardUpdateState<I> {
     fn step<S: Slice<I>>(
         self,
         node: node::HandleMut<I, S>,
@@ -919,7 +976,7 @@ impl<I: Index> UpwardInsertState<I> {
         let lower_addr = node.addr();
 
         let Some((mut parent, side)) = node.into_parent() else {
-            panic!("internal error: tried to `UpwardInsertState::step` a node with no parent");
+            panic!("internal error: tried to `UpwardUpdateState::step` a node with no parent");
         };
 
         match side {
@@ -934,7 +991,7 @@ impl<I: Index> UpwardInsertState<I> {
                 });
                 parent.set_subtree_size(new_parent_size);
 
-                (parent, UpwardInsertState { old_size: old_parent_size })
+                (parent, UpwardUpdateState { old_size: old_parent_size })
             }
             Side::Rhs => {
                 assert_eq!(parent.borrow().into_rhs().map(|n| n.addr()), Some(lower_addr));
@@ -947,7 +1004,7 @@ impl<I: Index> UpwardInsertState<I> {
                 });
                 parent.set_subtree_size(new_parent_size);
 
-                (parent, UpwardInsertState { old_size: old_parent_size })
+                (parent, UpwardUpdateState { old_size: old_parent_size })
             }
         }
     }

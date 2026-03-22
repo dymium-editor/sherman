@@ -67,6 +67,43 @@ rust_expr_debug! {
     char,
 }
 
+impl<T: RustExpr> RustExpr for (T,) {
+    fn write_rust_expr(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_fmt(format_args!("({},)", self.0.display_rust_expr()))
+    }
+}
+
+macro_rules! rust_expr_tuple {
+    ($( $($v:ident: $ty:ident),+ ;)+) => {
+        $(
+        impl<$( $ty: RustExpr, )+> RustExpr for ($($ty,)+) {
+            fn write_rust_expr(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("(")?;
+                let ($($v,)+) = self;
+                rust_expr_tuple!(@write f, $($v: $ty,)+);
+                f.write_str(")")
+            }
+        }
+        )*
+    };
+    (@write $f:ident, $headv:ident: $headty:ident,) => {
+        <$headty as RustExpr>::write_rust_expr($headv, $f)?;
+    };
+    (@write $f:ident, $headv:ident: $headty:ident, $($tailv:ident: $tailty:ident,)+) => {
+        <$headty as RustExpr>::write_rust_expr($headv, $f)?;
+        $f.write_str(", ")?;
+        rust_expr_tuple!(@write $f, $($tailv: $tailty,)+);
+    };
+}
+
+rust_expr_tuple! {
+    t1: T1, t2: T2;
+    t1: T1, t2: T2, t3: T3;
+    t1: T1, t2: T2, t3: T3, t4: T4;
+    t1: T1, t2: T2, t3: T3, t4: T4, t5: T5;
+    t1: T1, t2: T2, t3: T3, t4: T4, t5: T5, t6: T6;
+}
+
 impl RustExpr for &str {
     fn write_rust_expr(&self, f: &mut fmt::Formatter) -> fmt::Result {
         fmt::Debug::fmt(self, f)

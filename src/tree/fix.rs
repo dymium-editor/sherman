@@ -35,20 +35,36 @@ where
     }
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub(super) enum FixMode {
+    /// A normal deviation must be corrected, e.g. a single insertion or deletion
+    ///
+    /// At most two rotations will be performed.
+    Normal,
+    /// The (sub)tree may be arbitrarily imbalanced due to removing a large number of nodes
+    ///
+    /// Note that this only accommodates imbalance *between* the two sides of this subtree, rather
+    /// than imbalance internal to either child. It is expected that callers would have handled
+    /// imbalanced children on their own, only coming here to handle rebalancing between them.
+    ///
+    /// As many rotations will be performed as is required to correct the imbalance.
+    Unbounded,
+}
+
 /// Rebalances the subtree rooted at the node, given a mutable reference
 ///
-/// Up to two rotations will be performed, the height of this node will be corrected, and a mutable
-/// handle on the new subtree root will be returned.
+/// Rotations will be performed (limited by the [`FixMode`]), the height of this node will be
+/// corrected, and a mutable handle on the new subtree root will be returned.
 ///
 /// # Panics
 ///
 /// This function panics if the node does not have a parent. To fix a node with no parent, you
 /// should use [`fix_owned`] instead.
-pub(super) fn fix_mut<I, S>(mut node: HandleMut<I, S>) -> HandleMut<I, S>
+pub(super) fn fix_mut<I, S>(mut node: HandleMut<I, S>, mode: FixMode) -> HandleMut<I, S>
 where
     I: Index,
 {
-    if node.parent_addr().is_none() {
+    if !node.has_parent() {
         panic!("internal error: cannot fix() node that has no parent");
     }
 
@@ -72,7 +88,10 @@ where
             .expect("parent's LHS should be Some(_) if this node's parent side is LHS"),
     };
 
-    this = fix_invasive(this, fix_side);
+    this = match mode {
+        FixMode::Normal => fix_invasive(this, fix_side),
+        FixMode::Unbounded => fix_invasive_unbounded(this, fix_side),
+    };
 
     match side {
         Side::Lhs => parent.insert_lhs(this),
@@ -81,14 +100,20 @@ where
 }
 
 /// Rebalances the subtree rooted at this node
-pub(super) fn fix_owned<I, S>(mut node: HandleUniqueOwned<I, S>) -> HandleUniqueOwned<I, S>
+pub(super) fn fix_owned<I, S>(
+    mut node: HandleUniqueOwned<I, S>,
+    mode: FixMode,
+) -> HandleUniqueOwned<I, S>
 where
     I: Index,
 {
     reset_height(node.borrow_mut());
 
     if let Some(side) = needs_rebalance(node.borrow()) {
-        node = fix_invasive(node, side);
+        node = match mode {
+            FixMode::Normal => fix_invasive(node, side),
+            FixMode::Unbounded => fix_invasive_unbounded(node, side),
+        }
     }
 
     node
@@ -120,6 +145,57 @@ fn needs_rebalance<I, S>(node: HandleImmut<'_, I, S>) -> Option<Side> {
     } else {
         None
     }
+}
+
+fn fix_invasive_unbounded<I, S>(
+    mut root: HandleUniqueOwned<I, S>,
+    side: Side,
+) -> HandleUniqueOwned<I, S>
+where
+    I: Index,
+{
+    // Perform a single, initial set of rotations
+    root = fix_invasive(root, side);
+
+    let mut parent = root.borrow_mut();
+
+    loop {
+        match side {
+            Side::Lhs => {
+                // LHS should have been balanced by rotating right in the original fix_invasive(),
+                // but it may be that LHS's RHS child was so tall that the new RHS is unbalanced.
+                // If so, we'll need to (recursively) fix RHS's LHS child.
+                let mut rhs =
+                    parent.take_rhs().expect("rhs should be Some because we just rotated right");
+                let needs_rebalance = rhs.lhs_height() > rhs.rhs_height() + 1;
+                if needs_rebalance {
+                    rhs = fix_invasive(rhs, Side::Lhs);
+                }
+                parent = parent.insert_rhs(rhs);
+                if !needs_rebalance {
+                    break;
+                }
+            }
+            Side::Rhs => {
+                // RHS should have been balanced by rotating left in the original fix_invasive(),
+                // but it may be that RHS's LHS child was so tall that the new LHS is unbalanced.
+                // If so, we'll need to (recursively) fix LHS's RHS child.
+                let mut lhs =
+                    parent.take_lhs().expect("lhs should be Some because we just rotated left");
+                let needs_rebalance = lhs.rhs_height() > lhs.lhs_height() + 1;
+                if needs_rebalance {
+                    lhs = fix_invasive(lhs, Side::Rhs);
+                }
+                parent = parent.insert_lhs(lhs);
+                if !needs_rebalance {
+                    break;
+                }
+            }
+        }
+    }
+
+    drop(parent);
+    root
 }
 
 fn fix_invasive<I, S>(mut node: HandleUniqueOwned<I, S>, side: Side) -> HandleUniqueOwned<I, S>

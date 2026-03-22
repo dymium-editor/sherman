@@ -176,3 +176,13 @@ fn test_16_iter_back_nonempty_lhs() {
         }
     }
 }
+
+#[test]
+fn test_17_drain_offset() {
+    let mut tree: RleTree<u8, Constant<char>> = RleTree::new_empty();
+    tree.insert(0, Constant('A'), 169);
+    {
+        let mut drain = tree.drain(117..);
+        assert_eq!(drain.next(), Some((117..169, Constant('A'))));
+    }
+}

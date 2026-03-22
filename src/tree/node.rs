@@ -10,6 +10,7 @@ use std::ptr::NonNull;
 use super::borrow::{self, Borrow, Borrowed};
 use crate::{DirectionalSub, Index};
 
+pub type Pointer<I, S> = NonNull<Node<I, S>>;
 pub type HandleUniqueOwned<I, S> = NodeHandle<borrow::UniqueOwned<Node<I, S>>>;
 pub type HandleMut<'t, I, S> = NodeHandle<borrow::Mut<'t, Node<I, S>>>;
 pub type HandleImmut<'t, I, S> = NodeHandle<borrow::Immut<'t, Node<I, S>>>;
@@ -178,6 +179,10 @@ pub(super) enum Side {
 impl<B: NodeBorrow> NodeHandle<B> {
     pub(super) fn addr(&self) -> usize {
         self.inner.addr()
+    }
+
+    pub(super) fn has_parent(&self) -> bool {
+        self.inner.get::<f![B::parent]>().is_some()
     }
 
     pub(super) fn parent_addr(&self) -> Option<usize> {
@@ -381,6 +386,28 @@ impl<'t, I, S> NodeHandle<borrow::Immut<'t, Node<I, S>>> {
 }
 
 impl<'t, I, S> NodeHandle<borrow::Mut<'t, Node<I, S>>> {
+    /// Creates a reference from a raw `NonNull`
+    ///
+    /// # Safety
+    ///
+    /// The pointer must have been returned by a previous call to [`NodeHandle::ptr`], and the
+    /// borrow must be valid for the lifetime of that pointer. It is the caller's responsibility to
+    /// ensure that Rust's aliasing requirements are satisfied.
+    pub(super) unsafe fn from_ptr(pointer: Pointer<I, S>) -> Self {
+        // SAFETY: the pointer must be properly aligned, point to a value of `Node<I, S>`, and be
+        // valid for the lifetime. That's all guaranteed by the caller.
+        unsafe {
+            NodeHandle {
+                inner: <Borrowed<borrow::Mut<_>>>::from_non_null(pointer),
+            }
+        }
+    }
+
+    /// Returns the raw `NonNull` represented by this handle
+    pub(super) fn ptr(&self) -> Pointer<I, S> {
+        self.inner.as_ptr()
+    }
+
     /// Produces a reference to this node's parent
     pub(super) fn into_parent(self) -> Option<(Self, Side)> {
         let parent = self.inner.into_mut::<f![Node::parent]>();

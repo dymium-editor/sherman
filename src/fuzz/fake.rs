@@ -180,6 +180,58 @@ impl<I: Index, S: Slice<I>> Fake<I, S> {
             *i = i.add_left(diff);
         }
     }
+
+    pub fn remove(&mut self, range: impl std::ops::RangeBounds<I>) {
+        _ = self.drain(range);
+    }
+
+    pub fn drain(&mut self, range: impl std::ops::RangeBounds<I>) -> FakeDrain<'_, I, S> {
+        use std::ops::Bound;
+
+        let start = match range.start_bound() {
+            Bound::Unbounded => I::ZERO,
+            Bound::Excluded(_) => panic!("exclusive start bound disallowed"),
+            Bound::Included(&i) if i < I::ZERO => panic!("bad start: {i:?} less than zero"),
+            Bound::Included(&i) => i,
+        };
+
+        let end = match range.end_bound() {
+            Bound::Unbounded => self.size(),
+            Bound::Excluded(&i) if i > self.size() => {
+                panic!("bad end: {i:?} greater than size {:?}", self.size())
+            }
+            Bound::Excluded(&i) => i,
+            Bound::Included(_) => panic!("inclusive end bound disallowed"),
+        };
+
+        if start > end {
+            panic!("bad range: start {start:?} > end {end:?}");
+        }
+
+        let front_idx = match self.runs.binary_search_by_key(&start, |(i, ..)| *i) {
+            Ok(i) => i + 1,
+            Err(i) => i,
+        };
+        let back_idx = if end == I::ZERO {
+            0
+        } else {
+            match self.runs.binary_search_by_key(&end, |(i, ..)| *i) {
+                Ok(i) => i + 1,
+                Err(i) => i + 1,
+            }
+        };
+
+        FakeDrain {
+            runs: &mut self.runs,
+            start,
+            end,
+            front_idx,
+            back_idx,
+            original_front_idx: front_idx,
+            original_back_idx: back_idx,
+            split: None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -227,6 +279,133 @@ where
     }
 }
 
+#[derive(Debug)]
+pub struct FakeDrain<'a, I, S>
+where
+    I: Index,
+    S: Slice<I>,
+{
+    runs: &'a mut Vec<(I, Option<S>)>,
+
+    // Original bounds of the drain
+    start: I,
+    end: I,
+
+    // Iteration indexes
+    front_idx: usize,
+    back_idx: usize,
+
+    original_front_idx: usize,
+    original_back_idx: usize,
+
+    // If draining splits a slice in a way that can't be re-joined, the right-hand split of the
+    // original slice
+    split: Option<S>,
+}
+
+impl<'a, I, S> FakeDrain<'a, I, S>
+where
+    I: Index,
+    S: Slice<I>,
+{
+    fn item(&mut self, idx: usize) -> (Range<I>, S) {
+        let mut run_start = idx.checked_sub(1).map(|i| self.runs[i].0).unwrap_or(I::ZERO);
+        let mut run_end = self.runs[idx].0;
+
+        let mut value = self.runs[idx].1.take().unwrap();
+
+        if idx == self.original_front_idx && run_start != self.start {
+            let (lhs, rhs) = value.split_at(self.start.sub_left(run_start));
+            self.runs[idx].1 = Some(lhs);
+            value = rhs;
+            run_start = self.start;
+        }
+
+        if idx + 1 == self.original_back_idx && run_end != self.end {
+            let (lhs, rhs) = value.split_at(self.end.sub_left(run_start));
+            value = lhs;
+            self.split = Some(rhs);
+            run_end = self.end;
+        }
+
+        (run_start..run_end, value)
+    }
+
+    fn cleanup(&mut self) {
+        // Finish iteration
+        for _ in &mut *self {}
+
+        let start_slice_start = self
+            .original_front_idx
+            .checked_sub(1)
+            .map(|i| self.runs[i].0)
+            .unwrap_or(I::ZERO);
+        let end_slice_end =
+            self.original_back_idx.checked_sub(1).map(|i| self.runs[i].0).unwrap_or(I::ZERO);
+
+        let mut removal_start = self.original_front_idx;
+        let removal_end = self.original_back_idx;
+
+        if start_slice_start != self.start {
+            self.runs[removal_start].0 = self.start;
+            removal_start += 1;
+        }
+
+        if let Some(repl) = self.split.take() {
+            self.runs.insert(removal_end, (end_slice_end, Some(repl)));
+        }
+
+        for (end, _) in &mut self.runs[removal_end..] {
+            *end = end.sub_left(self.end).add_left(self.start);
+        }
+
+        _ = self.runs.drain(removal_start..removal_end);
+    }
+}
+
+impl<'a, I, S> Iterator for FakeDrain<'a, I, S>
+where
+    I: Index,
+    S: Slice<I>,
+{
+    type Item = (Range<I>, S);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.front_idx == self.back_idx {
+            return None;
+        }
+
+        let item = self.item(self.front_idx);
+        self.front_idx += 1;
+        Some(item)
+    }
+}
+
+impl<'a, I, S> DoubleEndedIterator for FakeDrain<'a, I, S>
+where
+    I: Index,
+    S: Slice<I>,
+{
+    fn next_back(&mut self) -> Option<Self::Item> {
+        if self.front_idx == self.back_idx {
+            return None;
+        }
+
+        self.back_idx -= 1;
+        Some(self.item(self.back_idx))
+    }
+}
+
+impl<'a, I, S> Drop for FakeDrain<'a, I, S>
+where
+    I: Index,
+    S: Slice<I>,
+{
+    fn drop(&mut self) {
+        self.cleanup();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::Fake;
@@ -260,5 +439,74 @@ mod tests {
         assert_eq!(fake.iter(2..2).rev().count(), 1);
         assert_eq!(fake.iter(7..7).count(), 1);
         assert_eq!(fake.iter(7..7).rev().count(), 1);
+    }
+
+    #[test]
+    fn test_drain() {
+        let mut fake: Fake<u8, Constant<char>> = Fake::new_empty();
+        // Empty drain:
+        assert_eq!(fake.drain(..).count(), 0);
+
+        fake.insert(0, Constant('A'), 2);
+        fake.insert(2, Constant('B'), 2);
+        fake.insert(4, Constant('C'), 2);
+        fake.insert(6, Constant('D'), 2);
+
+        // Aligned drain:
+        let drained = fake.drain(2..6).collect::<Vec<_>>();
+        assert_eq!(drained, [(2..4, Constant('B')), (4..6, Constant('C'))]);
+
+        let new_contents = fake.iter(..).collect::<Vec<_>>();
+        assert_eq!(new_contents, [(0..2, &Constant('A')), (2..4, &Constant('D'))]);
+
+        // return to previous state
+        fake.insert(2, Constant('B'), 2);
+        fake.insert(4, Constant('C'), 2);
+        let new_contents = fake.iter(..).collect::<Vec<_>>();
+        assert_eq!(
+            new_contents,
+            [
+                (0..2, &Constant('A')),
+                (2..4, &Constant('B')),
+                (4..6, &Constant('C')),
+                (6..8, &Constant('D')),
+            ]
+        );
+
+        // Split drain:
+        let drained = fake.drain(3..7).collect::<Vec<_>>();
+        assert_eq!(
+            drained,
+            [
+                (3..4, Constant('B')),
+                (4..6, Constant('C')),
+                (6..7, Constant('D'))
+            ],
+        );
+
+        enable_debug!();
+        debug_println!("runs = {:?}", fake.runs);
+
+        let new_contents = fake.iter(..).collect::<Vec<_>>();
+        assert_eq!(
+            new_contents,
+            [
+                (0..2, &Constant('A')),
+                (2..3, &Constant('B')),
+                (3..4, &Constant('D'))
+            ],
+        );
+
+        // Drain everything:
+        let drained = fake.drain(..).collect::<Vec<_>>();
+        assert_eq!(
+            drained,
+            [
+                (0..2, Constant('A')),
+                (2..3, Constant('B')),
+                (3..4, Constant('D'))
+            ],
+        );
+        assert_eq!(fake.iter(..).count(), 0);
     }
 }
