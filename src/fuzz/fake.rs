@@ -360,6 +360,22 @@ where
         }
 
         _ = self.runs.drain(removal_start..removal_end);
+
+        // Try joining the values on either side of the removal
+        if removal_start != 0 && self.runs.len() > removal_start {
+            let lhs = self.runs[removal_start - 1].1.take().unwrap();
+            let rhs = self.runs[removal_start].1.take().unwrap();
+            match lhs.try_join(rhs) {
+                Ok(new_value) => {
+                    self.runs[removal_start].1 = Some(new_value);
+                    self.runs.remove(removal_start - 1);
+                }
+                Err((lhs, rhs)) => {
+                    self.runs[removal_start - 1].1 = Some(lhs);
+                    self.runs[removal_start].1 = Some(rhs);
+                }
+            }
+        }
     }
 }
 
@@ -371,7 +387,7 @@ where
     type Item = (Range<I>, S);
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.front_idx == self.back_idx {
+        if self.front_idx == self.back_idx || self.start == self.end {
             return None;
         }
 
@@ -387,7 +403,7 @@ where
     S: Slice<I>,
 {
     fn next_back(&mut self) -> Option<Self::Item> {
-        if self.front_idx == self.back_idx {
+        if self.front_idx == self.back_idx || self.start == self.end {
             return None;
         }
 
@@ -402,7 +418,9 @@ where
     S: Slice<I>,
 {
     fn drop(&mut self) {
-        self.cleanup();
+        if self.start != self.end {
+            self.cleanup();
+        }
     }
 }
 
@@ -447,66 +465,77 @@ mod tests {
         // Empty drain:
         assert_eq!(fake.drain(..).count(), 0);
 
-        fake.insert(0, Constant('A'), 2);
-        fake.insert(2, Constant('B'), 2);
-        fake.insert(4, Constant('C'), 2);
-        fake.insert(6, Constant('D'), 2);
+        fake.insert(0, Constant('A'), 3);
+        fake.insert(3, Constant('B'), 3);
+        fake.insert(6, Constant('C'), 3);
+        fake.insert(9, Constant('D'), 3);
 
         // Aligned drain:
-        let drained = fake.drain(2..6).collect::<Vec<_>>();
-        assert_eq!(drained, [(2..4, Constant('B')), (4..6, Constant('C'))]);
+        let drained = fake.drain(3..9).collect::<Vec<_>>();
+        assert_eq!(drained, [(3..6, Constant('B')), (6..9, Constant('C'))]);
 
         let new_contents = fake.iter(..).collect::<Vec<_>>();
-        assert_eq!(new_contents, [(0..2, &Constant('A')), (2..4, &Constant('D'))]);
+        assert_eq!(new_contents, [(0..3, &Constant('A')), (3..6, &Constant('D'))]);
 
         // return to previous state
-        fake.insert(2, Constant('B'), 2);
-        fake.insert(4, Constant('C'), 2);
+        fake.insert(3, Constant('B'), 3);
+        fake.insert(6, Constant('C'), 3);
         let new_contents = fake.iter(..).collect::<Vec<_>>();
         assert_eq!(
             new_contents,
             [
-                (0..2, &Constant('A')),
-                (2..4, &Constant('B')),
-                (4..6, &Constant('C')),
-                (6..8, &Constant('D')),
+                (0..3, &Constant('A')),
+                (3..6, &Constant('B')),
+                (6..9, &Constant('C')),
+                (9..12, &Constant('D')),
             ]
         );
 
         // Split drain:
-        let drained = fake.drain(3..7).collect::<Vec<_>>();
+        let drained = fake.drain(4..10).collect::<Vec<_>>();
         assert_eq!(
             drained,
             [
-                (3..4, Constant('B')),
-                (4..6, Constant('C')),
-                (6..7, Constant('D'))
+                (4..6, Constant('B')),
+                (6..9, Constant('C')),
+                (9..10, Constant('D'))
             ],
         );
-
-        enable_debug!();
-        debug_println!("runs = {:?}", fake.runs);
 
         let new_contents = fake.iter(..).collect::<Vec<_>>();
         assert_eq!(
             new_contents,
             [
-                (0..2, &Constant('A')),
-                (2..3, &Constant('B')),
-                (3..4, &Constant('D'))
+                (0..3, &Constant('A')),
+                (3..4, &Constant('B')),
+                (4..6, &Constant('D'))
             ],
         );
+
+        // Point drain, should be empty:
+        let drained = fake.drain(2..2).collect::<Vec<_>>();
+        assert_eq!(drained, []);
 
         // Drain everything:
         let drained = fake.drain(..).collect::<Vec<_>>();
         assert_eq!(
             drained,
             [
-                (0..2, Constant('A')),
-                (2..3, Constant('B')),
-                (3..4, Constant('D'))
+                (0..3, Constant('A')),
+                (3..4, Constant('B')),
+                (4..6, Constant('D'))
             ],
         );
         assert_eq!(fake.iter(..).count(), 0);
+    }
+
+    #[test]
+    fn test_remove_join() {
+        // This was actually found by fuzzing, where the `RleTree` impl was correct and the fake
+        // implementation wasn't.
+        let mut fake: Fake<u8, Constant<char>> = Fake::new_empty();
+        fake.insert(0, Constant('Q'), 117);
+        fake.remove(50..75);
+        assert_eq!(fake.get(42), (0..92, &Constant('Q')));
     }
 }
