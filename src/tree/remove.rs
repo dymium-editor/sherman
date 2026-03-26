@@ -331,7 +331,7 @@ where
     I: Index,
     S: Slice<I>,
 {
-    let Some(node) = node else {
+    let Some(mut node) = node else {
         return Split { lhs: None, rhs: None };
     };
 
@@ -347,7 +347,14 @@ where
                 "internal error: `split_removal_lhs` got `SearchResult::Value` but `root_side = Rhs`"
             ),
         },
-        s @ (SearchResult::RhsEdge | SearchResult::Rhs { .. }) => {
+        SearchResult::RhsEdge => {
+            assert!(root_side == Side::Lhs);
+            assert!(node.borrow().into_rhs().is_none());
+
+            node = fix::fix_owned(node, FixMode::Unbounded);
+            return Split { lhs: Some(node), rhs: None };
+        }
+        s @ SearchResult::Rhs { .. } => {
             panic!("internal error: bad `SearchResult` for `split_removal_lhs`: {s:?}")
         }
     };
@@ -364,7 +371,7 @@ where
     I: Index,
     S: Slice<I>,
 {
-    let Some(node) = node else {
+    let Some(mut node) = node else {
         return Split { lhs: None, rhs: None };
     };
 
@@ -382,7 +389,14 @@ where
                 "internal error: `split_removal_rhs` got `SearchResult::Value` but `root_side = Lhs`"
             ),
         },
-        s @ (SearchResult::Lhs { .. } | SearchResult::LhsEdge) => {
+        SearchResult::LhsEdge => {
+            assert!(root_side == Side::Rhs);
+            assert!(node.borrow().into_lhs().is_none());
+
+            node = fix::fix_owned(node, FixMode::Unbounded);
+            return Split { lhs: None, rhs: Some(node) };
+        }
+        s @ SearchResult::Lhs { .. } => {
             panic!("internal error: bad `SearchResult` for `split_removal_rhs`: {s:?}")
         }
     };

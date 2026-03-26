@@ -186,3 +186,11 @@ fn test_17_drain_offset() {
         assert_eq!(drain.next(), Some((117..169, Constant('A'))));
     }
 }
+
+#[test]
+fn test_18_remove_aligned() {
+    let mut tree: RleTree<u8, Constant<char>> = RleTree::new_empty();
+    tree.insert(0, Constant('B'), 14);
+    tree.insert(0, Constant('M'), 142);
+    _ = tree.remove(..142);
+}
