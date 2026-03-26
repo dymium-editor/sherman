@@ -167,7 +167,7 @@ where
 fn run_removal_within_subtree<I, S>(
     mut root: node::HandleUniqueOwned<I, S>,
     start: SearchResult<I>,
-    end: SearchResult<I>,
+    mut end: SearchResult<I>,
 ) -> (node::HandleUniqueOwned<I, S>, UpwardUpdateState<I>, Removed<I, S>)
 where
     I: Index,
@@ -215,9 +215,19 @@ where
         }
         Side::Rhs => {
             let lhs = root.take_lhs();
-            if let Some(n) = lhs.as_ref() {
-                root.set_subtree_size(root_size.sub_left(n.subtree_size()));
-            }
+            let lhs_size = lhs.as_ref().map(|n| n.subtree_size()).unwrap_or(I::ZERO);
+            root.set_subtree_size(root_size.sub_left(lhs_size));
+
+            // Update `end` to account for removing `lhs`
+            end = match end {
+                SearchResult::Value { range, offset_in_range } => SearchResult::Value {
+                    range: range.start.sub_left(lhs_size)..range.end.sub_left(lhs_size),
+                    offset_in_range,
+                },
+                SearchResult::Lhs { .. } => unreachable!(),
+                s @ (SearchResult::LhsEdge | SearchResult::RhsEdge | SearchResult::Rhs { .. }) => s,
+            };
+
             (lhs, Some(root))
         }
     };

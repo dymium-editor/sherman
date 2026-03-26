@@ -194,3 +194,12 @@ fn test_18_remove_aligned() {
     tree.insert(0, Constant('M'), 142);
     _ = tree.remove(..142);
 }
+
+#[test]
+fn test_19_remove_split_root() {
+    let mut tree: RleTree<u8, Constant<char>> = RleTree::new_empty();
+    tree.insert(0, Constant('D'), 122);
+    tree.insert(89, Constant('L'), 89);
+    enable_debug!();
+    _ = tree.remove(89..124);
+}
