@@ -141,7 +141,7 @@ where
             self.closed = true;
         } else {
             let (next_range, next_node) = Self::step_edge_backward(back_range.clone(), node);
-            self.front_edge = (next_range, next_node.ptr());
+            self.back_edge = (next_range, next_node.ptr());
         }
 
         Some((back_range, value))

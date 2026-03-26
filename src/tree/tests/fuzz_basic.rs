@@ -211,3 +211,15 @@ fn test_20_remove_from_split_root() {
     _ = tree.remove(66..);
     assert_eq!(tree.size(), 66);
 }
+
+#[test]
+fn test_21_drain_mixed_directions() {
+    let mut tree: RleTree<u8, Constant<char>> = RleTree::new_empty();
+    tree.insert(0, Constant('G'), 126);
+    tree.insert(93, Constant('Z'), 16);
+    {
+        let mut drain = tree.drain(11..);
+        assert_eq!(drain.next_back(), Some((109..142, Constant('G'))));
+        assert_eq!(drain.next(), Some((11..93, Constant('G'))));
+    }
+}
