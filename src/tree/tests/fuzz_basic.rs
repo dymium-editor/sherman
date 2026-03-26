@@ -200,6 +200,14 @@ fn test_19_remove_split_root() {
     let mut tree: RleTree<u8, Constant<char>> = RleTree::new_empty();
     tree.insert(0, Constant('D'), 122);
     tree.insert(89, Constant('L'), 89);
-    enable_debug!();
     _ = tree.remove(89..124);
+}
+
+#[test]
+fn test_20_remove_from_split_root() {
+    let mut tree: RleTree<u8, Constant<char>> = RleTree::new_empty();
+    tree.insert(0, Constant('A'), 75);
+    tree.insert(0, Constant('L'), 63);
+    _ = tree.remove(66..);
+    assert_eq!(tree.size(), 66);
 }

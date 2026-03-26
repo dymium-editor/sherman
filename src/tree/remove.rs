@@ -351,8 +351,8 @@ where
             Side::Lhs => node.value_range().start,
             Side::Rhs => node.subtree_size(),
         },
-        SearchResult::Value { offset_in_range, .. } => match root_side {
-            Side::Lhs => offset_in_range,
+        SearchResult::Value { offset_in_range, range } => match root_side {
+            Side::Lhs => range.start.add_right(offset_in_range),
             Side::Rhs => panic!(
                 "internal error: `split_removal_lhs` got `SearchResult::Value` but `root_side = Rhs`"
             ),
@@ -414,6 +414,7 @@ where
     split_tree(node, target)
 }
 
+#[derive(Debug)]
 struct Split<I, S> {
     lhs: Option<node::HandleUniqueOwned<I, S>>,
     rhs: Option<node::HandleUniqueOwned<I, S>>,
