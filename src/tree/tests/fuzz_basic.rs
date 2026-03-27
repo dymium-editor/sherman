@@ -223,3 +223,30 @@ fn test_21_drain_mixed_directions() {
         assert_eq!(drain.next(), Some((11..93, Constant('G'))));
     }
 }
+
+#[test]
+fn test_22_removal_splits_rhs_no_lhs() {
+    let mut tree: RleTree<u8, Constant<char>> = RleTree::new_empty();
+
+    // // Original fuzz test:
+    // tree.insert(0, Constant('L'), 63);
+    // tree.insert(7, Constant('H'), 119);
+    // _ = tree.remove(9..9);
+    // _ = tree.remove(..9);
+    // tree.insert(14, Constant('A'), 9);
+    // _ = tree.remove(9..47);
+    // tree.insert(2, Constant('J'), 14);
+    // {
+    //     let mut drain = tree.drain(..);
+    //     assert_eq!(drain.next_back(), Some((102..158, Constant('L'))));
+    // }
+
+    // Manually minimized version:
+    tree.insert(0, Constant('L'), 63);
+    tree.insert(7, Constant('H'), 119);
+    _ = tree.remove(..9);
+    tree.insert(14, Constant('A'), 9);
+    _ = tree.remove(9..47);
+    let contents = tree.iter(..).map(|e| (e.range(), e.slice())).collect::<Vec<_>>();
+    assert_eq!(contents, [(0..88, &Constant('H')), (88..144, &Constant('L'))]);
+}

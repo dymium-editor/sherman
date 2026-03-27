@@ -729,8 +729,13 @@ where
     S: Slice<I>,
 {
     let Ok(mut node) = tree.borrow_mut().into_lhs() else {
-        // No left-hand child
-        return (tree, None);
+        // No left-hand child, but we still might have a right-hand child.
+        let rhs = tree.take_rhs();
+        if let Some(n) = &rhs {
+            let new_subtree_size = tree.subtree_size().sub_right(n.subtree_size());
+            tree.set_subtree_size(new_subtree_size);
+        }
+        return (tree, rhs);
     };
 
     loop {
