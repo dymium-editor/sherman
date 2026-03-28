@@ -194,7 +194,13 @@ where
         }
     }
 
-    drop(parent);
+    // Now that we've gotten to the bottom, traverse *back* up the tree and fix all the heights!
+    // This rebalancing is expected to sometimes reduce the height of a subtree as it goes.
+    while let Some((mut n, _side)) = parent.into_parent() {
+        reset_height(n.borrow_mut());
+        parent = n;
+    }
+
     root
 }
 
