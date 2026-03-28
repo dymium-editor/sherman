@@ -250,3 +250,49 @@ fn test_22_removal_splits_rhs_no_lhs() {
     let contents = tree.iter(..).map(|e| (e.range(), e.slice())).collect::<Vec<_>>();
     assert_eq!(contents, [(0..88, &Constant('H')), (88..144, &Constant('L'))]);
 }
+
+#[test]
+fn test_23_removal_recursive_imbalance() {
+    // Minimized lightly from the original fuzz test, removing gratuitous calls to
+    // `tree.validate_balance()`, `tree.get(...)`, zero-length `tree.drain(...)`, and eariler calls
+    // to `drain.next()`.
+
+    let mut tree: RleTree<u8, Constant<char>> = RleTree::new_empty();
+    tree.insert(0, Constant('C'), 125);
+    tree.insert(2, Constant('A'), 8);
+    tree.insert(133, Constant('V'), 2);
+    tree.insert(2, Constant('C'), 2);
+    tree.insert(8, Constant('F'), 8);
+    tree.insert(0, Constant('A'), 8);
+    tree.insert(2, Constant('A'), 8);
+    tree.insert(133, Constant('V'), 2);
+    tree.insert(2, Constant('C'), 2);
+    tree.insert(2, Constant('G'), 2);
+    tree.insert(2, Constant('A'), 8);
+    tree.insert(125, Constant('I'), 2);
+    tree.insert(133, Constant('V'), 2);
+    tree.insert(2, Constant('A'), 8);
+    tree.insert(133, Constant('V'), 2);
+    tree.insert(1, Constant('C'), 2);
+    tree.insert(2, Constant('G'), 2);
+    tree.insert(133, Constant('V'), 2);
+    tree.insert(2, Constant('C'), 2);
+    tree.insert(2, Constant('G'), 2);
+    tree.insert(2, Constant('A'), 8);
+    tree.insert(133, Constant('V'), 2);
+    tree.insert(2, Constant('I'), 2);
+    tree.insert(133, Constant('V'), 2);
+    tree.insert(2, Constant('C'), 2);
+    tree.insert(2, Constant('G'), 2);
+    tree.insert(2, Constant('G'), 2);
+    tree.insert(133, Constant('V'), 2);
+    tree.insert(2, Constant('C'), 2);
+    tree.insert(2, Constant('G'), 2);
+    tree.insert(2, Constant('A'), 8);
+    let _ = tree.drain(49..64);
+    let _ = tree.drain(39..64);
+    // At this point, the removal results in a complicated imbalance, where there are rotations
+    // required on both sides of a removed subtree in order to resolve the imbalance.
+    let _ = tree.drain(48..64);
+    tree.validate_balance(); // <- original fuzz test failed here
+}

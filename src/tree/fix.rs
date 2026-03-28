@@ -154,54 +154,71 @@ fn fix_invasive_unbounded<I, S>(
 where
     I: Index,
 {
-    // Perform a single, initial set of rotations
-    root = fix_invasive(root, side);
-
-    let mut parent = root.borrow_mut();
-
+    // Outer loop: Repeated recusions down the tree from the root.
+    // This may be required when intermediate rotations (e.g., the "left" in left-right rotation)
+    // temporarily exacerbates imbalance that would require more than one rotation at the root, AND
+    // ALSO in the lower subtrees.
     loop {
-        match side {
-            Side::Lhs => {
-                // LHS should have been balanced by rotating right in the original fix_invasive(),
-                // but it may be that LHS's RHS child was so tall that the new RHS is unbalanced.
-                // If so, we'll need to (recursively) fix RHS's LHS child.
-                let mut rhs =
-                    parent.take_rhs().expect("rhs should be Some because we just rotated right");
-                let needs_rebalance = rhs.lhs_height() > rhs.rhs_height() + 1;
-                if needs_rebalance {
-                    rhs = fix_invasive(rhs, Side::Lhs);
+        // Perform a single, initial set of rotations
+        root = fix_invasive(root, side);
+
+        let mut parent = root.borrow_mut();
+
+        // Inner loop: Traverse down the tree to continue balancing the side at the *target* of a
+        // rotation, so that larger differences get repeatedly flattened.
+        loop {
+            match side {
+                Side::Lhs => {
+                    // LHS should have been balanced by rotating right in the original fix_invasive(),
+                    // but it may be that LHS's RHS child was so tall that the new RHS is unbalanced.
+                    // If so, we'll need to (recursively) fix RHS's LHS child.
+                    let mut rhs = parent
+                        .take_rhs()
+                        .expect("rhs should be Some because we just rotated right");
+                    let needs_rebalance = rhs.lhs_height() > rhs.rhs_height() + 1;
+                    if needs_rebalance {
+                        rhs = fix_invasive(rhs, Side::Lhs);
+                    }
+                    parent = parent.insert_rhs(rhs);
+                    if !needs_rebalance {
+                        break;
+                    }
                 }
-                parent = parent.insert_rhs(rhs);
-                if !needs_rebalance {
-                    break;
-                }
-            }
-            Side::Rhs => {
-                // RHS should have been balanced by rotating left in the original fix_invasive(),
-                // but it may be that RHS's LHS child was so tall that the new LHS is unbalanced.
-                // If so, we'll need to (recursively) fix LHS's RHS child.
-                let mut lhs =
-                    parent.take_lhs().expect("lhs should be Some because we just rotated left");
-                let needs_rebalance = lhs.rhs_height() > lhs.lhs_height() + 1;
-                if needs_rebalance {
-                    lhs = fix_invasive(lhs, Side::Rhs);
-                }
-                parent = parent.insert_lhs(lhs);
-                if !needs_rebalance {
-                    break;
+                Side::Rhs => {
+                    // RHS should have been balanced by rotating left in the original fix_invasive(),
+                    // but it may be that RHS's LHS child was so tall that the new LHS is unbalanced.
+                    // If so, we'll need to (recursively) fix LHS's RHS child.
+                    let mut lhs =
+                        parent.take_lhs().expect("lhs should be Some because we just rotated left");
+                    let needs_rebalance = lhs.rhs_height() > lhs.lhs_height() + 1;
+                    if needs_rebalance {
+                        lhs = fix_invasive(lhs, Side::Rhs);
+                    }
+                    parent = parent.insert_lhs(lhs);
+                    if !needs_rebalance {
+                        break;
+                    }
                 }
             }
         }
-    }
 
-    // Now that we've gotten to the bottom, traverse *back* up the tree and fix all the heights!
-    // This rebalancing is expected to sometimes reduce the height of a subtree as it goes.
-    while let Some((mut n, _side)) = parent.into_parent() {
-        reset_height(n.borrow_mut());
-        parent = n;
-    }
+        // Now that we've gotten to the bottom, traverse *back* up the tree and fix all the heights!
+        // This rebalancing is expected to sometimes reduce the height of a subtree as it goes.
+        while let Some((mut n, _side)) = parent.into_parent() {
+            reset_height(n.borrow_mut());
+            parent = n;
+        }
 
-    root
+        // At this point, it may be that the parent is still imbalanced, if a single rotation was
+        // not enough to resolve it. Otherwise, we're done & can exit.
+        let needs_rebalance = match side {
+            Side::Lhs => root.lhs_height() > root.rhs_height() + 1,
+            Side::Rhs => root.rhs_height() > root.lhs_height() + 1,
+        };
+        if !needs_rebalance {
+            break root;
+        }
+    }
 }
 
 fn fix_invasive<I, S>(mut node: HandleUniqueOwned<I, S>, side: Side) -> HandleUniqueOwned<I, S>
