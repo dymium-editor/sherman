@@ -4,7 +4,9 @@ use std::ops::{Bound, Range};
 
 use crate::{Index, RleTree, Slice};
 
+use super::drain::Drain;
 use super::entry::SliceEntry;
+use super::remove::Removed;
 use super::{SearchBound as EndBound, Side, node};
 
 /// An iterator over ranges of slices and their positions in an [`RleTree`]
@@ -229,42 +231,45 @@ where
     }
 }
 
-// @commit-fail: Add this API.
-//
-// /// A destructive iterator over ranges of slices and their positions in an [`RleTree`]
-// pub struct IntoIter<I, S> {
-//     // Internally, just use the `Drain` interface - it's slightly more generic.
-//     inner: drain::Drain<I, S>,
-// }
-//
-// impl<I, S> IntoIter<I, S>
-// where
-//     I: Index,
-//     S: Slice<I>,
-// {
-//     pub(super) fn new(tree: RleTree<I, S>) -> Self {
-//         IntoIter { inner: drain::Drain::from_tree(tree) }
-//     }
-// }
-//
-// impl<I, S> Iterator for IntoIter<I, S>
-// where
-//     I: Index,
-//     S: Slice<I>,
-// {
-//     type Item = (Range<I>, S);
-//
-//     fn next(&mut self) -> Option<Self::Item> {
-//         self.inner.next()
-//     }
-// }
-//
-// impl<I, S> DoubleEndedIterator for IntoIter<I, S>
-// where
-//     I: Index,
-//     S: Slice<I>,
-// {
-//     fn next_back(&mut self) -> Option<Self::Item> {
-//         self.inner.next_back()
-//     }
-// }
+/// A destructive iterator over ranges of slices and their positions in an [`RleTree`]
+pub struct IntoIter<I, S> {
+    // Internally, just use the `Drain` interface - it's slightly more generic.
+    inner: Drain<I, S>,
+}
+
+impl<I, S> IntoIterator for RleTree<I, S>
+where
+    I: Index,
+    S: Slice<I>,
+{
+    type Item = (Range<I>, S);
+    type IntoIter = IntoIter<I, S>;
+
+    fn into_iter(mut self) -> Self::IntoIter {
+        let drain =
+            Drain::new(I::ZERO, self.size(), self.root.take().map(|r| Removed::Tree(r.handle)));
+        IntoIter { inner: drain }
+    }
+}
+
+impl<I, S> Iterator for IntoIter<I, S>
+where
+    I: Index,
+    S: Slice<I>,
+{
+    type Item = (Range<I>, S);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next()
+    }
+}
+
+impl<I, S> DoubleEndedIterator for IntoIter<I, S>
+where
+    I: Index,
+    S: Slice<I>,
+{
+    fn next_back(&mut self) -> Option<Self::Item> {
+        self.inner.next_back()
+    }
+}

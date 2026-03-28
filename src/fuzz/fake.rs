@@ -189,7 +189,7 @@ impl<I: Index, S: Slice<I>> Fake<I, S> {
     pub fn drain(&mut self, range: impl std::ops::RangeBounds<I>) -> FakeDrain<I, S> {
         let std::ops::Range { start, end } = self.resolve_removal_bounds(range);
         let inner = self.remove_internal(start, end);
-        FakeDrain::new(inner, start, end)
+        FakeDrain::new(inner, start)
     }
 
     fn resolve_removal_bounds(&self, range: impl std::ops::RangeBounds<I>) -> Range<I> {
@@ -373,11 +373,47 @@ where
 }
 
 #[derive(Debug)]
-pub struct FakeDrain<I, S>
+pub struct FakeIntoIter<I, S> {
+    inner: FakeDrain<I, S>,
+}
+
+impl<I, S> Iterator for FakeIntoIter<I, S>
 where
     I: Index,
     S: Slice<I>,
 {
+    type Item = (Range<I>, S);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next()
+    }
+}
+
+impl<I, S> DoubleEndedIterator for FakeIntoIter<I, S>
+where
+    I: Index,
+    S: Slice<I>,
+{
+    fn next_back(&mut self) -> Option<Self::Item> {
+        self.inner.next_back()
+    }
+}
+
+impl<I, S> IntoIterator for Fake<I, S>
+where
+    I: Index,
+    S: Slice<I>,
+{
+    type Item = (Range<I>, S);
+    type IntoIter = FakeIntoIter<I, S>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        FakeIntoIter { inner: FakeDrain::new(self, I::ZERO) }
+    }
+}
+
+#[derive(Debug)]
+pub struct FakeDrain<I, S> {
     inner: Fake<I, S>,
 
     // Original start bound of the drain
@@ -393,7 +429,7 @@ where
     I: Index,
     S: Slice<I>,
 {
-    fn new(inner: Fake<I, S>, start: I, _end: I) -> Self {
+    fn new(inner: Fake<I, S>, start: I) -> Self {
         let len = inner.runs.len();
         FakeDrain { inner, start, front_idx: 0, back_idx: len }
     }

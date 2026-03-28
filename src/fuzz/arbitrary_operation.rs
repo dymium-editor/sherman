@@ -150,6 +150,11 @@ pub enum BasicOperation<I, S> {
         /// operations on the iterator, and their expected results.
         access: Result<Vec<IterOperation<I, S>>, ()>,
     },
+    /// `tree.into_iter()`
+    IntoIter {
+        /// The sequence of operations on the iterator, and their expected results.
+        access: Vec<IterOperation<I, S>>,
+    },
     /// `tree.insert(index, slice, size)`
     Insert {
         index: I,
@@ -252,7 +257,7 @@ where
         u: &mut Unstructured<'_>,
         mut fake: Fake<I, S>,
     ) -> arbitrary::Result<(Self, Option<Fake<I, S>>)> {
-        match u.int_in_range(0..=5)? {
+        match u.int_in_range(0..=6)? {
             // BasicOperation::Get
             0 => {
                 let index = I::arbitrary(u)?;
@@ -306,8 +311,23 @@ where
 
                 Ok((BasicOperation::Iter { start, end, access }, new_state))
             }
-            // BasicOperation::Insert
+            // BasicOperation::IntoIter
             2 => {
+                let access_directions = u.arbitrary::<Vec<IterDirection>>()?;
+                let mut iter = fake.into_iter();
+                let mut access = Vec::new();
+                for direction in access_directions {
+                    let value = match direction {
+                        IterDirection::Front => iter.next(),
+                        IterDirection::Back => iter.next_back(),
+                    };
+
+                    access.push(IterOperation { direction, value });
+                }
+                Ok((BasicOperation::IntoIter { access }, None))
+            }
+            // BasicOperation::Insert
+            3 => {
                 let index = I::arbitrary(u)?;
                 let slice = S::arbitrary(u)?;
                 let size = I::arbitrary(u)?;
@@ -324,7 +344,7 @@ where
                 Ok((BasicOperation::Insert { index, slice, size, panics }, new_state))
             }
             // BasicOperation::Remove
-            3 => {
+            4 => {
                 let start = match u.int_in_range(0..=1)? {
                     0 => Bound::Unbounded,
                     1 => Bound::Included(I::arbitrary(u)?),
@@ -349,7 +369,7 @@ where
                 Ok((BasicOperation::Remove { start, end, panics }, new_state))
             }
             // BasicOperation::Drain
-            4 => {
+            5 => {
                 let start = match u.int_in_range(0..=1)? {
                     0 => Bound::Unbounded,
                     1 => Bound::Included(I::arbitrary(u)?),
@@ -384,7 +404,7 @@ where
                 Ok((BasicOperation::Drain { start, end, access }, new_state))
             }
             // BasicOperation::Validate
-            5 => Ok((BasicOperation::Validate, Some(fake))),
+            6 => Ok((BasicOperation::Validate, Some(fake))),
             v => unreachable!("bad BasicOperation variant {v}"),
         }
     }
@@ -424,6 +444,18 @@ where
                     None
                 }
             },
+            BasicOperation::IntoIter { access } => {
+                let mut iter = tree.into_iter();
+                for op in access {
+                    let item = match op.direction {
+                        IterDirection::Front => iter.next(),
+                        IterDirection::Back => iter.next_back(),
+                    };
+
+                    assert_eq!(item, op.value);
+                }
+                None
+            }
             BasicOperation::Insert { index, slice, size, panics } => match panics {
                 false => {
                     tree.insert(*index, slice.clone(), *size);
@@ -558,6 +590,33 @@ where
                     range = format_bounds(start, end),
                 )),
             },
+            BasicOperation::IntoIter { access } => {
+                if access.is_empty() {
+                    f.write_str("    let _ = tree.into_iter();\n")
+                } else {
+                    // Sample output:
+                    //
+                    //   {
+                    //       let mut iter = tree.into_iter();
+                    //       assert_eq!(iter.{method}(), Some(({expected_range}, {expected_slice})));
+                    //       assert_eq!(iter.{method}(), None);
+                    //   }
+                    f.write_str("    {\n")?;
+                    f.write_str("        let mut iter = tree.into_iter();\n")?;
+                    for op in access {
+                        let method = match op.direction {
+                            IterDirection::Front => "next",
+                            IterDirection::Back => "next_back",
+                        };
+
+                        f.write_fmt(format_args!(
+                            "        assert_eq!(iter.{method}(), {expected});\n",
+                            expected = op.value.display_rust_expr(),
+                        ))?;
+                    }
+                    f.write_str("    }\n")
+                }
+            }
             BasicOperation::Insert { index, slice, size, panics } => match panics {
                 false => f.write_fmt(format_args!(
                     "    tree.insert({index}, {slice}, {size});\n",
