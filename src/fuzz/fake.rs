@@ -181,11 +181,18 @@ impl<I: Index, S: Slice<I>> Fake<I, S> {
         }
     }
 
-    pub fn remove(&mut self, range: impl std::ops::RangeBounds<I>) {
-        _ = self.drain(range);
+    pub fn remove(&mut self, range: impl std::ops::RangeBounds<I>) -> Fake<I, S> {
+        let std::ops::Range { start, end } = self.resolve_removal_bounds(range);
+        self.remove_internal(start, end)
     }
 
-    pub fn drain(&mut self, range: impl std::ops::RangeBounds<I>) -> FakeDrain<'_, I, S> {
+    pub fn drain(&mut self, range: impl std::ops::RangeBounds<I>) -> FakeDrain<I, S> {
+        let std::ops::Range { start, end } = self.resolve_removal_bounds(range);
+        let inner = self.remove_internal(start, end);
+        FakeDrain::new(inner, start, end)
+    }
+
+    fn resolve_removal_bounds(&self, range: impl std::ops::RangeBounds<I>) -> Range<I> {
         use std::ops::Bound;
 
         let start = match range.start_bound() {
@@ -208,29 +215,115 @@ impl<I: Index, S: Slice<I>> Fake<I, S> {
             panic!("bad range: start {start:?} > end {end:?}");
         }
 
-        let front_idx = match self.runs.binary_search_by_key(&start, |(i, ..)| *i) {
-            Ok(i) => i + 1,
-            Err(i) => i,
-        };
-        let back_idx = if end == I::ZERO {
-            0
-        } else {
-            match self.runs.binary_search_by_key(&end, |(i, ..)| *i) {
-                Ok(i) => i + 1,
-                Err(i) => i + 1,
-            }
+        start..end
+    }
+
+    fn remove_internal(&mut self, start: I, end: I) -> Fake<I, S> {
+        if start == end {
+            return Fake::new_empty();
+        }
+
+        let (mut front_idx, split_front) =
+            match self.runs.binary_search_by_key(&start, |(i, ..)| *i) {
+                Ok(i) => (i + 1, false),
+                Err(i) => (i, start != I::ZERO),
+            };
+        let (back_idx, split_back) = match self.runs.binary_search_by_key(&end, |(i, ..)| *i) {
+            Ok(i) => (i + 1, false),
+            Err(i) => (i, true),
         };
 
-        FakeDrain {
-            runs: &mut self.runs,
-            start,
-            end,
-            front_idx,
-            back_idx,
-            original_front_idx: front_idx,
-            original_back_idx: back_idx,
-            split: None,
+        let mut new_runs = Vec::new();
+
+        if front_idx == back_idx && split_front && split_back {
+            let idx = front_idx;
+            let value = self.runs[idx].1.take().unwrap();
+            let value_start = idx.checked_sub(1).map(|i| self.runs[i].0).unwrap_or(I::ZERO);
+
+            let (part, rhs) = value.split_at(end.sub_left(value_start));
+            let (lhs, mid) = part.split_at(start.sub_left(value_start));
+
+            new_runs = vec![(end.sub_left(start), Some(mid))];
+
+            // Try joining lhs & rhs. If they can't join, we'll need to re-insert.
+            match lhs.try_join(rhs) {
+                Ok(new_value) => {
+                    // All good
+                    self.runs[idx].1 = Some(new_value);
+                }
+                Err((lhs, rhs)) => {
+                    // Put rhs back, and then insert a new lhs matching its NEW position.
+                    // We'll increment front_idx to make sure we skip it when shifting back all the
+                    // following indexes.
+                    self.runs[idx].1 = Some(rhs);
+                    self.runs.insert(idx, (start, Some(lhs)));
+                    front_idx += 1;
+                }
+            }
+        } else {
+            let back = if !split_back {
+                None
+            } else {
+                let rhs_start = back_idx.checked_sub(1).map(|i| self.runs[i].0).unwrap_or(I::ZERO);
+                let (lhs, rhs) =
+                    self.runs[back_idx].1.take().unwrap().split_at(end.sub_left(rhs_start));
+                self.runs[back_idx].1 = Some(rhs);
+
+                Some((end.sub_left(start), Some(lhs)))
+            };
+
+            let front = if !split_front {
+                None
+            } else {
+                let lhs_start = front_idx.checked_sub(1).map(|i| self.runs[i].0).unwrap_or(I::ZERO);
+                let (lhs, rhs) =
+                    self.runs[front_idx].1.take().unwrap().split_at(start.sub_left(lhs_start));
+                self.runs[front_idx].1 = Some(lhs);
+
+                let front_size = self.runs[front_idx].0.sub_left(start);
+                self.runs[front_idx].0 = start;
+
+                front_idx += 1;
+
+                Some((front_size, Some(rhs)))
+            };
+
+            if front_idx < back_idx {
+                new_runs = self
+                    .runs
+                    .drain(front_idx..back_idx)
+                    .map(|(value_end, value)| (value_end.sub_left(start), value))
+                    .collect();
+            }
+            if let Some(pair) = front {
+                new_runs.insert(0, pair);
+            }
+            if let Some(pair) = back {
+                new_runs.push(pair);
+            }
         }
+
+        for (value_end_pos, _) in &mut self.runs[front_idx..] {
+            *value_end_pos = value_end_pos.sub_left(end).add_left(start);
+        }
+
+        // Try to join the adjacent sides
+        if front_idx > 0 && front_idx < self.runs.len() {
+            let lhs = self.runs[front_idx - 1].1.take().unwrap();
+            let rhs = self.runs[front_idx].1.take().unwrap();
+            match lhs.try_join(rhs) {
+                Ok(joined) => {
+                    self.runs[front_idx].1 = Some(joined);
+                    self.runs.remove(front_idx - 1);
+                }
+                Err((lhs, rhs)) => {
+                    self.runs[front_idx - 1].1 = Some(lhs);
+                    self.runs[front_idx].1 = Some(rhs);
+                }
+            }
+        }
+
+        Fake { runs: new_runs }
     }
 }
 
@@ -280,106 +373,42 @@ where
 }
 
 #[derive(Debug)]
-pub struct FakeDrain<'a, I, S>
+pub struct FakeDrain<I, S>
 where
     I: Index,
     S: Slice<I>,
 {
-    runs: &'a mut Vec<(I, Option<S>)>,
+    inner: Fake<I, S>,
 
-    // Original bounds of the drain
+    // Original start bound of the drain
     start: I,
-    end: I,
 
     // Iteration indexes
     front_idx: usize,
     back_idx: usize,
-
-    original_front_idx: usize,
-    original_back_idx: usize,
-
-    // If draining splits a slice in a way that can't be re-joined, the right-hand split of the
-    // original slice
-    split: Option<S>,
 }
 
-impl<'a, I, S> FakeDrain<'a, I, S>
+impl<I, S> FakeDrain<I, S>
 where
     I: Index,
     S: Slice<I>,
 {
-    fn item(&mut self, idx: usize) -> (Range<I>, S) {
-        let mut run_start = idx.checked_sub(1).map(|i| self.runs[i].0).unwrap_or(I::ZERO);
-        let mut run_end = self.runs[idx].0;
-
-        let mut value = self.runs[idx].1.take().unwrap();
-
-        if idx == self.original_front_idx && run_start != self.start {
-            let (lhs, rhs) = value.split_at(self.start.sub_left(run_start));
-            self.runs[idx].1 = Some(lhs);
-            value = rhs;
-            run_start = self.start;
-        }
-
-        if idx + 1 == self.original_back_idx && run_end != self.end {
-            let (lhs, rhs) = value.split_at(self.end.sub_left(run_start));
-            value = lhs;
-            self.split = Some(rhs);
-            run_end = self.end;
-        }
-
-        (run_start..run_end, value)
+    fn new(inner: Fake<I, S>, start: I, _end: I) -> Self {
+        let len = inner.runs.len();
+        FakeDrain { inner, start, front_idx: 0, back_idx: len }
     }
 
-    fn cleanup(&mut self) {
-        // Finish iteration
-        for _ in &mut *self {}
+    fn item(&mut self, idx: usize) -> (Range<I>, S) {
+        let start = idx.checked_sub(1).map(|i| self.inner.runs[i].0).unwrap_or(I::ZERO);
 
-        let start_slice_start = self
-            .original_front_idx
-            .checked_sub(1)
-            .map(|i| self.runs[i].0)
-            .unwrap_or(I::ZERO);
-        let end_slice_end =
-            self.original_back_idx.checked_sub(1).map(|i| self.runs[i].0).unwrap_or(I::ZERO);
+        let end = self.inner.runs[idx].0;
+        let slice = self.inner.runs[idx].1.take().unwrap();
 
-        let mut removal_start = self.original_front_idx;
-        let removal_end = self.original_back_idx;
-
-        if start_slice_start != self.start {
-            self.runs[removal_start].0 = self.start;
-            removal_start += 1;
-        }
-
-        if let Some(repl) = self.split.take() {
-            self.runs.insert(removal_end, (end_slice_end, Some(repl)));
-        }
-
-        for (end, _) in &mut self.runs[removal_end..] {
-            *end = end.sub_left(self.end).add_left(self.start);
-        }
-
-        _ = self.runs.drain(removal_start..removal_end);
-
-        // Try joining the values on either side of the removal
-        if removal_start != 0 && self.runs.len() > removal_start {
-            let lhs = self.runs[removal_start - 1].1.take().unwrap();
-            let rhs = self.runs[removal_start].1.take().unwrap();
-            match lhs.try_join(rhs) {
-                Ok(new_value) => {
-                    self.runs[removal_start].1 = Some(new_value);
-                    self.runs.remove(removal_start - 1);
-                }
-                Err((lhs, rhs)) => {
-                    self.runs[removal_start - 1].1 = Some(lhs);
-                    self.runs[removal_start].1 = Some(rhs);
-                }
-            }
-        }
+        (self.start.add_right(start)..self.start.add_right(end), slice)
     }
 }
 
-impl<'a, I, S> Iterator for FakeDrain<'a, I, S>
+impl<I, S> Iterator for FakeDrain<I, S>
 where
     I: Index,
     S: Slice<I>,
@@ -387,7 +416,7 @@ where
     type Item = (Range<I>, S);
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.front_idx == self.back_idx || self.start == self.end {
+        if self.front_idx >= self.back_idx {
             return None;
         }
 
@@ -397,30 +426,18 @@ where
     }
 }
 
-impl<'a, I, S> DoubleEndedIterator for FakeDrain<'a, I, S>
+impl<I, S> DoubleEndedIterator for FakeDrain<I, S>
 where
     I: Index,
     S: Slice<I>,
 {
     fn next_back(&mut self) -> Option<Self::Item> {
-        if self.front_idx == self.back_idx || self.start == self.end {
+        if self.front_idx >= self.back_idx {
             return None;
         }
 
         self.back_idx -= 1;
         Some(self.item(self.back_idx))
-    }
-}
-
-impl<'a, I, S> Drop for FakeDrain<'a, I, S>
-where
-    I: Index,
-    S: Slice<I>,
-{
-    fn drop(&mut self) {
-        if self.start != self.end {
-            self.cleanup();
-        }
     }
 }
 
