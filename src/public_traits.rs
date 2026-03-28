@@ -18,7 +18,6 @@ pub trait Index: Debug + Copy + Ord + DirectionalAdd + DirectionalSub {
     /// The requirements on `ZERO` are limited just to the mathematical meaning; addition and
     /// subtraction by `ZERO` must return the original value.
     ///
-    ///
     /// Unlike [`num::Zero`], we use a constant for this trait's zero value, because we need it to
     /// be guaranteed to be essentially "zero"-cost.
     ///

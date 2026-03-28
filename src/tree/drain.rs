@@ -7,6 +7,12 @@ use crate::{Index, Slice};
 use super::remove::Removed;
 use super::{Side, node};
 
+/// A destructive iterator over a range of values in an [`RleTree`], returned by [`RleTree::drain`]
+///
+/// See [`RleTree::drain`] for more information.
+///
+/// [`RleTree`]: crate::RleTree
+/// [`RleTree::drain`]: crate::RleTree::drain
 pub struct Drain<I, S> {
     state: Option<DrainState<I, S>>,
 }
@@ -28,6 +34,11 @@ struct DrainTreeState<I, S> {
 
     closed: bool,
 }
+
+// SAFETY: This is the same condition as `RleTree`; see there for more.
+unsafe impl<I: Send, S: Send> Send for Drain<I, S> {}
+// SAFETY: This is the same condition as `RleTree`; see there for more.
+unsafe impl<I: Sync, S: Sync> Sync for Drain<I, S> {}
 
 impl<I, S> Drain<I, S>
 where

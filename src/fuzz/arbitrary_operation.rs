@@ -57,7 +57,7 @@ pub trait ArbitraryOp: Sized {
     }
 }
 
-/// A sequence of [`ArbitraryOperation`]s
+/// A sequence of [`ArbitraryOp`]s
 pub struct OpSequence<C> {
     ops: Vec<C>,
 }

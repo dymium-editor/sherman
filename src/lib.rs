@@ -1,50 +1,93 @@
-//! # Sherman — a truly monstrous tree type
+//! # Sherman — a big tree type
 //!
-//! It turns out that in the production of an editor, sometimes specialized data structures are
-//! used. Sometimes data structures are similar enough that they can be united into a single
-//! abstract type, with parameterizations to suit the original needs. This crate primarily exports
-//! a single type -- [`RleTree`] -- which represents the collection of all the features we needed.
+//! This crate provides the [`RleTree`] type, a generalized run-length encoded binary search tree
+//! with `O(log(n))` point lookup, range insertion, and range deletion that shifts the indexes of
+//! all following ranges on update.
 //!
-//! ### Notable features
+//! One way of thinking about [`RleTree`] is that it's like a [rope] that's generic over the value
+//! type and the index, which opens up a handful of other opportunities (See "Motivation" below).
 //!
-//! * Values are retrieved by global index
-//! * [`RleTree`] is named such for its run-length encoding -- individual entries in the tree
-//!   represent a uniform range of indexes
-//! * Efficient "shift" operations -- the details of the run-length encoding allow new ranges to be
-//!   inserted in the middle, shifting everything after them, in O(log n) time
-//! * Slice references -- the current position and value of a prior insertion can be fetched in
-//!   O(log n) time, with relatively little overhead (*conflicts with COW*)
-//! * Wait-free concurrent clone-on-write -- [`RleTree`]s can be shared across threads, with
-//!   concurrent writes cloning only the path down to the changed node(s). (*conflicts with slice
-//!   references*)
+//! [rope]: https://en.wikipedia.org/wiki/Rope_(data_structure)
 //!
-//! And of course, all of these features are zero-cost when not in use: the tree is constructed in
-//! such a way so that only the instances that actually *do* use these extra feature (like node
-//! references or concurrent COW) have to pay the cost of them.
+//! ## `RleTree` feature summary
 //!
-//! ### Feature flags
+//! * Values of an `RleTree` are retrieved by global index
+//! * Individual entries in the `RleTree` represent a uniform range of indexes
+//! * Efficient "shift" operations — ranges may be inserted or removed in the middle, shifting the
+//!   positions of everything after them, in `O(log(n))` time.
+//! * Customizable index types; see [`Index`]
+//! * Customizable value types, so long as they can be split and maybe merged; see [`Slice`]
+//
+// TODO: When (re-)implemented:
+//
+// * Slice references -- the current position and value of a prior insertion can be fetched in
+//   O(log n) time, with relatively little overhead (*conflicts with COW*)
+// * Wait-free concurrent clone-on-write -- [`RleTree`]s can be shared across threads, with
+//   concurrent writes cloning only the path down to the changed node(s). (*conflicts with slice
+//   references*)
+//
+// And of course, all of these features are zero-cost when not in use: the tree is constructed in
+// such a way so that only the instances that actually *do* use these extra feature (like node
+// references or concurrent COW) have to pay the cost of them.
+//
 //!
-//! This crate provides the following _public_ feature flags:
+//! ## Feature flags
 //!
-//! * `serde` — *opt-in*, enables [`serde`] support
-//! * `nightly` — *opt-in*, enables some minor improvements (notably: implementing `Drop` for
-//!   [`RleTree`] with `#[may_dangle]`). Requires nightly rustc.
+//! This crate provides the following public feature flags:
 //!
-//! We also use the `fuzz` feature flag, just for testing.
+//! * `nightly` — *opt-in*, enables some minor improvements available behind nightly features
+//!   (notably: implementing `Drop` for [`RleTree`] with `#[may_dangle]`).
 //!
-//! ### Naming
+//! Internally, the `fuzz` feature flag is used for testing.
 //!
-//! This library is named after [General Sherman], a tree in Sequoia National Park that's the
-//! current largest tree on Earth by volume.
+//! ## Testing
 //!
-//! [`serde`]: https://docs.rs/serde
+//! `RleTree` is a very complicated data structure that makes judicious use of unsafe Rust. It's
+//! reasonable to ask how we ensure correctness. We generally achieve this through two mechanisms:
+//!
+//! 1. Fuzz-based testing against a simpler, less efficient implementation
+//! 2. Testing with [`miri`] (under `-Zmiri-tree-borrows`)
+//!
+//! [`miri`]: https://github.com/rust-lang/miri
+//!
+//! The fuzz testing uses a specialized type adapted to [`cargo-fuzz`] that represents a sequence
+//! of operations against an `RleTree`. Each fuzz target runs compares the results of the
+//! operations (e.g., [`get`], [`iter`], [`drain`]) against a simpler implementation of the same
+//! interface, backed by a `Vec` of the value ranges. The sequence of operations also implements
+//! `Debug` to produce a runnable unit test, which is where most of our tests come from.
+//!
+//! [`cargo-fuzz`]: https://github.com/rust-fuzz/cargo-fuzz
+//! [`get`]: RleTree::get
+//! [`iter`]: RleTree::iter
+//! [`drain`]: RleTree::drain
+//!
+//! ## Motivation
+//!
+//! The `RleTree` data structure arose in the context of building a text editor, where there are
+//! many natural needs to represent ranges of values over the span of a file's contents.
+//!
+//! For example, we might want to tag each byte in a file with a unique identifier for the last
+//! edit that touched it. Or we might want to periodically cache the synatx highlighting state at
+//! various points in the file, so that we can quickly re-validate the cache when a small change is
+//! made. Or we can even represent the file content itself, using a `Slice` that is itself a chunk
+//! of bytes with limited size (effectively just a rope).
+//!
+//! It's not just limited to text editors, though! Any index type that naturally forms ranges is a
+//! good candidate here — for example, IP addresses / CIDR blocks, or the key space of a database.
+//!
+//! ## Naming
+//!
+//! This library is named after [General Sherman], the largest tree by volume (on Earth, at time of
+//! writing).
+//!
 //! [General Sherman]: https://en.wikipedia.org/wiki/General_Sherman_(tree)
 
 #![deny(unsafe_op_in_unsafe_fn, rustdoc::broken_intra_doc_links)]
+#![cfg_attr(feature = "nightly", feature(dropck_eyepatch))]
 #![cfg_attr(
-    feature = "nightly",
+    all(feature = "nightly", test),
     allow(incomplete_features),
-    feature(dropck_eyepatch, specialization)
+    feature(specialization)
 )]
 
 use std::fmt::{self, Debug, Formatter};
@@ -59,7 +102,7 @@ mod public_traits;
 mod tree;
 
 pub use public_traits::{DirectionalAdd, DirectionalSub, Index, Slice, Zero};
-pub use tree::{Iter, RleTree, SliceEntry};
+pub use tree::{Drain, IntoIter, Iter, RleTree, SliceEntry};
 
 /// Helper implementation of [`Slice`] for *actual* run-length encoding - a run of identical values
 ///

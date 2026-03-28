@@ -9,7 +9,9 @@ use super::entry::SliceEntry;
 use super::remove::Removed;
 use super::{SearchBound as EndBound, Side, node};
 
-/// An iterator over ranges of slices and their positions in an [`RleTree`]
+/// Borrowing iterator over a range of values in an [`RleTree`], returned by [`RleTree::iter`]
+///
+/// See [`RleTree::iter`] for more information, or [`SliceEntry`] for the values returned.
 pub struct Iter<'t, I, S> {
     start: I,
     end: EndBound<I>,
@@ -231,7 +233,9 @@ where
     }
 }
 
-/// A destructive iterator over ranges of slices and their positions in an [`RleTree`]
+/// A destructive iterator over the entirety of an [`RleTree`], returned by [`RleTree::into_iter`]
+///
+/// [`RleTree::into_iter`]: IntoIterator
 pub struct IntoIter<I, S> {
     // Internally, just use the `Drain` interface - it's slightly more generic.
     inner: Drain<I, S>,

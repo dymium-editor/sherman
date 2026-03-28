@@ -20,40 +20,53 @@ pub(crate) mod tests;
 pub use drain::Drain;
 pub use entry::SliceEntry;
 use fix::FixMode;
-pub use iter::Iter;
+pub use iter::{IntoIter, Iter};
 use node::Side;
 
-// @commit-fail redo these docs
-/// Run-length encoded, balanced binary search tree
+/// Generalized run-length encoded balanced binary search tree
 ///
-/// Although this type is quite complex, it arises out of the simplest version of the problems it
-/// solves. That is:
+/// This data structure represents a continuous range of an [`Index`] type (e.g., `usize`), broken
+/// up into smaller ranges of a [`Slice`] value (e.g., a chunk of text).
 ///
-/// > Given a large `Vec<T>` with `r` runs of identical values, how do we represent the data with
-/// > size `O(r)`, supporting `O(log(r))` insert and delete
+/// It supports `O(log(n))` point lookup, range insertion, and range deletion. On each insertion or
+/// deletion, all ranges of values after the modification point are shifted accordingly.
 ///
-/// The general idea turns out to be pretty ok: a binary search tree with (a) keys as the offset of
-/// the run's start index from the parent node's and (b) values as the length and content of each
-/// run. Insertion and deletion -- which require updating the position of *every* value at a
-/// greater index -- still only require `O(log(r))` updates because all the positions are relative,
-/// except for the root.
+/// One way of thinking about this type is that it's like a [rope] that's generic over the value
+/// type (so long as it can be split at a point and optionally merged back together) and also
+/// generic over the index (so long as we can compute the unsigned offset between any two points).
 ///
-/// Unfortunately, in order to squeeze more functionality out of this type, we gradually added more
-/// and more features to it.
+/// [rope]: https://en.wikipedia.org/wiki/Rope_(data_structure)
 ///
-/// ## Ok, so why is `RleTree` so complicated?
 ///
-/// Well, here's the thing. This crate was specifically made for use in a text editor, where every
-/// time you find *one* use case for a run-length encoded tree, it turns out there's another one
-/// just around the corner. We started with "*tag each byte in a file with the edit that last
-/// touched it*" and moved to "*we can represent the file content itself*", to eventually "*hey, with
-/// special index types, this can apply to line/column number pairs!*".
+/// The implementation of almost all operations on this datastructure do not use unbounded
+/// recursion (i.e. in the places where recursion is used, it is at most a constant number of
+/// recursive calls). The one exception is the `Drop` implementation, where the stack usage is a
+/// series of pointers to nodes (rather than e.g. including the [`Slice`] type).
 ///
-/// So the simplest version of this type would just represent a mapping `usize -> T`, where `T`
-/// implements `PartialEq + Clone` and comparisons are handled by the tree. But to provide more
-/// flexibility, we instead have a mapping `I -> S`, where `I` implements [`Index`] (but is nearly
-/// always `usize`) and `S` implements [`Slice`], which provides utilities for joining and splitting
-/// runs (instead of with `PartialEq` and `Clone`).
+/// For more details on concepts or motivation, refer to the [crate-level documentation](crate).
+///
+/// ## Implementation
+///
+/// **Note:** Details about the implementation are an internal detail. This description is purely
+/// for informational purposes, and may be changed at any point in the future.
+///
+/// Under the hood, an `RleTree` is an [AVL tree](https://en.wikipedia.org/wiki/AVL_tree), where
+/// each node stores:
+///
+/// 1. The [`Slice`] `S` represented by the value of that node
+/// 2. The size `I` of the subtree rooted at that node
+/// 3. The height of the subtree rooted at that node (≥ 1)
+/// 4. A link to the parent node
+///
+/// The range represented by any particular slice `S` is determined by the node's position relative
+/// to the root of the tree, and its subtree size relative to the sizes of its children.
+///
+/// Every time the tree is mutated, we traverse down the tree to make the insertion / deletion, and
+/// then back up the tree to update each node's subtree size and potentially rebalance the tree.
+///
+/// Each node is itself represented by an internal abstraction over allocated values and borrows to
+/// them, which allows traversals through raw pointers without violating Rust's borrowing rules.
+/// (In particular, we test with `miri` under `-Zmiri-tree-borrows`.)
 pub struct RleTree<I, S> {
     root: Option<Root<I, S>>,
 }
@@ -72,6 +85,17 @@ impl<I, S> Drop for RleTree<I, S> {
 unsafe impl<#[may_dangle] I, #[may_dangle] S> Drop for RleTree<I, S> {
     fn drop(&mut self) {}
 }
+
+// SAFETY: It is safe to send RleTree<I, S> across threads if I: Send and S: Send because there is
+// no shared mutable state. All mutations are encapsulated in methods that take &mut RleTree, and
+// there are no returned types that can mutate the same state (unless that shared mutation comes
+// from I or S, but we know it shouldn't if they are both Send).
+unsafe impl<I: Send, S: Send> Send for RleTree<I, S> {}
+// SAFETY: It is safe to send &RleTree<I, S> if I: Sync and S: Sync because all mutations are done
+// through methods that take &mut RleTree, so no mutation of I or S can happen unless they,
+// themselves, allow unsynchronized mutation from an immutable borrow (in which case, they must not
+// be Sync).
+unsafe impl<I: Sync, S: Sync> Sync for RleTree<I, S> {}
 
 impl<I: Debug, S: Debug> Debug for Root<I, S> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -106,6 +130,7 @@ where
         RleTree { root: Some(root) }
     }
 
+    /// Internal helper method, mostly for tests
     fn root(&self) -> Option<&Root<I, S>> {
         self.root.as_ref()
     }
@@ -119,6 +144,10 @@ where
     }
 
     /// Returns the total size of the tree -- i.e., the sum of the sizes of all the slices
+    ///
+    /// ## Algorithmic complexity
+    ///
+    /// This operation is `O(1)`.
     pub fn size(&self) -> I {
         match &self.root {
             Some(r) => r.handle.subtree_size(),
@@ -130,6 +159,10 @@ where
     ///
     /// Through the returned [`SliceEntry`], both the slice `S` and the range of values covered
     /// `Range<I>` can be retrieved.
+    ///
+    /// ## Algorithmic complexity
+    ///
+    /// This operation is `O(log(r))`, where `r` is the number of ranges of values in the tree.
     ///
     /// ## Panics
     ///
@@ -164,6 +197,11 @@ where
     /// one or both bounds outside `range`, but *will* contain some overlap with the requested
     /// `range`.
     ///
+    /// ## Algorithmic complexity
+    ///
+    /// Creating the iterator is `O(log(r))`, where `r` is the number of ranges of values in the
+    /// tree. Each step of iteration is `O(log(r))` but amortized `O(1)`.
+    ///
     /// ## Panics
     ///
     /// This method panics if any of the following are true:
@@ -187,11 +225,17 @@ where
     /// If there is any entry that contains `idx`, it will be split and encompass `slice` on either
     /// side after the insertion (unless `slice` joins with either/both sides).
     ///
+    /// ## Algorithmic complexity
+    ///
+    /// This operation is `O(log(r))`, where `r` is the number of ranges of values in the tree.
+    ///
     /// ## Panics
     ///
     /// This method will panic if `idx` is *greater* than [`self.size()`]. An index equal to the
     /// current size of the tree is explicitly allowed. It will also panic if the size of the new
     /// slice is not greater than zero -- i.e. if `size <= I::ZERO`.
+    ///
+    /// [`self.size()`]: Self::size
     pub fn insert(&mut self, idx: I, slice: S, size: I) {
         if idx < I::ZERO {
             panic!("index {idx:?} out of bounds, less than zero");
@@ -226,6 +270,12 @@ where
     ///
     /// To process the removed values, use [`drain`](Self::drain).
     ///
+    /// ## Algorithmic complexity
+    ///
+    /// This operation is `O(log(r))`, where `r` is the number of ranges of values in the tree.
+    /// Note, however, that if you discard the returned `RleTree`, that is an `O(k)` operation
+    /// (where `k` is the number of ranges of values removed).
+    ///
     /// ## Panics
     ///
     /// This method panics if:
@@ -256,6 +306,12 @@ where
     ///
     /// All values in the range will be removed, whether or not the iterator is exhausted.
     /// If the values are not needed, use [`remove`](Self::remove) instead.
+    ///
+    /// ## Algorithmic complexity
+    ///
+    /// Creating the iterator is `O(log(r))`, where `r` is the number of ranges of values in the
+    /// tree. Each step of iterating the [`Drain`] is `O(log(k))` but amortized `O(1)`, where `k`
+    /// is the number of ranges of values removed. Note also that dropping the `Drain` is `O(k)`.
     ///
     /// ## Panics
     ///

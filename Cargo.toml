@@ -9,10 +9,8 @@ description = "Run-length encoded, highly-parameterizable balanced binary search
 
 [dependencies]
 arbitrary = { version = "1.4.1", optional = true, features = ["derive"] }
-serde = { version = "1", optional = true }
 
 [features]
 default = ["fuzz"]
 nightly = []
-serde = ["dep:serde"]
 fuzz = ["dep:arbitrary"]

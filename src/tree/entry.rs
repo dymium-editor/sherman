@@ -7,6 +7,10 @@ use crate::{Index, Slice};
 /// [`RleTree::iter`].
 ///
 /// Conceptually, this type is basically just `(Range<I>, &'t S)`.
+///
+/// [`RleTree`]: crate::RleTree
+/// [`RleTree::iter`]: crate::RleTree::iter
+/// [`RleTree::get`]: crate::RleTree::get
 pub struct SliceEntry<'t, I, S> {
     pub(super) range: Range<I>,
     pub(super) slice: node::NodeHandle<borrow::Immut<'t, node::Node<I, S>>>,
@@ -22,9 +26,10 @@ where
         self.range.start..self.range.end
     }
 
-    /// Returns the size of the range of values covered by this entry
+    /// Returns the length of the range covered by this entry
     ///
-    /// This is essentially a convenience method roughly equivalent to `self.range().len()`.
+    /// This is roughly equivalent to `self.range().len()`, but respects the potentially
+    /// directional aspect of [`Index`] arithmetic.
     pub fn size(&self) -> I {
         self.range.end.sub_right(self.range.start)
     }
