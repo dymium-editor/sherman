@@ -38,10 +38,9 @@ use node::Side;
 /// [rope]: https://en.wikipedia.org/wiki/Rope_(data_structure)
 ///
 ///
-/// The implementation of almost all operations on this datastructure do not use unbounded
-/// recursion (i.e. in the places where recursion is used, it is at most a constant number of
-/// recursive calls). The one exception is the `Drop` implementation, where the stack usage is a
-/// series of pointers to nodes (rather than e.g. including the [`Slice`] type).
+/// The implementation of all operations on this data structure do not use unbounded recursion
+/// (i.e. in the places where recursion is used, it is at most a constant number of recursive
+/// calls).
 ///
 /// For more details on concepts or motivation, refer to the [crate-level documentation](crate).
 ///

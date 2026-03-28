@@ -166,6 +166,64 @@ impl<I, S> NodeHandle<borrow::UniqueOwned<Node<I, S>>> {
     }
 }
 
+impl<I, S> Drop for Node<I, S> {
+    fn drop(&mut self) {
+        if let Some(n) = self.lhs.take() {
+            drop_owned_node(n);
+        }
+        if let Some(n) = self.rhs.take() {
+            drop_owned_node(n);
+        }
+    }
+}
+
+// Helper for dropping `Node<I, S>` to avoid recursion
+fn drop_owned_node<I, S>(mut root: HandleUniqueOwned<I, S>) {
+    'replace_root: loop {
+        let mut node = root.borrow_mut();
+        'traverse_left: loop {
+            let mut leftmost = loop {
+                match node.into_lhs() {
+                    Ok(n) => node = n,
+                    Err(n) => break n,
+                }
+            };
+
+            'replace_leftmost: loop {
+                let rhs = leftmost.take_rhs();
+                if let Some((mut parent, _)) = leftmost.into_parent() {
+                    // The parent node's left-hand child is `leftmost`. Having taken `rhs` from it,
+                    // `leftmost` currently has no children, so dropping it alone will not recurse.
+                    let lhs = parent.take_lhs();
+                    drop(lhs);
+
+                    if let Some(n) = rhs {
+                        node = parent.insert_lhs(n);
+                        // The RHS child might have a left-hand child, so we should continue.
+                        continue 'traverse_left;
+                    } else {
+                        // We just removed the left-hand child from the parent and didn't replace
+                        // it, so the parent is now the leftmost child.
+                        leftmost = parent;
+                        continue 'replace_leftmost;
+                    }
+                } else {
+                    // `leftmost` is currently the root, and currently has no left-hand child.
+                    // We should replace the root with rhs, if it exists.
+                    drop(root);
+                    match rhs {
+                        Some(n) => {
+                            root = n;
+                            continue 'replace_root;
+                        }
+                        None => return,
+                    }
+                }
+            }
+        }
+    }
+}
+
 //
 // Public API
 //
