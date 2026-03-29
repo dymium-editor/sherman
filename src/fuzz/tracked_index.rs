@@ -289,12 +289,28 @@ impl<'t, I: Index> DirectionalAdd for TrackedIndex<'t, I> {
             (IndexKind::Range(lhs), IndexKind::Range(rhs)) => (lhs, rhs),
         };
 
-        let (lhs, rhs) = IndexRange::align("add_right", lhs, rhs);
+        let (mut lhs, mut rhs) = IndexRange::align("add_right", lhs, rhs);
 
-        if lhs.base.add_right(lhs.size) != rhs.base {
-            panic!(
-                "invalid operation: attempted to add_right({self:?}, {right:?}), but translated add_right({lhs:?}, {rhs:?}) isn't adjacent"
-            )
+        loop {
+            if lhs.base.add_right(lhs.size) != rhs.base {
+                // if the end of `lhs` isn't aligned with the start of `rhs`, it's *possible* that it's
+                // since become aligned due to removing the space between them.
+                let epoch = lhs.epoch; // `align` ensures they're the same
+                if epoch < lhs.info.epochs.borrow().len() {
+                    let next_lhs = lhs.forward(epoch + 1);
+                    let next_rhs = rhs.forward(epoch + 1);
+                    if next_lhs.epoch == epoch + 1 && next_rhs.epoch == epoch + 1 {
+                        (lhs, rhs) = (next_lhs, next_rhs);
+                        continue;
+                    }
+                }
+
+                panic!(
+                    "invalid operation: attempted to add_right({self:?}, {right:?}), but translated add_right({lhs:?}, {rhs:?}) isn't adjacent"
+                )
+            }
+
+            break;
         }
 
         TrackedIndex {
