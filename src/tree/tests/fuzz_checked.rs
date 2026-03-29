@@ -45,3 +45,13 @@ fn test_04_drain_remove_only_node_end() {
     let (start, _) = t.prepare_remove(187, 250);
     let _ = tree.drain(start..);
 }
+
+#[test]
+fn test_05_insert_end_join() {
+    let t: IndexInfo<u8> = IndexInfo::new();
+    let mut tree: RleTree<TrackedIndex<u8>, TrackedSlice<Constant<char>>> = RleTree::new_empty();
+    let (idx, size) = t.prepare_insert(0, 10);
+    tree.insert(idx, TrackedSlice(Constant('A')), size);
+    let (idx, size) = t.prepare_insert(10, 92);
+    tree.insert(idx, TrackedSlice(Constant('A')), size);
+}

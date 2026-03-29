@@ -211,11 +211,11 @@ impl<'t, I: Index> IndexRange<'t, I> {
         'done: for &op in &epochs[self.epoch..goal_epoch] {
             match op {
                 Operation::Insert { pos, size } => {
-                    if pos >= self.base && pos >= self.base.add_right(self.size) {
-                        // `pos` is beyond the bounds of this index, so we can ignore it.
-                    } else if pos <= self.base {
+                    if pos <= self.base {
                         // `pos` is before this index, so we should shift to adjust
                         self.base = self.base.sub_left(pos).add_left(size).add_left(pos);
+                    } else if pos >= self.base && pos >= self.base.add_right(self.size) {
+                        // `pos` is beyond the bounds of this index, so we can ignore it.
                     } else {
                         // `pos` is in the middle of the range covered by this value, so it
                         // actually cannot be compared!
@@ -223,11 +223,11 @@ impl<'t, I: Index> IndexRange<'t, I> {
                     }
                 }
                 Operation::Remove { start, end } => {
-                    if start >= self.base && start >= self.base.add_right(self.size) {
-                        // operation is beyond the bounds of this index, so we can ignore it.
-                    } else if end <= self.base {
+                    if end <= self.base {
                         // operation is before this index, so we should shift to adjust
                         self.base = self.base.sub_left(end).add_left(start);
+                    } else if start >= self.base && start >= self.base.add_right(self.size) {
+                        // operation is beyond the bounds of this index, so we can ignore it.
                     } else {
                         // operation overlaps with the range covered by this value, so it cannot
                         // actually be compared!
