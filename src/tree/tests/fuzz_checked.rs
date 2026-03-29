@@ -35,3 +35,13 @@ fn test_03_repeat_insertion_point() {
     let (idx, size) = t.prepare_insert(0, 14);
     tree.insert(idx, TrackedSlice(Constant('F')), size);
 }
+
+#[test]
+fn test_04_drain_remove_only_node_end() {
+    let t: IndexInfo<u8> = IndexInfo::new();
+    let mut tree: RleTree<TrackedIndex<u8>, TrackedSlice<Constant<char>>> = RleTree::new_empty();
+    let (idx, size) = t.prepare_insert(0, 250);
+    tree.insert(idx, TrackedSlice(Constant('Q')), size);
+    let (start, _) = t.prepare_remove(187, 250);
+    let _ = tree.drain(start..);
+}

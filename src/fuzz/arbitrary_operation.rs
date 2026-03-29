@@ -929,7 +929,7 @@ where
                 };
 
                 f.write_fmt(format_args!(
-                    "let ({start_var}, {end_var}) = t.prepare_remove({start_idx}..{end_idx});\n",
+                    "    let ({start_var}, {end_var}) = t.prepare_remove({start_idx}, {end_idx});\n",
                     start_idx = start_idx.display_rust_expr(),
                     end_idx = end_idx.display_rust_expr(),
                 ))?;
@@ -957,7 +957,7 @@ where
                 };
 
                 f.write_fmt(format_args!(
-                    "let ({start_var}, {end_var}) = t.prepare_remove({start_idx}..{end_idx});\n",
+                    "    let ({start_var}, {end_var}) = t.prepare_remove({start_idx}, {end_idx});\n",
                     start_idx = start_idx.display_rust_expr(),
                     end_idx = end_idx.display_rust_expr(),
                 ))?;

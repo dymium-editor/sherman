@@ -83,7 +83,7 @@ where
                     let rightmost_range = {
                         let r = rightmost_node.value_range();
                         let size = r.end.sub_left(r.start);
-                        end.sub_left(size)..end
+                        end.sub_right(size)..end
                     };
                     drop(rightmost_node);
 
