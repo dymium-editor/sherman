@@ -121,7 +121,13 @@ impl<I: Index> IndexInfo<I> {
         let mut epochs = self.epochs.borrow_mut();
 
         let epoch = epochs.len();
-        epochs.push(Operation::Remove { start, end });
+
+        // Special case: Don't actually add an epoch if the removal is zero-sized, because it's ok
+        // to keep ranges across that removal in the special case where we know that it MUST be
+        // that nothing changed.
+        if start != end {
+            epochs.push(Operation::Remove { start, end });
+        }
 
         let tracked_start = TrackedIndex {
             kind: IndexKind::Range(IndexRange { info: self, epoch, base: I::ZERO, size: start }),

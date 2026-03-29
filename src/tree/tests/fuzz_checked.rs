@@ -65,3 +65,18 @@ fn test_06_remove_within_only_node() {
     let (start, end) = t.prepare_remove(81, 85);
     _ = tree.remove(start..end);
 }
+
+#[test]
+fn test_07_remove_within_only_node_zero_sized() {
+    let t: IndexInfo<u8> = IndexInfo::new();
+    let mut tree: RleTree<TrackedIndex<u8>, TrackedSlice<Constant<char>>> = RleTree::new_empty();
+    let (idx, size) = t.prepare_insert(0, 255);
+    tree.insert(idx, TrackedSlice(Constant('V')), size);
+    let (start, end) = t.prepare_remove(249, 249);
+    _ = tree.remove(start..end);
+    {
+        let entry = tree.get(t.i(0));
+        assert_eq!(entry.range(), t.i(0)..t.i(255));
+        assert_eq!(entry.slice(), &TrackedSlice(Constant('V')));
+    }
+}
