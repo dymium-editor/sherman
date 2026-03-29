@@ -6,11 +6,13 @@ use std::fmt::{self, Debug};
 mod arbitrary_operation;
 mod as_rust;
 mod fake;
+mod tracked_index;
 
 pub use crate::tree::tests::CharRange;
-pub use arbitrary_operation::{ArbitraryOp, BasicOperation, OpSequence};
+pub use arbitrary_operation::{ArbitraryOp, BasicOperation, CheckedIndexOperation, OpSequence};
 pub use as_rust::{RustExpr, RustType};
 pub use fake::Fake;
+pub use tracked_index::{IndexInfo, TrackedIndex, TrackedSlice};
 
 /// Helper type for fuzzing - restricted character set that pretends it's `char`
 #[derive(Copy, Clone, PartialEq, Eq)]

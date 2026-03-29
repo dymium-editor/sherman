@@ -20,6 +20,8 @@ mod manual;
 mod fuzz_basic;
 #[cfg(test)]
 mod fuzz_basic_range;
+#[cfg(test)]
+mod fuzz_checked;
 
 /// Helper type for fuzzing - a [`Slice`] implementation that joins continuous character ranges
 #[derive(Debug, Clone, PartialEq, Eq)]
