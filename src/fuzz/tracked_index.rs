@@ -292,6 +292,8 @@ impl<'t, I: Index> DirectionalAdd for TrackedIndex<'t, I> {
         let (lhs, rhs) = match (self.kind, right.kind) {
             (IndexKind::Zero, _) => return right,
             (_, IndexKind::Zero) => return self,
+            (IndexKind::Range(lhs), _) if lhs.size == I::ZERO => return right,
+            (_, IndexKind::Range(rhs)) if rhs.size == I::ZERO => return self,
             (IndexKind::Range(lhs), IndexKind::Range(rhs)) => (lhs, rhs),
         };
 
@@ -334,6 +336,7 @@ impl<'t, I: Index> DirectionalSub for TrackedIndex<'t, I> {
     fn sub_left(self, left: Self) -> Self {
         let (this, lhs) = match (self.kind, left.kind) {
             (_, IndexKind::Zero) => return self,
+            (_, IndexKind::Range(lhs)) if lhs.size == I::ZERO => return self,
             (IndexKind::Range(this), IndexKind::Range(lhs)) => (this, lhs),
             (IndexKind::Zero, IndexKind::Range(_)) => {
                 panic!("invalid operation: attempted to sub_left({self:?}, {left:?})")
@@ -365,6 +368,7 @@ impl<'t, I: Index> DirectionalSub for TrackedIndex<'t, I> {
     fn sub_right(self, right: Self) -> Self {
         let (this, rhs) = match (self.kind, right.kind) {
             (_, IndexKind::Zero) => return self,
+            (_, IndexKind::Range(rhs)) if rhs.size == I::ZERO => return self,
             (IndexKind::Range(this), IndexKind::Range(rhs)) => (this, rhs),
             (IndexKind::Zero, IndexKind::Range(_)) => {
                 panic!("invalid operation: attempted to sub_right({self:?}, {right:?})")

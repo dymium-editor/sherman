@@ -554,6 +554,9 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
         mut self,
         mut node: node::HandleMut<I, S>,
     ) -> (node::HandleMut<I, S>, ControlFlow<UpwardUpdateState<I>, Self>) {
+        debug_println!("step_edge_lhs():");
+        debug_println!("node.addr() = {:#x}", node.addr());
+
         // Target is on the edge of this node and LHS subtree; try joining the slice with this
         // node.
         if self.allow_joining {

@@ -80,3 +80,17 @@ fn test_07_remove_within_only_node_zero_sized() {
         assert_eq!(entry.slice(), &TrackedSlice(Constant('V')));
     }
 }
+
+#[test]
+fn test_08_insert_root_rejoin_lhs_rejoin() {
+    let t: IndexInfo<u8> = IndexInfo::new();
+    let mut tree: RleTree<TrackedIndex<u8>, TrackedSlice<Constant<char>>> = RleTree::new_empty();
+    let (idx, size) = t.prepare_insert(0, 204);
+    tree.insert(idx, TrackedSlice(Constant('A')), size);
+    let (idx, size) = t.prepare_insert(22, 22);
+    tree.insert(idx, TrackedSlice(Constant('W')), size);
+    let (idx, size) = t.prepare_insert(22, 22);
+    tree.insert(idx, TrackedSlice(Constant('W')), size);
+    let (idx, size) = t.prepare_insert(0, 4);
+    tree.insert(idx, TrackedSlice(Constant('A')), size);
+}
