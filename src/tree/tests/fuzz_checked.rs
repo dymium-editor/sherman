@@ -23,3 +23,15 @@ fn test_02_panic_caught() {
             .is_err()
     );
 }
+
+#[test]
+fn test_03_repeat_insertion_point() {
+    let t: IndexInfo<u8> = IndexInfo::new();
+    let mut tree: RleTree<TrackedIndex<u8>, TrackedSlice<Constant<char>>> = RleTree::new_empty();
+    let (idx, size) = t.prepare_insert(0, 10);
+    tree.insert(idx, TrackedSlice(Constant('I')), size);
+    // On this repeat insertion at the same index, it's easy for the tracking logic to get tripped
+    // up trying to interpret things in one epoch or another.
+    let (idx, size) = t.prepare_insert(0, 14);
+    tree.insert(idx, TrackedSlice(Constant('F')), size);
+}

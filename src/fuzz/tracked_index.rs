@@ -100,14 +100,14 @@ impl<I: Index> IndexInfo<I> {
     pub fn prepare_insert(&self, pos: I, size: I) -> (TrackedIndex<'_, I>, TrackedIndex<'_, I>) {
         let mut epochs = self.epochs.borrow_mut();
 
-        epochs.push(Operation::Insert { pos, size });
         let epoch = epochs.len();
+        epochs.push(Operation::Insert { pos, size });
 
         let tracked_pos = TrackedIndex {
             kind: IndexKind::Range(IndexRange { info: self, epoch, base: I::ZERO, size: pos }),
         };
         let tracked_len = TrackedIndex {
-            kind: IndexKind::Range(IndexRange { info: self, epoch, base: pos, size }),
+            kind: IndexKind::Range(IndexRange { info: self, epoch: epoch + 1, base: pos, size }),
         };
 
         (tracked_pos, tracked_len)
