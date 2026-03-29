@@ -36,7 +36,7 @@ struct IndexRange<'t, I> {
     info: &'t IndexInfo<I>,
     epoch: usize,
     base: I,
-    real: I,
+    size: I,
 }
 
 /// [`Slice`] implementor that converts a [`TrackedIndex`] into its underyling type
@@ -52,7 +52,7 @@ impl<'t, I: Index> TrackedIndex<'t, I> {
     pub fn value(&self) -> I {
         match self.kind {
             IndexKind::Zero => I::ZERO,
-            IndexKind::Range(r) => r.real.sub_left(r.base),
+            IndexKind::Range(r) => r.size,
         }
     }
 }
@@ -73,7 +73,7 @@ impl<I: Index> IndexInfo<I> {
     pub fn i(&self, idx: I) -> TrackedIndex<'_, I> {
         let epoch = self.epochs.borrow().len();
         TrackedIndex {
-            kind: IndexKind::Range(IndexRange { info: self, epoch, base: I::ZERO, real: idx }),
+            kind: IndexKind::Range(IndexRange { info: self, epoch, base: I::ZERO, size: idx }),
         }
     }
 
@@ -89,7 +89,7 @@ impl<I: Index> IndexInfo<I> {
                 panic!("cannot represent `TrackedIndex` before previous operation if there are no operations")
             });
         TrackedIndex {
-            kind: IndexKind::Range(IndexRange { info: self, epoch, base: I::ZERO, real: idx }),
+            kind: IndexKind::Range(IndexRange { info: self, epoch, base: I::ZERO, size: idx }),
         }
     }
 
@@ -104,15 +104,10 @@ impl<I: Index> IndexInfo<I> {
         let epoch = epochs.len();
 
         let tracked_pos = TrackedIndex {
-            kind: IndexKind::Range(IndexRange { info: self, epoch, base: I::ZERO, real: pos }),
+            kind: IndexKind::Range(IndexRange { info: self, epoch, base: I::ZERO, size: pos }),
         };
         let tracked_len = TrackedIndex {
-            kind: IndexKind::Range(IndexRange {
-                info: self,
-                epoch,
-                base: pos,
-                real: pos.add_right(size),
-            }),
+            kind: IndexKind::Range(IndexRange { info: self, epoch, base: pos, size }),
         };
 
         (tracked_pos, tracked_len)
@@ -129,10 +124,10 @@ impl<I: Index> IndexInfo<I> {
         epochs.push(Operation::Remove { start, end });
 
         let tracked_start = TrackedIndex {
-            kind: IndexKind::Range(IndexRange { info: self, epoch, base: I::ZERO, real: start }),
+            kind: IndexKind::Range(IndexRange { info: self, epoch, base: I::ZERO, size: start }),
         };
         let tracked_end = TrackedIndex {
-            kind: IndexKind::Range(IndexRange { info: self, epoch, base: I::ZERO, real: end }),
+            kind: IndexKind::Range(IndexRange { info: self, epoch, base: I::ZERO, size: end }),
         };
 
         (tracked_start, tracked_end)
@@ -168,20 +163,12 @@ impl<'t, I: Debug> Debug for TrackedIndex<'t, I> {
 
 impl<'t, I: Debug> Debug for IndexRange<'t, I> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let IndexRange { epoch, base, real, .. } = self;
-        f.write_fmt(format_args!("{epoch:#x}:({base:?}-{real:?})"))
+        let IndexRange { epoch, base, size, .. } = self;
+        f.write_fmt(format_args!("{epoch:#x}:({base:?}+{size:?})"))
     }
 }
 
 impl<'t, I: Index> IndexRange<'t, I> {
-    /// Checks that the range's base is less than or equal to its end point
-    #[track_caller]
-    fn check(&self) {
-        if self.base > self.real {
-            panic!("invalid `IndexRange` {self:?}");
-        }
-    }
-
     /// Aligns the two `IndexRange` values to the same epoch, or panics if they cannot be compared
     fn align(op: &str, x: Self, y: Self) -> (Self, Self) {
         fn meet<'t, I: Index>(
@@ -224,12 +211,11 @@ impl<'t, I: Index> IndexRange<'t, I> {
         'done: for &op in &epochs[self.epoch..goal_epoch] {
             match op {
                 Operation::Insert { pos, size } => {
-                    if pos >= self.real {
+                    if pos >= self.base && pos >= self.base.add_right(self.size) {
                         // `pos` is beyond the bounds of this index, so we can ignore it.
                     } else if pos <= self.base {
                         // `pos` is before this index, so we should shift to adjust
                         self.base = self.base.sub_left(pos).add_left(size).add_left(pos);
-                        self.real = self.real.sub_left(pos).add_left(size).add_left(pos);
                     } else {
                         // `pos` is in the middle of the range covered by this value, so it
                         // actually cannot be compared!
@@ -237,12 +223,11 @@ impl<'t, I: Index> IndexRange<'t, I> {
                     }
                 }
                 Operation::Remove { start, end } => {
-                    if start >= self.real {
+                    if start >= self.base && start >= self.base.add_right(self.size) {
                         // operation is beyond the bounds of this index, so we can ignore it.
                     } else if end <= self.base {
                         // operation is before this index, so we should shift to adjust
                         self.base = self.base.sub_left(end).add_left(start);
-                        self.real = self.real.sub_left(end).add_left(start);
                     } else {
                         // operation overlaps with the range covered by this value, so it cannot
                         // actually be compared!
@@ -254,7 +239,6 @@ impl<'t, I: Index> IndexRange<'t, I> {
             self.epoch += 1;
         }
 
-        self.check();
         self
     }
 
@@ -265,23 +249,21 @@ impl<'t, I: Index> IndexRange<'t, I> {
             match op {
                 Operation::Insert { pos, size } => {
                     let insert_end = pos.add_right(size);
-                    if pos >= self.real {
+                    if pos >= self.base && pos >= self.base.add_right(self.size) {
                         // operation is beyond the bounds of this index, so we can ignore it
                     } else if insert_end <= self.base {
                         // operation is before this index, so we should shift to undo it
                         self.base = self.base.sub_left(insert_end).add_left(pos);
-                        self.real = self.real.sub_left(insert_end).add_left(pos);
                     } else {
                         break 'done;
                     }
                 }
                 Operation::Remove { start, end } => {
-                    if start >= self.real {
+                    if start >= self.base && start >= self.base.add_right(self.size) {
                         // operation is beyond the bounds of this index, so we can ignore it
                     } else if start <= self.base {
                         // operation is before this index, so we should shift to undo it
                         self.base = self.base.sub_left(start).add_left(end);
-                        self.real = self.real.sub_left(start).add_left(end);
                     } else {
                         break 'done;
                     }
@@ -291,7 +273,6 @@ impl<'t, I: Index> IndexRange<'t, I> {
             self.epoch -= 1;
         }
 
-        self.check();
         self
     }
 }
@@ -310,21 +291,20 @@ impl<'t, I: Index> DirectionalAdd for TrackedIndex<'t, I> {
 
         let (lhs, rhs) = IndexRange::align("add_right", lhs, rhs);
 
-        if lhs.real != rhs.base {
+        if lhs.base.add_right(lhs.size) != rhs.base {
             panic!(
                 "invalid operation: attempted to add_right({self:?}, {right:?}), but translated add_right({lhs:?}, {rhs:?}) isn't adjacent"
             )
         }
 
-        let r = IndexRange {
-            info: lhs.info,
-            epoch: lhs.epoch,
-            base: lhs.base,
-            real: rhs.real,
-        };
-        r.check();
-
-        TrackedIndex { kind: IndexKind::Range(r) }
+        TrackedIndex {
+            kind: IndexKind::Range(IndexRange {
+                info: lhs.info,
+                epoch: lhs.epoch,
+                base: lhs.base,
+                size: lhs.size.add_right(rhs.size),
+            }),
+        }
     }
 }
 
@@ -344,21 +324,20 @@ impl<'t, I: Index> DirectionalSub for TrackedIndex<'t, I> {
             panic!(
                 "invalid operation: attempted to sub_left({self:?}, {left:?}), but translated sub_left({this:?}, {lhs:?}) isn't aligned at base"
             )
-        } else if lhs.real > this.real {
+        } else if lhs.base.add_right(lhs.size) > this.base.add_right(this.size) {
             panic!(
                 "invalid operation: attempted to sub_left({self:?}, {left:?}), but translated sub_left({this:?}, {lhs:?}) has larger subtrahend"
             )
         }
 
-        let r = IndexRange {
-            info: this.info,
-            epoch: this.epoch,
-            base: lhs.real,
-            real: this.real,
-        };
-        r.check();
-
-        TrackedIndex { kind: IndexKind::Range(r) }
+        TrackedIndex {
+            kind: IndexKind::Range(IndexRange {
+                info: this.info,
+                epoch: this.epoch,
+                base: lhs.base.add_right(lhs.size),
+                size: this.size.sub_left(lhs.size),
+            }),
+        }
     }
 
     fn sub_right(self, right: Self) -> Self {
@@ -372,7 +351,7 @@ impl<'t, I: Index> DirectionalSub for TrackedIndex<'t, I> {
 
         let (this, rhs) = IndexRange::align("sub_right", this, rhs);
 
-        if this.real != rhs.real {
+        if this.base.add_right(this.size) != rhs.base.add_right(rhs.size) {
             panic!(
                 "invalid operation: attempted to sub_right({self:?}, {right:?}), but translated sub_right({this:?}, {rhs:?}) isn't aligned at end"
             )
@@ -382,15 +361,14 @@ impl<'t, I: Index> DirectionalSub for TrackedIndex<'t, I> {
             )
         }
 
-        let r = IndexRange {
-            info: this.info,
-            epoch: this.epoch,
-            base: this.base,
-            real: rhs.base,
-        };
-        r.check();
-
-        TrackedIndex { kind: IndexKind::Range(r) }
+        TrackedIndex {
+            kind: IndexKind::Range(IndexRange {
+                info: this.info,
+                epoch: this.epoch,
+                base: this.base,
+                size: this.size.sub_right(rhs.size),
+            }),
+        }
     }
 }
 
@@ -399,12 +377,10 @@ impl<'t, I: Index> Ord for TrackedIndex<'t, I> {
         let (lhs, rhs) = match (self.kind, other.kind) {
             (IndexKind::Zero, IndexKind::Zero) => return Ordering::Equal,
             (IndexKind::Range(lhs), IndexKind::Zero) => {
-                let delta = lhs.real.sub_left(lhs.base);
-                return delta.cmp(&I::ZERO);
+                return lhs.size.cmp(&I::ZERO);
             }
             (IndexKind::Zero, IndexKind::Range(rhs)) => {
-                let delta = rhs.real.sub_left(rhs.base);
-                return I::ZERO.cmp(&delta);
+                return I::ZERO.cmp(&rhs.size);
             }
             (IndexKind::Range(lhs), IndexKind::Range(rhs)) => (lhs, rhs),
         };
@@ -417,7 +393,7 @@ impl<'t, I: Index> Ord for TrackedIndex<'t, I> {
             )
         }
 
-        lhs.real.cmp(&rhs.real)
+        lhs.size.cmp(&rhs.size)
     }
 }
 
