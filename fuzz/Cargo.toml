@@ -31,3 +31,10 @@ path = "fuzz_targets/checked.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "checked_range"
+path = "fuzz_targets/checked_range.rs"
+test = false
+doc = false
+bench = false
