@@ -22,6 +22,7 @@ pub use entry::SliceEntry;
 use fix::FixMode;
 pub use iter::{IntoIter, Iter};
 use node::Side;
+pub use remove::Removed;
 
 /// Generalized run-length encoded balanced binary search tree
 ///
@@ -119,7 +120,7 @@ where
     /// ## Panics
     ///
     /// This method will panic if `size` is not greater than zero -- i.e., if `size <= I::ZERO`.
-    pub fn new(slice: S, size: I) -> Self {
+    pub fn new(size: I, slice: S) -> Self {
         if size <= I::ZERO {
             panic!("cannot create new slice with non-positive size {size:?}");
         }
@@ -250,7 +251,7 @@ where
                 // This tree is completely empty, so we can actually just initialize it to just
                 // contain the value we want, and return. Given that `self.size()` must be zero, we
                 // know that `idx` is also zero.
-                *self = RleTree::new(slice, size);
+                *self = RleTree::new(size, slice);
                 return;
             }
         };
@@ -265,9 +266,11 @@ where
         self.root = Some(root);
     }
 
-    /// Removes a range of values from the tree, returning a new [`RleTree`] representing them.
+    /// Removes a range of values from the tree, returning a [`Removed`] object representing them.
     ///
-    /// To process the removed values, use [`drain`](Self::drain).
+    /// To process the removed values, use [`drain`](Self::drain) on the tree or
+    /// [`Removed::into_tier`](IntoIterator); or [`Removed::into_tree`] to turn it into a full
+    /// `RleTree`.
     ///
     /// ## Algorithmic complexity
     ///
@@ -288,23 +291,17 @@ where
     /// We cannot allow inclusive end bounds because that would require an increment operator to
     /// transform into an equivalent exclusive end bound, and index types might not necessarily
     /// have a natural definition of "increment".
-    pub fn remove<R>(&mut self, range: R) -> Self
+    pub fn remove<R>(&mut self, range: R) -> Removed<I, S>
     where
         R: std::ops::RangeBounds<I>,
     {
         let range = remove::check_bounds(self, "remove", range.start_bound(), range.end_bound());
-        let removed = remove::remove(self, range.clone());
-        match removed {
-            None => Self::new_empty(),
-            Some(remove::Removed::Slice(s)) => Self::new(s, range.end.sub_left(range.start)),
-            Some(remove::Removed::Tree(t)) => RleTree { root: Some(Root { handle: t }) },
-        }
+        remove::remove(self, range.clone())
     }
 
     /// Removes a range of values from the tree, returning an iterator over the values
     ///
-    /// All values in the range will be removed, whether or not the iterator is exhausted.
-    /// If the values are not needed, use [`remove`](Self::remove) instead.
+    /// This is basically just a convenience method for `self.remove().into_iter()`.
     ///
     /// ## Algorithmic complexity
     ///
@@ -327,7 +324,7 @@ where
     {
         let range = remove::check_bounds(self, "drain", range.start_bound(), range.end_bound());
         let removed = remove::remove(self, range.clone());
-        Drain::new(range.start, range.end, removed)
+        Drain::new(removed)
     }
 }
 

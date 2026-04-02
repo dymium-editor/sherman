@@ -4,10 +4,11 @@ use std::ops::Range;
 
 use crate::{Index, Slice};
 
-use super::remove::Removed;
+use super::remove::{Removed, RemovedKind};
 use super::{Side, node};
 
 /// A destructive iterator over a range of values in an [`RleTree`], returned by [`RleTree::drain`]
+/// or `.remove().into_iter()`.
 ///
 /// See [`RleTree::drain`] for more information.
 ///
@@ -45,12 +46,15 @@ where
     I: Index,
     S: Slice<I>,
 {
-    pub(super) fn new(start: I, end: I, removed: Option<Removed<I, S>>) -> Self {
+    pub(super) fn new(removed: Removed<I, S>) -> Self {
+        let Range { start, end } = removed.range();
         Drain {
-            state: match removed {
-                None => None,
-                Some(Removed::Slice(value)) => Some(DrainState::Single(Some((start..end, value)))),
-                Some(Removed::Tree(mut root)) => {
+            state: match removed.kind {
+                RemovedKind::Empty => None,
+                RemovedKind::Slice { slice, .. } => {
+                    Some(DrainState::Single(Some((start..end, slice))))
+                }
+                RemovedKind::Tree(mut root) => {
                     let mut leftmost_node = root.borrow_mut();
                     loop {
                         match leftmost_node.into_lhs() {

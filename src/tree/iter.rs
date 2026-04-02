@@ -249,9 +249,9 @@ where
     type Item = (Range<I>, S);
     type IntoIter = IntoIter<I, S>;
 
-    fn into_iter(mut self) -> Self::IntoIter {
-        let drain =
-            Drain::new(I::ZERO, self.size(), self.root.take().map(|r| Removed::Tree(r.handle)));
+    fn into_iter(self) -> Self::IntoIter {
+        let removed = Removed::from_tree(self);
+        let drain = Drain::new(removed);
         IntoIter { inner: drain }
     }
 }

@@ -4,12 +4,91 @@ use std::ops::{Bound, Range};
 
 use crate::{Index, RleTree, Slice};
 
+use super::drain::Drain;
 use super::fix::{self, FixMode};
 use super::{Root, SearchResult, Side, UpwardUpdateState, node};
 
-pub(super) enum Removed<I, S> {
+/// Values removed from an [`RleTree`]
+///
+/// Generally this type exists so that we don't need to create a full `RleTree` for the smallest
+/// removals.
+///
+/// There are a few ways to use this:
+///
+/// * Get the [`size`](Removed::size) or original [`range`](Removed::range) that was removed
+/// * Extract a single value with [`try_into_value()`](Removed::try_into_value)
+/// * Turn the removed values into a full `RleTree` with [`into_tree`](Removed::into_tree)
+/// * Iterate over the values with `into_iter` (into a [`Drain`](super::Drain))
+pub struct Removed<I, S> {
+    pub(super) start: I,
+    pub(super) kind: RemovedKind<I, S>,
+}
+
+pub(super) enum RemovedKind<I, S> {
     Tree(node::HandleUniqueOwned<I, S>),
-    Slice(S),
+    Slice { size: I, slice: S },
+    Empty,
+}
+
+impl<I, S> Removed<I, S>
+where
+    I: Index,
+    S: Slice<I>,
+{
+    pub(super) fn empty(idx: I) -> Self {
+        Removed { start: idx, kind: RemovedKind::Empty }
+    }
+
+    pub(super) fn from_tree(mut tree: RleTree<I, S>) -> Self {
+        Removed {
+            start: I::ZERO,
+            kind: match tree.root.take() {
+                None => RemovedKind::Empty,
+                Some(root) => RemovedKind::Tree(root.handle),
+            },
+        }
+    }
+
+    /// Returns the total size of the range of values that were removed
+    pub fn size(&self) -> I {
+        match &self.kind {
+            RemovedKind::Empty => I::ZERO,
+            RemovedKind::Slice { size, .. } => *size,
+            RemovedKind::Tree(handle) => handle.subtree_size(),
+        }
+    }
+
+    /// Returns the range of the original [`RleTree`] that was removed
+    pub fn range(&self) -> Range<I> {
+        let start = self.start;
+        let end = self.start.add_right(self.size());
+        start..end
+    }
+
+    /// Turns the removed values into a proper [`RleTree`]
+    ///
+    /// This is an `O(1)` operation. If there were several values removed, they are already
+    /// internally stored as a tree.
+    pub fn into_tree(self) -> RleTree<I, S> {
+        match self.kind {
+            RemovedKind::Empty => RleTree::new_empty(),
+            RemovedKind::Slice { size, slice } => RleTree::new(size, slice),
+            RemovedKind::Tree(handle) => RleTree { root: Some(Root { handle }) },
+        }
+    }
+}
+
+impl<I, S> IntoIterator for Removed<I, S>
+where
+    I: Index,
+    S: Slice<I>,
+{
+    type Item = (Range<I>, S);
+    type IntoIter = Drain<I, S>;
+
+    fn into_iter(self) -> Drain<I, S> {
+        Drain::new(self)
+    }
 }
 
 pub(super) fn check_bounds<I, S>(
@@ -51,14 +130,14 @@ where
     start..end
 }
 
-pub(super) fn remove<I, S>(tree: &mut RleTree<I, S>, range: Range<I>) -> Option<Removed<I, S>>
+pub(super) fn remove<I, S>(tree: &mut RleTree<I, S>, range: Range<I>) -> Removed<I, S>
 where
     I: Index,
     S: Slice<I>,
 {
     // Special case: allow empty ranges, but don't do anything with them
     if range.start == range.end {
-        return None;
+        return Removed::empty(range.start);
     }
 
     let root = match tree.root.take() {
@@ -71,16 +150,17 @@ where
     // Special case: If the range is the entire tree, handle that separately. This way, we can
     // assume later that we'll have at least one node left over after removal.
     if range.start == I::ZERO && range.end == root.handle.subtree_size() {
-        tree.root = None;
-        return Some(Removed::Tree(root.handle));
+        let old = std::mem::replace(tree, RleTree::new_empty());
+        return Removed::from_tree(old);
     }
 
-    let (new_root, removed) = run_removal(root, range.start, range.end);
+    let (new_root, removed_kind) = run_removal(root, range.start, range.end);
     tree.root = Some(new_root);
-    Some(removed)
+
+    Removed { start: range.start, kind: removed_kind }
 }
 
-fn run_removal<I, S>(mut tree_root: Root<I, S>, start: I, end: I) -> (Root<I, S>, Removed<I, S>)
+fn run_removal<I, S>(mut tree_root: Root<I, S>, start: I, end: I) -> (Root<I, S>, RemovedKind<I, S>)
 where
     I: Index,
     S: Slice<I>,
@@ -168,7 +248,7 @@ fn run_removal_within_subtree<I, S>(
     mut root: node::HandleUniqueOwned<I, S>,
     start: SearchResult<I>,
     mut end: SearchResult<I>,
-) -> (node::HandleUniqueOwned<I, S>, UpwardUpdateState<I>, Removed<I, S>)
+) -> (node::HandleUniqueOwned<I, S>, UpwardUpdateState<I>, RemovedKind<I, S>)
 where
     I: Index,
     S: Slice<I>,
@@ -240,7 +320,7 @@ where
 
     let up_state = UpwardUpdateState { old_size: root_size };
 
-    (final_tree, up_state, Removed::Tree(final_removed))
+    (final_tree, up_state, RemovedKind::Tree(final_removed))
 }
 
 /// Performs a removal whose bounds are contained by the values of a single node
@@ -250,14 +330,15 @@ fn run_removal_within_node<I, S>(
     value_range: Range<I>,
     start_offset: I,
     end_offset: I,
-) -> (node::HandleUniqueOwned<I, S>, UpwardUpdateState<I>, Removed<I, S>)
+) -> (node::HandleUniqueOwned<I, S>, UpwardUpdateState<I>, RemovedKind<I, S>)
 where
     I: Index,
     S: Slice<I>,
 {
     let value = node.take_value();
     let (lhs, removed_value) = value.split_at(start_offset);
-    let (removed_value, rhs) = removed_value.split_at(end_offset.sub_left(start_offset));
+    let value_size = end_offset.sub_left(start_offset);
+    let (removed_value, rhs) = removed_value.split_at(value_size);
 
     // Try merging `lhs` and `rhs`. If successful, we'll have nothing left to do but recurse back
     // up the tree.
@@ -329,7 +410,7 @@ where
 
     let up_state = UpwardUpdateState { old_size: old_subtree_size };
 
-    (node, up_state, Removed::Slice(removed_value))
+    (node, up_state, RemovedKind::Slice { size: value_size, slice: removed_value })
 }
 
 fn split_removal_lhs<I, S>(
