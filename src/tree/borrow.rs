@@ -76,9 +76,18 @@ impl<'a, T> BorrowAsMut for Mut<'a, T> {}
 ///
 /// Implementors must guarantee that calls to `alloc()` return a pointer that's properly aligned
 /// and valid for reads / writes.
-pub unsafe trait Allocatable {
+///
+/// Additionally, implementors **must not implement a destructor**, because actually using the
+/// reference in the `Drop` implementation violates the tree borrows model. Instead, this trait
+/// provides `pre_drop` here; see that function for more.
+pub unsafe trait Allocatable: Sized {
     /// Allocates space for the value
     fn alloc() -> NonNull<Self>;
+
+    /// A pseudo-destructor for allocated values. This is called before the real destructor, so the
+    /// value must remain valid, but it allows doing some operations when the values is dropped,
+    /// without producing UB.
+    fn pre_drop(_this: &mut Borrowed<UniqueOwned<Self>>) {}
 
     /// Frees a pointer previously returned by `alloc`
     ///
@@ -119,6 +128,7 @@ impl<T: Allocatable> Borrowed<UniqueOwned<T>> {
     /// This method can only be called from the implementation of `Drop`, at most once, and the
     /// value may be left in an invalid state afterwards.
     unsafe fn drop_impl(&mut self) {
+        T::pre_drop(self);
         // SAFETY: drop_in_place requires that the pointer is valid for reads and writes
         // (guaranteed by the original allocation), and that we're ok to drop it right now, which
         // is guarnateed by the caller.

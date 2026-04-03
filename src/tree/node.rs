@@ -149,6 +149,16 @@ unsafe impl<I, S> borrow::Allocatable for Node<I, S> {
         // case by comparing with `alloc_aligned`.
         unsafe { alloc::dealloc(ptr.as_ptr() as *mut u8, layout) };
     }
+
+    fn pre_drop(this: &mut Borrowed<borrow::UniqueOwned<Node<I, S>>>) {
+        let mut handle = NodeHandle { inner: this.borrow_mut() };
+        if let Some(n) = handle.take_lhs() {
+            drop_owned_node(n);
+        }
+        if let Some(n) = handle.take_rhs() {
+            drop_owned_node(n);
+        }
+    }
 }
 
 impl<I, S> NodeHandle<borrow::UniqueOwned<Node<I, S>>> {
@@ -162,17 +172,6 @@ impl<I, S> NodeHandle<borrow::UniqueOwned<Node<I, S>>> {
                 lhs: None,
                 rhs: None,
             }),
-        }
-    }
-}
-
-impl<I, S> Drop for Node<I, S> {
-    fn drop(&mut self) {
-        if let Some(n) = self.lhs.take() {
-            drop_owned_node(n);
-        }
-        if let Some(n) = self.rhs.take() {
-            drop_owned_node(n);
         }
     }
 }
