@@ -66,6 +66,15 @@ where
         start..end
     }
 
+    /// If this `Removed` represents a single value, returns that value and its size. Otherwise,
+    /// returns `Err(self)`.
+    pub fn try_into_value(self) -> Result<(I, S), Self> {
+        match self.kind {
+            RemovedKind::Slice { size, slice } => Ok((size, slice)),
+            _ => Err(self),
+        }
+    }
+
     /// Turns the removed values into a proper [`RleTree`]
     ///
     /// This is an `O(1)` operation. If there were several values removed, they are already
