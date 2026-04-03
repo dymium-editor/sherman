@@ -88,10 +88,7 @@ where
             .expect("parent's LHS should be Some(_) if this node's parent side is LHS"),
     };
 
-    this = match mode {
-        FixMode::Normal => fix_invasive(this, fix_side),
-        FixMode::Unbounded => fix_invasive_unbounded(this, fix_side),
-    };
+    this = fix_invasive(this, fix_side, mode);
 
     match side {
         Side::Lhs => parent.insert_lhs(this),
@@ -110,10 +107,7 @@ where
     reset_height(node.borrow_mut());
 
     if let Some(side) = needs_rebalance(node.borrow()) {
-        node = match mode {
-            FixMode::Normal => fix_invasive(node, side),
-            FixMode::Unbounded => fix_invasive_unbounded(node, side),
-        }
+        node = fix_invasive(node, side, mode);
     }
 
     node
@@ -147,122 +141,194 @@ fn needs_rebalance<I, S>(node: HandleImmut<'_, I, S>) -> Option<Side> {
     }
 }
 
-fn fix_invasive_unbounded<I, S>(
-    mut root: HandleUniqueOwned<I, S>,
+/// Fixes an owned node, where `side` is higher.
+///
+/// The left- and right-hand children of the node must already be balanced.
+fn fix_invasive<I, S>(
+    mut node: HandleUniqueOwned<I, S>,
     side: Side,
+    #[cfg_attr(not(debug_assertions), expect(unused))] mode: FixMode,
 ) -> HandleUniqueOwned<I, S>
-where
-    I: Index,
-{
-    // Outer loop: Repeated recusions down the tree from the root.
-    // This may be required when intermediate rotations (e.g., the "left" in left-right rotation)
-    // temporarily exacerbates imbalance that would require more than one rotation at the root, AND
-    // ALSO in the lower subtrees.
-    loop {
-        // Perform a single, initial set of rotations
-        root = fix_invasive(root, side);
-
-        let mut parent = root.borrow_mut();
-
-        // Inner loop: Traverse down the tree to continue balancing the side at the *target* of a
-        // rotation, so that larger differences get repeatedly flattened.
-        loop {
-            match side {
-                Side::Lhs => {
-                    // LHS should have been balanced by rotating right in the original fix_invasive(),
-                    // but it may be that LHS's RHS child was so tall that the new RHS is unbalanced.
-                    // If so, we'll need to (recursively) fix RHS's LHS child.
-                    let mut rhs = parent
-                        .take_rhs()
-                        .expect("rhs should be Some because we just rotated right");
-                    let needs_rebalance = rhs.lhs_height() > rhs.rhs_height() + 1;
-                    if needs_rebalance {
-                        rhs = fix_invasive(rhs, Side::Lhs);
-                    }
-                    parent = parent.insert_rhs(rhs);
-                    if !needs_rebalance {
-                        break;
-                    }
-                }
-                Side::Rhs => {
-                    // RHS should have been balanced by rotating left in the original fix_invasive(),
-                    // but it may be that RHS's LHS child was so tall that the new LHS is unbalanced.
-                    // If so, we'll need to (recursively) fix LHS's RHS child.
-                    let mut lhs =
-                        parent.take_lhs().expect("lhs should be Some because we just rotated left");
-                    let needs_rebalance = lhs.rhs_height() > lhs.lhs_height() + 1;
-                    if needs_rebalance {
-                        lhs = fix_invasive(lhs, Side::Rhs);
-                    }
-                    parent = parent.insert_lhs(lhs);
-                    if !needs_rebalance {
-                        break;
-                    }
-                }
-            }
-        }
-
-        // Now that we've gotten to the bottom, traverse *back* up the tree and fix all the heights!
-        // This rebalancing is expected to sometimes reduce the height of a subtree as it goes.
-        while let Some((mut n, _side)) = parent.into_parent() {
-            reset_height(n.borrow_mut());
-            parent = n;
-        }
-
-        // At this point, it may be that the parent is still imbalanced, if a single rotation was
-        // not enough to resolve it. Otherwise, we're done & can exit.
-        let needs_rebalance = match side {
-            Side::Lhs => root.lhs_height() > root.rhs_height() + 1,
-            Side::Rhs => root.rhs_height() > root.lhs_height() + 1,
-        };
-        if !needs_rebalance {
-            break root;
-        }
-    }
-}
-
-fn fix_invasive<I, S>(mut node: HandleUniqueOwned<I, S>, side: Side) -> HandleUniqueOwned<I, S>
 where
     I: Index,
 {
     match side {
         Side::Lhs => {
-            // LHS is too tall compared to RHS; we need to rotate_right() on this node.
-            let requires_lhs_rotate_left = {
-                // ... but if LHS's right-hand child is larger than its left-hand child, we'll need
-                // to rotate_left() on LHS first, to end up splitting the higher left-right subtree
-                // between lhs and this node.
-                let lhs = node
-                    .borrow()
-                    .into_lhs()
-                    .expect("lhs height cannot be > rhs height if lhs is None");
-                lhs.rhs_height() > lhs.lhs_height()
-            };
-            if requires_lhs_rotate_left {
-                let mut lhs = node.take_lhs().unwrap();
-                lhs = rotate_left(lhs);
+            // LHS is too tall compared to RHS; we need to rotate_right() on this node, up to as
+            // many times as the difference in height.
+            //
+            // Each time we rotate_right(), we need to ensure that the left-right child has the
+            // same height as the right child (or at most greater by one) - otherwise, when we
+            // rotate_right(), the new right child will itself be unbalanced, *and* potentially
+            // taller than the left child (e.g., if left-left child is shorter than left-right).
+            'rebalance_root: loop {
+                // Assume we need to fix; check again at the end.
+                let rhs_height = node.rhs_height();
+                let mut lhs =
+                    node.take_lhs().expect("lhs height cannot be > rhs height if lhs is None");
+
+                // let mut rotate_left_count = 0_usize;
+                'prepare_lhs: loop {
+                    // We must rotate_left(lhs) under two conditions:
+                    //
+                    // 1. If the root would be unbalanced after rotate_right(), i.e. new RHS would
+                    //    have 2+ more height than new LHS. This happens if left-left child height
+                    //    is 2+ less than 1 + left-right child height (i.e. left-left < left-right)
+                    //
+                    //    (This is the typical condition for a left-right rotation in AVL trees.)
+                    //
+                    let root_would_be_unbalanced = lhs.lhs_height() < lhs.rhs_height();
+                    //
+                    // 2. If new RHS would be unbalanced after rotate_right(), i.e. new RHS's LHS
+                    //    would have 2+ more height than new RHS's RHS. This happens if left-right
+                    //    child height is 2+ more than current right child.
+                    //
+                    //    (This cannot happen in normally balanced AVL trees; we handle it here
+                    //    because we may have an unbounded height difference between LHS/RHS.)
+                    //
+                    let rhs_would_be_unbalanced = lhs.rhs_height() > rhs_height + 1;
+                    debug_assert!(mode == FixMode::Unbounded || !rhs_would_be_unbalanced);
+                    //
+                    // If we don't need to rotate_left(lhs), we can proceed to rotate_right() on
+                    // the node.
+                    if !root_would_be_unbalanced && !rhs_would_be_unbalanced {
+                        break 'prepare_lhs;
+                    }
+
+                    lhs = rotate_left(lhs);
+                }
+                // Put LHS back; we're done preparing it for rotate_right()
                 node.borrow_mut().insert_lhs(lhs);
+
+                // NOW we can rotate_right() to shrink the difference between LHS and RHS by 1-2.
+                node = rotate_right(node);
+
+                // At this point, it may be the case that we did multiple rotate_left() operations
+                // on LHS, and as we're unpacking those via rotate_right(), there's differences in
+                // the distribution of heights that cause RHS to be unbalanced.
+                //
+                // In particular, we might find that the left-right child's height is less than the
+                // right child's height. We can't fix that by rotate_right(lhs) because that allows
+                // us to progress too quickly through the "stack" that we've built through left
+                // rotations. Because this also might involve e.g. right-left rotations on RHS in
+                // order to resolve the imbalance, we'll do a recursive call. BUT we only need to
+                // make a single change, not an unbounded number.
+                if mode == FixMode::Unbounded {
+                    let mut rhs = node
+                        .take_rhs()
+                        .expect("rhs must be present after rotate_right with non-zero lhs height");
+                    rhs = fix_owned(rhs, FixMode::Normal);
+                    node.borrow_mut().insert_rhs(rhs);
+                    reset_height(node.borrow_mut());
+                }
+
+                // Potentially keep fixing the root node
+                if mode == FixMode::Unbounded {
+                    // There are two conditions for continuing to fix the node:
+                    //
+                    //  1. If it is unbalanced on its face (LHS height 2+ more than RHS height); or
+                    if node.lhs_height() > node.rhs_height() + 1 {
+                        continue 'rebalance_root;
+                    }
+                    //  2. If LHS is still unbalanced because of earlier rotate_left()
+                    if let Some(lhs) = node.borrow().into_lhs()
+                        && lhs.lhs_height() > lhs.rhs_height() + 1
+                    {
+                        continue 'rebalance_root;
+                    }
+                }
+
+                // All done!
+                break node;
             }
-            rotate_right(node)
         }
         Side::Rhs => {
-            // RHS is too tall compared to LHS; we need to rotate_left() on this node.
-            let requires_rhs_rotate_right = {
-                // ... but if RHS's left-hand child is larger than its right-hand child, we'll need
-                // to rotate_right() on RHS first, to end up splitting the larger right-left
-                // subtree between rhs and this node.
-                let rhs = node
-                    .borrow()
-                    .into_rhs()
-                    .expect("rhs height cannot be > lhs height if rhs is None");
-                rhs.lhs_height() > rhs.rhs_height()
-            };
-            if requires_rhs_rotate_right {
-                let mut rhs = node.take_rhs().unwrap();
-                rhs = rotate_right(rhs);
+            // RHS is too tall compared to LHS; we need to rotate_left() on this node, up to as
+            // many times as the difference in height.
+            //
+            // Each time we rotate_left(), we need to ensure that the right-left child has the same
+            // height as the left child (or at most greater than by one) - otherwise, when we
+            // rotate_left(), the new left child will itself be unbalanced, *and* potentially
+            // taller than the right child (e.g., if right-right child is shorter than right-left).
+            'rebalance_root: loop {
+                // Assume we need to fix; check again at the end.
+                let lhs_height = node.lhs_height();
+                let mut rhs =
+                    node.take_rhs().expect("rhs height cannot be > rhs height if rhs is None");
+
+                'prepare_rhs: loop {
+                    // We must rotate_right(rhs) under two conditions:
+                    //
+                    // 1. If the root would be unbalanced after rotate_left(), i.e. new LHS would
+                    //    have 2+ more height than new RHS. This happens if right-right child height
+                    //    is 2+ less than 1 + right-left child height (i.e. right-right < right-left)
+                    //
+                    //    (This is the typical condition for a right-left rotation in AVL trees.)
+                    let root_would_be_unbalanced = rhs.rhs_height() < rhs.lhs_height();
+                    //
+                    // 2. If new LHS would be unbalanced after rotate_left(), i.e. new LHS's RHS
+                    //    would have 2+ more height than new LHS's LHS. This happens if right-left
+                    //    child height is 2+ more than current left child.
+                    //
+                    //    (This cannot happen in normally in balanced AVL trees; we handle it here
+                    //    because we may have an unbounded height difference between LHS/RHS.)
+                    //
+                    let lhs_would_be_unbalanced = rhs.lhs_height() > lhs_height + 1;
+                    debug_assert!(mode == FixMode::Unbounded || !lhs_would_be_unbalanced);
+                    //
+                    // If we don't need to rotate_right(rhs), we can proceed to rotate_left() on
+                    // the node.
+                    if !root_would_be_unbalanced && !lhs_would_be_unbalanced {
+                        break 'prepare_rhs;
+                    }
+
+                    rhs = rotate_right(rhs);
+                }
+                // Put RHS back; we're done with it for now.
                 node.borrow_mut().insert_rhs(rhs);
+
+                // NOW we can rotate_left() to shrink the difference between RHS and LHS by 1-2.
+                node = rotate_left(node);
+
+                // At this point, it may be the case that we did multiple rotate_right() operations
+                // on RHS, and as we're unpacking those via rotate_left(), there's differences in
+                // the distribution of heights that cause LHS to be unbalanced.
+                //
+                // In particular, we might find that the right-left child's height is less than the
+                // left child's height. We can't fix that by rotate_left(rhs) because that allows
+                // us to progress too quickly through the "stack" that we've built through right
+                // rotations. Because this also might involve e.g. left-right rotations on LHS in
+                // order to resolve the imbalance, we'll do a recursive call. BUT we only need to
+                // make a single change, not an unbounded number.
+                if mode == FixMode::Unbounded {
+                    debug_assert!(mode == FixMode::Unbounded);
+                    let mut lhs = node
+                        .take_lhs()
+                        .expect("lhs must be present after rotate_left with non-zero rhs height");
+                    lhs = fix_owned(lhs, FixMode::Normal);
+                    node.borrow_mut().insert_lhs(lhs);
+                    reset_height(node.borrow_mut());
+                }
+
+                // Potentially keep fixing the root node
+                if mode == FixMode::Unbounded {
+                    // There are two conditions for continuing to fix the node:
+                    //
+                    //  1. If it is unbalanced on its face (RHS height 2+ more than LHS height); or
+                    if node.rhs_height() > node.lhs_height() + 1 {
+                        continue 'rebalance_root;
+                    }
+                    //  2. If RHS is still unbalanced because of earlier rotate_right()
+                    if let Some(rhs) = node.borrow().into_rhs()
+                        && rhs.rhs_height() > rhs.lhs_height() + 1
+                    {
+                        continue 'rebalance_root;
+                    }
+                }
+
+                // All done!
+                break node;
             }
-            rotate_left(node)
         }
     }
 }

@@ -295,3 +295,21 @@ fn test_23_removal_recursive_imbalance() {
     let _ = tree.drain(48..64);
     tree.validate_balance(); // <- original fuzz test failed here
 }
+
+#[test]
+fn test_24_simple_unbounded_rebalance() {
+    let mut tree: RleTree<u8, Constant<char>> = RleTree::new_empty();
+    tree.insert(0, Constant('V'), 252);
+    _ = tree.remove(57..);
+    tree.insert(48, Constant('C'), 52);
+    tree.insert(10, Constant('T'), 44);
+    tree.insert(55, Constant('E'), 3);
+    _ = tree.remove(56..57);
+    _ = tree.remove(..48);
+    tree.insert(10, Constant('K'), 19);
+    tree.insert(10, Constant('T'), 44);
+    tree.insert(59, Constant('T'), 48);
+    tree.validate_balance();
+    _ = tree.remove(57..);
+    tree.validate_balance();
+}
