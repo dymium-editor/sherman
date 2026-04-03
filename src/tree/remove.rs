@@ -24,6 +24,7 @@ pub struct Removed<I, S> {
     pub(super) kind: RemovedKind<I, S>,
 }
 
+#[derive(Debug)]
 pub(super) enum RemovedKind<I, S> {
     Tree(node::HandleUniqueOwned<I, S>),
     Slice { size: I, slice: S },
@@ -140,19 +141,19 @@ where
         return Removed::empty(range.start);
     }
 
+    // Special case: If the range is the entire tree, handle that separately. This way, we can
+    // assume later that we'll have at least one node left over after removal.
+    if range.start == I::ZERO && range.end == tree.size() {
+        let old = std::mem::replace(tree, RleTree::new_empty());
+        return Removed::from_tree(old);
+    }
+
     let root = match tree.root.take() {
         Some(r) => r,
         None => {
             crate::panic_internal_error_or_bad_index::<I>("got non-empty range but empty tree root")
         }
     };
-
-    // Special case: If the range is the entire tree, handle that separately. This way, we can
-    // assume later that we'll have at least one node left over after removal.
-    if range.start == I::ZERO && range.end == root.handle.subtree_size() {
-        let old = std::mem::replace(tree, RleTree::new_empty());
-        return Removed::from_tree(old);
-    }
 
     let (new_root, removed_kind) = run_removal(root, range.start, range.end);
     tree.root = Some(new_root);

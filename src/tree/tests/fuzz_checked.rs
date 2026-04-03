@@ -94,3 +94,16 @@ fn test_08_insert_root_rejoin_lhs_rejoin() {
     let (idx, size) = t.prepare_insert(0, 4);
     tree.insert(idx, TrackedSlice(Constant('A')), size);
 }
+
+#[test]
+fn test_09_drain_full() {
+    let t: IndexInfo<u8> = IndexInfo::new();
+    let mut tree: RleTree<TrackedIndex<u8>, TrackedSlice<Constant<char>>> = RleTree::new_empty();
+    let (idx, size) = t.prepare_insert(0, 152);
+    tree.insert(idx, TrackedSlice(Constant('E')), size);
+    let (_, _) = t.prepare_remove(0, 152);
+    {
+        let mut drain = tree.drain(..);
+        assert_eq!(drain.next(), Some((t.p(0)..t.p(152), TrackedSlice(Constant('E')))));
+    }
+}
