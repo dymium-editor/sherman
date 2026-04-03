@@ -139,7 +139,6 @@ fn test_14_basic_iter_several() {
             assert_eq!(item.slice(), &Constant('A'));
         }
         {
-            enable_debug!();
             let item = iter.next().unwrap();
             assert_eq!(item.range(), 1..11);
             assert_eq!(item.slice(), &Constant('N'));
