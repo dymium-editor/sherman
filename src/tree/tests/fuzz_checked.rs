@@ -107,3 +107,14 @@ fn test_09_drain_full() {
         assert_eq!(drain.next(), Some((t.p(0)..t.p(152), TrackedSlice(Constant('E')))));
     }
 }
+
+#[test]
+fn test_10_remove_within_root() {
+    let t: IndexInfo<u8> = IndexInfo::new();
+    let mut tree: RleTree<TrackedIndex<u8>, TrackedSlice<Constant<char>>> = RleTree::new_empty();
+    let (idx, size) = t.prepare_insert(0, 58);
+    tree.insert(idx, TrackedSlice(Constant('T')), size);
+    let (idx, size) = t.prepare_insert(0, 39);
+    tree.insert(idx, TrackedSlice(Constant('A')), size);
+    _ = tree.replace(t.i(47)..t.i(70), TrackedSlice(Constant('A')));
+}

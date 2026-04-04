@@ -26,7 +26,7 @@ mod fuzz_checked;
 /// Helper type for fuzzing - a [`Slice`] implementation that joins continuous character ranges
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg(any(test, feature = "fuzz"))]
-pub struct CharRange(std::ops::Range<char>);
+pub struct CharRange(pub(crate) std::ops::Range<char>);
 
 #[cfg(any(test, feature = "fuzz"))]
 impl<I> Slice<I> for CharRange

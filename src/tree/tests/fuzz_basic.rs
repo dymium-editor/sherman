@@ -313,3 +313,15 @@ fn test_24_simple_unbounded_rebalance() {
     _ = tree.remove(57..);
     tree.validate_balance();
 }
+
+#[test]
+fn test_25_simple_replace_start_single_node() {
+    let mut tree: RleTree<u8, Constant<char>> = RleTree::new_empty();
+    tree.insert(0, Constant('V'), 247);
+    _ = tree.replace(..9, Constant('A'));
+    {
+        let entry = tree.get(0);
+        assert_eq!(entry.range(), 0..9);
+        assert_eq!(entry.slice(), &Constant('A'));
+    }
+}

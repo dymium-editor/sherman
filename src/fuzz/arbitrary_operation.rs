@@ -173,6 +173,18 @@ pub enum BasicOperation<I, S> {
         /// Is this insertion expected to panic?
         panics: bool,
     },
+    /// `tree.replace((start, end), slice)`
+    ///
+    /// We intentionally don't do anything with the returned values.
+    Replace {
+        start: Bound<I>,
+        end: Bound<I>,
+        slice: S,
+        /// Helper information: `tree.size()` before this operation
+        tree_size: I,
+        /// Is this removal expected to panic?
+        panics: bool,
+    },
     /// `_ = tree.remove((start, end))`
     ///
     /// While this does return a new `RleTree`, we intentionally don't do anything with it.
@@ -182,7 +194,7 @@ pub enum BasicOperation<I, S> {
         end: Bound<I>,
         /// Helper information: `tree.size()` before this operation
         tree_size: I,
-        /// Is this removal expected to panic
+        /// Is this removal expected to panic?
         panics: bool,
     },
     /// `tree.drain((start, end))`
@@ -275,7 +287,7 @@ where
         u: &mut Unstructured<'_>,
         mut fake: Fake<I, S>,
     ) -> arbitrary::Result<(Self, Option<Fake<I, S>>)> {
-        match u.int_in_range(0..=6)? {
+        match u.int_in_range(0..=7)? {
             // BasicOperation::Get
             0 => {
                 let index = I::arbitrary(u)?;
@@ -361,8 +373,37 @@ where
 
                 Ok((BasicOperation::Insert { index, slice, size, panics }, new_state))
             }
-            // BasicOperation::Remove
+            // BasicOperation::Replace
             4 => {
+                let start = match u.int_in_range(0..=1)? {
+                    0 => Bound::Unbounded,
+                    1 => Bound::Included(I::arbitrary(u)?),
+                    _ => unreachable!(),
+                };
+                let end = match u.int_in_range(0..=1)? {
+                    0 => Bound::Unbounded,
+                    1 => Bound::Excluded(I::arbitrary(u)?),
+                    _ => unreachable!(),
+                };
+                let tree_size = fake.size();
+
+                let slice = S::arbitrary(u)?;
+
+                let slice_cloned = slice.clone();
+                let result = expect_might_panic(move || {
+                    _ = fake.replace((start, end), slice_cloned);
+                    fake
+                });
+
+                let (panics, new_state) = match result {
+                    Ok(fake) => (false, Some(fake)),
+                    Err(_) => (true, None),
+                };
+
+                Ok((BasicOperation::Replace { start, end, slice, tree_size, panics }, new_state))
+            }
+            // BasicOperation::Remove
+            5 => {
                 let start = match u.int_in_range(0..=1)? {
                     0 => Bound::Unbounded,
                     1 => Bound::Included(I::arbitrary(u)?),
@@ -388,7 +429,7 @@ where
                 Ok((BasicOperation::Remove { start, end, tree_size, panics }, new_state))
             }
             // BasicOperation::Drain
-            5 => {
+            6 => {
                 let start = match u.int_in_range(0..=1)? {
                     0 => Bound::Unbounded,
                     1 => Bound::Included(I::arbitrary(u)?),
@@ -424,7 +465,7 @@ where
                 Ok((BasicOperation::Drain { start, end, tree_size, access }, new_state))
             }
             // BasicOperation::Validate
-            6 => Ok((BasicOperation::Validate, Some(fake))),
+            7 => Ok((BasicOperation::Validate, Some(fake))),
             v => unreachable!("bad BasicOperation variant {v}"),
         }
     }
@@ -516,6 +557,20 @@ impl<I, S> BasicOperation<I, S> {
                     let slice_clone = slice.clone();
                     assert!(
                         expect_might_panic(move || tree.insert(*index, slice_clone, *size))
+                            .is_err()
+                    );
+                    None
+                }
+            },
+            BasicOperation::Replace { start, end, slice, panics, .. } => match panics {
+                false => {
+                    _ = tree.replace((*start, *end), slice.clone());
+                    Some(tree)
+                }
+                true => {
+                    let slice_clone = slice.clone();
+                    assert!(
+                        expect_might_panic(move || tree.replace((*start, *end), slice_clone))
                             .is_err()
                     );
                     None
@@ -684,6 +739,18 @@ impl<I, S> BasicOperation<I, S> {
                     size = size.display_rust_expr(),
                 )),
             },
+            BasicOperation::Replace { start, end, slice, panics, .. } => match panics {
+                false => f.write_fmt(format_args!(
+                    "    _ = {tree}.replace({range}, {slice});\n",
+                    range = format_bounds(start, end),
+                    slice = slice.display_rust_expr(),
+                )),
+                true => f.write_fmt(format_args!(
+                    "    assert!(std::panic::catch_unwind(move || {tree}.replace({range}, {slice})).is_err());\n",
+                    range = format_bounds(start, end),
+                    slice = slice.display_rust_expr(),
+                )),
+            },
             BasicOperation::Remove { start, end, panics, .. } => match panics {
                 false => f.write_fmt(format_args!(
                     "    {lhs} = {tree}.remove({range});\n",
@@ -824,6 +891,13 @@ where
                 let (index, size) = info.prepare_insert(index, size);
                 BasicOperation::Insert { index, slice: TrackedSlice(slice), size, panics }
             }
+            BasicOperation::Replace { start, end, slice, tree_size, panics } => {
+                let start = map_bound(start);
+                let end = map_bound(end);
+                let slice = TrackedSlice(slice);
+                let tree_size = info.i(tree_size);
+                BasicOperation::Replace { start, end, slice, tree_size, panics }
+            }
             BasicOperation::Remove { start, end, tree_size, panics } => {
                 let range_start = bound_value(start, I::ZERO);
                 let range_end = bound_value(end, tree.size().value());
@@ -905,6 +979,15 @@ where
                     index: CheckedIndex::Named("idx"),
                     slice: CheckedSlice(slice),
                     size: CheckedIndex::Named("size"),
+                    panics,
+                }
+            }
+            BasicOperation::Replace { start, end, slice, tree_size, panics } => {
+                BasicOperation::Replace {
+                    start: map_bound(start),
+                    end: map_bound(end),
+                    slice: CheckedSlice(slice),
+                    tree_size: CheckedIndex::Current(tree_size),
                     panics,
                 }
             }

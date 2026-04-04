@@ -181,14 +181,19 @@ impl<I: Index, S: Slice<I>> Fake<I, S> {
         }
     }
 
+    pub fn replace(&mut self, range: impl std::ops::RangeBounds<I>, with: S) -> Fake<I, S> {
+        let std::ops::Range { start, end } = self.resolve_removal_bounds(range);
+        self.remove_internal(start, end, Some(with))
+    }
+
     pub fn remove(&mut self, range: impl std::ops::RangeBounds<I>) -> Fake<I, S> {
         let std::ops::Range { start, end } = self.resolve_removal_bounds(range);
-        self.remove_internal(start, end)
+        self.remove_internal(start, end, None)
     }
 
     pub fn drain(&mut self, range: impl std::ops::RangeBounds<I>) -> FakeDrain<I, S> {
         let std::ops::Range { start, end } = self.resolve_removal_bounds(range);
-        let inner = self.remove_internal(start, end);
+        let inner = self.remove_internal(start, end, None);
         FakeDrain::new(inner, start)
     }
 
@@ -218,7 +223,7 @@ impl<I: Index, S: Slice<I>> Fake<I, S> {
         start..end
     }
 
-    fn remove_internal(&mut self, start: I, end: I) -> Fake<I, S> {
+    fn remove_internal(&mut self, start: I, end: I, replace: Option<S>) -> Fake<I, S> {
         if start == end {
             return Fake::new_empty();
         }
@@ -245,21 +250,10 @@ impl<I: Index, S: Slice<I>> Fake<I, S> {
 
             new_runs = vec![(end.sub_left(start), Some(mid))];
 
-            // Try joining lhs & rhs. If they can't join, we'll need to re-insert.
-            match lhs.try_join(rhs) {
-                Ok(new_value) => {
-                    // All good
-                    self.runs[idx].1 = Some(new_value);
-                }
-                Err((lhs, rhs)) => {
-                    // Put rhs back, and then insert a new lhs matching its NEW position.
-                    // We'll increment front_idx to make sure we skip it when shifting back all the
-                    // following indexes.
-                    self.runs[idx].1 = Some(rhs);
-                    self.runs.insert(idx, (start, Some(lhs)));
-                    front_idx += 1;
-                }
-            }
+            // Put RHS back, and insert a new entry for LHS - we'll try joining later.
+            self.runs[idx].1 = Some(rhs);
+            self.runs.insert(idx, (start, Some(lhs)));
+            front_idx += 1;
         } else {
             let back = if !split_back {
                 None
@@ -303,12 +297,66 @@ impl<I: Index, S: Slice<I>> Fake<I, S> {
             }
         }
 
-        for (value_end_pos, _) in &mut self.runs[front_idx..] {
-            *value_end_pos = value_end_pos.sub_left(end).add_left(start);
+        if replace.is_none() {
+            for (value_end_pos, _) in &mut self.runs[front_idx..] {
+                *value_end_pos = value_end_pos.sub_left(end).add_left(start);
+            }
+        }
+
+        // Try to join everything.
+        // If we have a replacement, we'll first need to try joining that, because it's going to
+        // end up in the middle of the original left-hand/right-hand sides of the range.
+        let mut unjoined_replacement = replace.is_some();
+        'join_replace: {
+            if let Some(mut repl) = replace {
+                // Try joining with RHS first, because it already has the right end index.
+                if front_idx < self.runs.len() {
+                    let rhs = self.runs[front_idx].1.take().unwrap();
+                    match repl.try_join(rhs) {
+                        // Successfully joined with RHS. We can fall through to the handling if
+                        // there wasn't a replacement to do the rest.
+                        Ok(new_rhs) => {
+                            self.runs[front_idx].1 = Some(new_rhs);
+                            unjoined_replacement = false;
+                            break 'join_replace;
+                        }
+                        Err((r, rhs)) => {
+                            // Put RHS back
+                            self.runs[front_idx].1 = Some(rhs);
+                            repl = r;
+                        }
+                    }
+                }
+
+                // Try joining with LHS instead
+                if front_idx > 0 {
+                    let lhs = self.runs[front_idx - 1].1.take().unwrap();
+                    match lhs.try_join(repl) {
+                        // Successfully joined with LHS. We can fall through to the handling if
+                        // there wasn't a replacement to do the rest.
+                        Ok(new_lhs) => {
+                            self.runs[front_idx - 1].1 = Some(new_lhs);
+                            self.runs[front_idx - 1].0 = end;
+                            unjoined_replacement = false;
+                            break 'join_replace;
+                        }
+                        Err((lhs, r)) => {
+                            // Couldn't join with either. Insert the replacement back between lhs
+                            // and rhs.
+                            self.runs[front_idx - 1].1 = Some(lhs);
+                            repl = r;
+                        }
+                    }
+                }
+
+                // Couldn't join with either. Insert the replacement back between LHS and RHS.
+                // Leaving `unjoined_replacement = true` will prevent trying to join again.
+                self.runs.insert(front_idx, (end, Some(repl)));
+            }
         }
 
         // Try to join the adjacent sides
-        if front_idx > 0 && front_idx < self.runs.len() {
+        if !unjoined_replacement && front_idx > 0 && front_idx < self.runs.len() {
             let lhs = self.runs[front_idx - 1].1.take().unwrap();
             let rhs = self.runs[front_idx].1.take().unwrap();
             match lhs.try_join(rhs) {
@@ -481,6 +529,7 @@ where
 mod tests {
     use super::Fake;
     use crate::Constant;
+    use crate::fuzz::CharRange;
 
     #[test]
     fn test_empty_iter() {
@@ -590,5 +639,112 @@ mod tests {
         fake.insert(0, Constant('Q'), 117);
         fake.remove(50..75);
         assert_eq!(fake.get(42), (0..92, &Constant('Q')));
+    }
+
+    #[test]
+    fn test_replace() {
+        let mut fake: Fake<u8, CharRange> = Fake::new_empty();
+        // Empty replacement:
+        let removed = fake.replace(.., CharRange('A'..'A'));
+        assert_eq!(removed.into_iter().collect::<Vec<_>>(), []);
+
+        fake.insert(0, CharRange('A'..'G'), 6);
+        fake.insert(6, CharRange('X'..'Z'), 2);
+        fake.insert(8, CharRange('P'..'T'), 4);
+
+        // Replace within a single value
+        let removed = fake.replace(2..4, CharRange('L'..'N'));
+        assert_eq!(removed.into_iter().collect::<Vec<_>>(), [(0..2, CharRange('C'..'E'))],);
+        assert_eq!(
+            fake.iter(..).collect::<Vec<_>>(),
+            [
+                (0..2, &CharRange('A'..'C')),
+                (2..4, &CharRange('L'..'N')),
+                (4..6, &CharRange('E'..'G')),
+                (6..8, &CharRange('X'..'Z')),
+                (8..12, &CharRange('P'..'T')),
+            ],
+        );
+
+        // Replace, breaking up values
+        let removed = fake.replace(7..9, CharRange('U'..'W'));
+        assert_eq!(
+            removed.into_iter().collect::<Vec<_>>(),
+            [(0..1, CharRange('Y'..'Z')), (1..2, CharRange('P'..'Q')),]
+        );
+        assert_eq!(
+            fake.iter(..).collect::<Vec<_>>(),
+            [
+                (0..2, &CharRange('A'..'C')),
+                (2..4, &CharRange('L'..'N')),
+                (4..6, &CharRange('E'..'G')),
+                (6..7, &CharRange('X'..'Y')),
+                (7..9, &CharRange('U'..'W')),
+                (9..12, &CharRange('Q'..'T')),
+            ]
+        );
+
+        // Replace, split & join with LHS only
+        let removed = fake.replace(4..5, CharRange('N'..'O'));
+        assert_eq!(removed.into_iter().collect::<Vec<_>>(), [(0..1, CharRange('E'..'F'))],);
+        assert_eq!(
+            fake.iter(..).collect::<Vec<_>>(),
+            [
+                (0..2, &CharRange('A'..'C')),
+                (2..5, &CharRange('L'..'O')),
+                (5..6, &CharRange('F'..'G')),
+                (6..7, &CharRange('X'..'Y')),
+                (7..9, &CharRange('U'..'W')),
+                (9..12, &CharRange('Q'..'T')),
+            ]
+        );
+
+        // Replace & join with RHS only
+        let removed = fake.replace(5..6, CharRange('W'..'X'));
+        assert_eq!(removed.into_iter().collect::<Vec<_>>(), [(0..1, CharRange('F'..'G'))],);
+        assert_eq!(
+            fake.iter(..).collect::<Vec<_>>(),
+            [
+                (0..2, &CharRange('A'..'C')),
+                (2..5, &CharRange('L'..'O')),
+                (5..7, &CharRange('W'..'Y')),
+                (7..9, &CharRange('U'..'W')),
+                (9..12, &CharRange('Q'..'T')),
+            ]
+        );
+
+        // Replace & join with both sides. Do a removal first so we get slices aligned.
+        _ = fake.remove(7..9);
+        assert_eq!(
+            fake.iter(..).collect::<Vec<_>>(),
+            [
+                (0..2, &CharRange('A'..'C')),
+                (2..5, &CharRange('L'..'O')),
+                (5..7, &CharRange('W'..'Y')),
+                (7..10, &CharRange('Q'..'T')),
+            ]
+        );
+        let removed = fake.replace(5..7, CharRange('O'..'Q'));
+        assert_eq!(removed.into_iter().collect::<Vec<_>>(), [(0..2, CharRange('W'..'Y'))],);
+        assert_eq!(
+            fake.iter(..).collect::<Vec<_>>(),
+            [(0..2, &CharRange('A'..'C')), (2..10, &CharRange('L'..'T')),]
+        );
+
+        // Replace leftmost value
+        let removed = fake.replace(0..2, CharRange('B'..'D'));
+        assert_eq!(removed.into_iter().collect::<Vec<_>>(), [(0..2, CharRange('A'..'C'))]);
+        assert_eq!(
+            fake.iter(..).collect::<Vec<_>>(),
+            [(0..2, &CharRange('B'..'D')), (2..10, &CharRange('L'..'T')),]
+        );
+
+        // Replace rightmost value
+        let removed = fake.replace(2..10, CharRange('K'..'S'));
+        assert_eq!(removed.into_iter().collect::<Vec<_>>(), [(0..8, CharRange('L'..'T'))]);
+        assert_eq!(
+            fake.iter(..).collect::<Vec<_>>(),
+            [(0..2, &CharRange('B'..'D')), (2..10, &CharRange('K'..'S')),]
+        );
     }
 }

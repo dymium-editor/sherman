@@ -266,6 +266,32 @@ where
         self.root = Some(root);
     }
 
+    /// Replaces a range of values in the tree with a single new value, returning a [`Removed`]
+    /// object representing what was replaced
+    ///
+    /// ## Algorithmic complexity
+    ///
+    /// This operation is `O(log(r))`, where `r` is the number of ranges of values in the tree.
+    /// Note that dropping the [`Removed`] values is an `O(k)` operation (where `k` is the number
+    /// of ranges of values removed).
+    ///
+    /// ## Panics
+    ///
+    /// This method panics under the same conditions as [`remove`](Self::remove):
+    ///
+    /// * The range's start bound is exclusive
+    /// * The range's **end bound is inclusive** (e.g. `1..=3`)
+    /// * The range's start bound is less than `I::ZERO`
+    /// * The range's end bound is greater than the [`size`](Self::size) of the tree
+    /// * The range's start bound is greater than its end bound
+    pub fn replace<R>(&mut self, range: R, value: S) -> Removed<I, S>
+    where
+        R: std::ops::RangeBounds<I>,
+    {
+        let range = remove::check_bounds(self, "replace", range.start_bound(), range.end_bound());
+        remove::remove(self, range, Some(value))
+    }
+
     /// Removes a range of values from the tree, returning a [`Removed`] object representing them.
     ///
     /// To process the removed values, use [`drain`](Self::drain) on the tree or
@@ -275,8 +301,8 @@ where
     /// ## Algorithmic complexity
     ///
     /// This operation is `O(log(r))`, where `r` is the number of ranges of values in the tree.
-    /// Note, however, that if you discard the returned `RleTree`, that is an `O(k)` operation
-    /// (where `k` is the number of ranges of values removed).
+    /// Note that dropping the [`Removed`] values is an `O(k)` operation (where `k` is the number
+    /// of ranges of values removed).
     ///
     /// ## Panics
     ///
@@ -296,7 +322,7 @@ where
         R: std::ops::RangeBounds<I>,
     {
         let range = remove::check_bounds(self, "remove", range.start_bound(), range.end_bound());
-        remove::remove(self, range.clone())
+        remove::remove(self, range, None)
     }
 
     /// Removes a range of values from the tree, returning an iterator over the values
@@ -323,7 +349,7 @@ where
         R: std::ops::RangeBounds<I>,
     {
         let range = remove::check_bounds(self, "drain", range.start_bound(), range.end_bound());
-        let removed = remove::remove(self, range.clone());
+        let removed = remove::remove(self, range, None);
         Drain::new(removed)
     }
 }
