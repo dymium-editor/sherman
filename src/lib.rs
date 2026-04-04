@@ -102,7 +102,7 @@ mod public_traits;
 mod tree;
 
 pub use public_traits::{DirectionalAdd, DirectionalSub, Index, Slice, Zero};
-pub use tree::{Drain, IntoIter, Iter, RleTree, SliceEntry};
+pub use tree::{Drain, IntoIter, Iter, Removed, RleTree, SliceEntry};
 
 /// Helper implementation of [`Slice`] for *actual* run-length encoding - a run of identical values
 ///
