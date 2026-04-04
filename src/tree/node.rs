@@ -305,7 +305,7 @@ impl<B: NodeBorrow> NodeHandle<B> {
     /// Sets the recorded size of the subtree rooted at this node, only for this handle.
     ///
     /// Note that if this is not a `UniqueOwned` handle, the underlying node will have to be
-    /// udpated for the change to be reflected.
+    /// updated for the change to be reflected.
     pub(super) fn set_subtree_size(&mut self, size: B::Index)
     where
         B: borrow::BorrowAsMut,

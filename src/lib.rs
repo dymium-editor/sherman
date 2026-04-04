@@ -67,7 +67,7 @@
 //! many natural needs to represent ranges of values over the span of a file's contents.
 //!
 //! For example, we might want to tag each byte in a file with a unique identifier for the last
-//! edit that touched it. Or we might want to periodically cache the synatx highlighting state at
+//! edit that touched it. Or we might want to periodically cache the syntax highlighting state at
 //! various points in the file, so that we can quickly re-validate the cache when a small change is
 //! made. Or we can even represent the file content itself, using a `Slice` that is itself a chunk
 //! of bytes with limited size (effectively just a rope).

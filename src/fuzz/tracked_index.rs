@@ -39,7 +39,7 @@ struct IndexRange<'t, I> {
     size: I,
 }
 
-/// [`Slice`] implementor that converts a [`TrackedIndex`] into its underyling type
+/// [`Slice`] implementor that converts a [`TrackedIndex`] into its underlying type
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct TrackedSlice<S>(pub S);
 

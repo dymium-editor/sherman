@@ -403,7 +403,7 @@ where
 {
     // A "right" rotation makes the following transformation:
     // Given a node A with children B and C, with node B having children D and E, replace the
-    // subtree rooted at A with: node B with children D and A, with node A having chidren E and C.
+    // subtree rooted at A with: node B with children D and A, with node A having children E and C.
     //
     // In visual form, convert:
     //                ┏━━━┓

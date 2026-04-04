@@ -253,7 +253,7 @@ fn test_22_removal_splits_rhs_no_lhs() {
 #[test]
 fn test_23_removal_recursive_imbalance() {
     // Minimized lightly from the original fuzz test, removing gratuitous calls to
-    // `tree.validate_balance()`, `tree.get(...)`, zero-length `tree.drain(...)`, and eariler calls
+    // `tree.validate_balance()`, `tree.get(...)`, zero-length `tree.drain(...)`, and earlier calls
     // to `drain.next()`.
 
     let mut tree: RleTree<u8, Constant<char>> = RleTree::new_empty();

@@ -131,7 +131,7 @@ impl<T: Allocatable> Borrowed<UniqueOwned<T>> {
         T::pre_drop(self);
         // SAFETY: drop_in_place requires that the pointer is valid for reads and writes
         // (guaranteed by the original allocation), and that we're ok to drop it right now, which
-        // is guarnateed by the caller.
+        // is guaranteed by the caller.
         unsafe { std::ptr::drop_in_place(self.ptr.as_ptr()) };
         // SAFETY: T::free requires that self.ptr was returned by a call to T::alloc, which is an
         // invariant of Borrowed<UniqueOwned<...>>
