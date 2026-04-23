@@ -14,9 +14,9 @@ value types.
     indexes
     * ... but values may be any type that satisfies some basic operations ("split" and "maybe
         join"), which opens up many more possibilities.
-* Stable references -- the position and values of a prior insertion can be fetched in O(log n)
+* Stable references — the position and values of a prior insertion can be fetched in O(log n)
     time *(conflicts with COW)*
-* Lock-free concurrent {copy,clone}-on-write -- `RleTree`s can be shared across threads, with
+* Lock-free concurrent {copy,clone}-on-write — `RleTree`s can be shared across threads, with
     concurrent writes copying or cloning only the path down to the changed node(s). *(conflicts with
     stable references)*
 
@@ -29,7 +29,7 @@ locally for the latest development version.
 
 ## Development & testing
 
-> ![NOTE]
+> [!NOTE]
 > Most local development operations require a nightly toolchain.
 
 Development & testing operations are managed with [`just`](https://just.systems/):
