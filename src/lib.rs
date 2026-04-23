@@ -181,12 +181,23 @@ impl<T> MaybeDebug for T {
         None
     }
 }
-#[cfg(all(feature = "nightly", test))]
-impl<T> MaybeDebug for T {
-    default fn try_debug(&self) -> Option<&dyn Debug> {
-        None
-    }
+
+// Wrap in a `macro_rules!` so that we don't even generate potentially unstable syntax unelss the
+// nightly feature is enabled.
+// See also: https://github.com/rust-lang/rust/issues/154045
+#[cfg_attr(not(all(feature = "nightly", test)), expect(unused))]
+macro_rules! maybe_debug_default {
+    () => {
+        impl<T> MaybeDebug for T {
+            default fn try_debug(&self) -> Option<&dyn Debug> {
+                None
+            }
+        }
+    };
 }
+
+#[cfg(all(feature = "nightly", test))]
+maybe_debug_default!();
 
 #[cfg(all(feature = "nightly", test))]
 impl<T: Debug> MaybeDebug for T {
