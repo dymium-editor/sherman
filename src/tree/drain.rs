@@ -2,6 +2,7 @@
 
 use std::ops::Range;
 
+use crate::param::{self, RleTreeConfig, SupportsUpdate};
 use crate::{Index, Slice};
 
 use super::remove::{Removed, RemovedKind};
@@ -14,100 +15,114 @@ use super::{Side, node};
 ///
 /// [`RleTree`]: crate::RleTree
 /// [`RleTree::drain`]: crate::RleTree::drain
-pub struct Drain<I, S> {
-    state: Option<DrainState<I, S>>,
+pub struct Drain<I, S, P: RleTreeConfig<I, S>> {
+    state: Option<DrainState<I, S, P>>,
 }
 
-enum DrainState<I, S> {
+enum DrainState<I, S, P: RleTreeConfig<I, S>> {
     Single(Option<(Range<I>, S)>),
-    Tree(DrainTreeState<I, S>),
+    LazyTree(node::HandleOwned<I, S, P>, Range<I>),
+    Tree(DrainTreeState<I, S, P>),
 }
 
-struct DrainTreeState<I, S> {
+struct DrainTreeState<I, S, P: RleTreeConfig<I, S>> {
     // SAFETY INVARIANT: Must not be accessed. The tree is effectively borrowed by the edge ptrs.
-    _root: node::HandleUniqueOwned<I, S>,
+    _root: node::HandleUniqueOwned<I, S, P>,
 
     // SAFETY INVARIANT: `front_edge` and `back_edge` will EXCLUSIVELY be used for traversing the
     // tree and removing nodes' values. In all other respects, the pointers are treated as
     // borrowing the tree present at `root`.
-    front_edge: (Range<I>, node::Pointer<I, S>),
-    back_edge: (Range<I>, node::Pointer<I, S>),
+    front_edge: (Range<I>, node::Pointer<I, S, P>),
+    back_edge: (Range<I>, node::Pointer<I, S, P>),
 
     closed: bool,
 }
 
-// SAFETY: This is the same condition as `RleTree`; see there for more.
-unsafe impl<I: Send, S: Send> Send for Drain<I, S> {}
-// SAFETY: This is the same condition as `RleTree`; see there for more.
-unsafe impl<I: Sync, S: Sync> Sync for Drain<I, S> {}
+// SAFETY: This is the same condition as `RleTree`; see crate::param for more.
+unsafe impl<I, S, P> Send for Drain<I, S, P> where
+    P: RleTreeConfig<I, S> + param::RleTreeIsSend<I, S>
+{
+}
+// SAFETY: This is the same condition as `RleTree`; see crate::param for more.
+unsafe impl<I, S, P> Sync for Drain<I, S, P> where
+    P: RleTreeConfig<I, S> + param::RleTreeIsSync<I, S>
+{
+}
 
-impl<I, S> Drain<I, S>
+impl<I, S, P> Drain<I, S, P>
 where
     I: Index,
     S: Slice<I>,
+    P: RleTreeConfig<I, S> + SupportsUpdate<I, S>,
 {
-    pub(super) fn new(removed: Removed<I, S>) -> Self {
-        let Range { start, end } = removed.range();
+    pub(super) fn new(removed: Removed<I, S, P>) -> Self {
+        let removed_range = removed.range();
         Drain {
             state: match removed.kind {
                 RemovedKind::Empty => None,
                 RemovedKind::Slice { slice, .. } => {
-                    Some(DrainState::Single(Some((start..end, slice))))
+                    Some(DrainState::Single(Some((removed_range, slice))))
                 }
-                RemovedKind::Tree(mut root) => {
-                    let mut leftmost_node = root.borrow_mut();
-                    loop {
-                        match leftmost_node.into_lhs() {
-                            Ok(n) => leftmost_node = n,
-                            Err(n) => {
-                                leftmost_node = n;
-                                break;
-                            }
-                        }
-                    }
-                    let leftmost_ptr = leftmost_node.ptr();
-                    let leftmost_range = {
-                        let r = leftmost_node.value_range();
-                        let size = r.end.sub_left(r.start);
-                        start..start.add_right(size)
-                    };
-                    drop(leftmost_node);
-
-                    let mut rightmost_node = root.borrow_mut();
-                    loop {
-                        match rightmost_node.into_rhs() {
-                            Ok(n) => rightmost_node = n,
-                            Err(n) => {
-                                rightmost_node = n;
-                                break;
-                            }
-                        }
-                    }
-                    let rightmost_ptr = rightmost_node.ptr();
-                    let rightmost_range = {
-                        let r = rightmost_node.value_range();
-                        let size = r.end.sub_left(r.start);
-                        end.sub_right(size)..end
-                    };
-                    drop(rightmost_node);
-
-                    Some(DrainState::Tree(DrainTreeState {
-                        _root: root,
-                        front_edge: (leftmost_range, leftmost_ptr),
-                        back_edge: (rightmost_range, rightmost_ptr),
-                        closed: false,
-                    }))
-                }
+                RemovedKind::Tree(root) => Some(DrainState::LazyTree(root, removed_range)),
             },
         }
     }
 }
 
-impl<I, S> DrainTreeState<I, S>
+impl<I, S, P> DrainTreeState<I, S, P>
 where
     I: Index,
     S: Slice<I>,
+    P: RleTreeConfig<I, S> + SupportsUpdate<I, S>,
 {
+    fn from_root(root: node::HandleOwned<I, S, P>, removed_range: Range<I>) -> Self {
+        let mut root = root.into_unique();
+        let Range { start, end } = removed_range;
+
+        let mut leftmost_node = root.borrow_mut();
+        loop {
+            match leftmost_node.into_lhs() {
+                Ok(n) => leftmost_node = n,
+                Err(n) => {
+                    leftmost_node = n;
+                    break;
+                }
+            }
+        }
+        let leftmost_ptr = leftmost_node.ptr();
+        let leftmost_range = {
+            let r = leftmost_node.value_range();
+            let size = r.end.sub_left(r.start);
+            start..start.add_right(size)
+        };
+        drop(leftmost_node);
+
+        let mut rightmost_node = root.borrow_mut();
+        loop {
+            match rightmost_node.into_rhs() {
+                Ok(n) => rightmost_node = n,
+                Err(n) => {
+                    rightmost_node = n;
+                    break;
+                }
+            }
+        }
+        let rightmost_ptr = rightmost_node.ptr();
+        let rightmost_range = {
+            let r = rightmost_node.value_range();
+            let size = r.end.sub_left(r.start);
+            end.sub_right(size)..end
+        };
+        drop(rightmost_node);
+
+        DrainTreeState {
+            _root: root,
+            front_edge: (leftmost_range, leftmost_ptr),
+            back_edge: (rightmost_range, rightmost_ptr),
+            closed: false,
+        }
+    }
+
     fn next(&mut self) -> Option<(Range<I>, S)> {
         if self.closed {
             return None;
@@ -164,8 +179,8 @@ where
 
     fn step_edge_forward(
         range: Range<I>,
-        node: node::HandleMut<'_, I, S>,
-    ) -> (Range<I>, node::HandleMut<'_, I, S>) {
+        node: node::HandleMut<'_, I, S, P>,
+    ) -> (Range<I>, node::HandleMut<'_, I, S, P>) {
         let next_node = match node.into_rhs() {
             // If the node has a right-hand child, we can step into that, and then find *that*
             // node's leftmost transitive child.
@@ -203,8 +218,8 @@ where
 
     fn step_edge_backward(
         range: Range<I>,
-        node: node::HandleMut<'_, I, S>,
-    ) -> (Range<I>, node::HandleMut<'_, I, S>) {
+        node: node::HandleMut<'_, I, S, P>,
+    ) -> (Range<I>, node::HandleMut<'_, I, S, P>) {
         let next_node = match node.into_lhs() {
             // If this node has a left-hand child, we can step into that, and then find *that*
             // node's rightmost transitive child.
@@ -241,29 +256,53 @@ where
     }
 }
 
-impl<I, S> Iterator for Drain<I, S>
+impl<I, S, P> Iterator for Drain<I, S, P>
 where
     I: Index,
     S: Slice<I>,
+    P: RleTreeConfig<I, S> + SupportsUpdate<I, S>,
 {
     type Item = (Range<I>, S);
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.state.as_mut()? {
             DrainState::Single(pair) => pair.take(),
+            DrainState::LazyTree(..) => {
+                let (root, removed_range) = match self.state.take() {
+                    Some(DrainState::LazyTree(root, removed_range)) => (root, removed_range),
+                    _ => unreachable!(),
+                };
+
+                let mut new_state = DrainTreeState::from_root(root, removed_range);
+                let next = new_state.next();
+                self.state = Some(DrainState::Tree(new_state));
+                next
+            }
             DrainState::Tree(t) => t.next(),
         }
     }
 }
 
-impl<I, S> DoubleEndedIterator for Drain<I, S>
+impl<I, S, P> DoubleEndedIterator for Drain<I, S, P>
 where
     I: Index,
     S: Slice<I>,
+    P: RleTreeConfig<I, S> + SupportsUpdate<I, S>,
 {
     fn next_back(&mut self) -> Option<Self::Item> {
         match self.state.as_mut()? {
             DrainState::Single(pair) => pair.take(),
+            DrainState::LazyTree(..) => {
+                let (root, removed_range) = match self.state.take() {
+                    Some(DrainState::LazyTree(root, removed_range)) => (root, removed_range),
+                    _ => unreachable!(),
+                };
+
+                let mut new_state = DrainTreeState::from_root(root, removed_range);
+                let next = new_state.next_back();
+                self.state = Some(DrainState::Tree(new_state));
+                next
+            }
             DrainState::Tree(t) => t.next_back(),
         }
     }

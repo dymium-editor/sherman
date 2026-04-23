@@ -11,25 +11,20 @@
 //!
 //! ## `RleTree` feature summary
 //!
-//! * Values of an `RleTree` are retrieved by global index
-//! * Individual entries in the `RleTree` represent a uniform range of indexes
-//! * Efficient "shift" operations — ranges may be inserted or removed in the middle, shifting the
-//!   positions of everything after them, in `O(log(n))` time.
-//! * Customizable index types; see [`Index`]
-//! * Customizable value types, so long as they can be split and maybe merged; see [`Slice`]
-//
-// TODO: When (re-)implemented:
-//
-// * Slice references -- the current position and value of a prior insertion can be fetched in
-//   O(log n) time, with relatively little overhead (*conflicts with COW*)
-// * Wait-free concurrent clone-on-write -- [`RleTree`]s can be shared across threads, with
-//   concurrent writes cloning only the path down to the changed node(s). (*conflicts with slice
-//   references*)
-//
-// And of course, all of these features are zero-cost when not in use: the tree is constructed in
-// such a way so that only the instances that actually *do* use these extra feature (like node
-// references or concurrent COW) have to pay the cost of them.
-//
+//! * Values are retrieved by global index with efficient "shift" operations, where insertions and
+//!   removals shift all values after them in O(log n) time.
+//!   * These index types are customizable; see [`Index`]
+//! * Values are run-length encoded — individual entries in the tree represent a uniform range of
+//!   indexes
+//!   * These value types are customizable, so long as they satisfy some basic operations ("split"
+//!     and "maybe join"), see [`Slice`] for more.
+//! * Stable references -- the current position and value of a prior insertion can be fetched in
+//!   O(log n) time (*conflicts with COW*)
+//! * Wait-free concurrent clone-on-write -- [`RleTree`]s can be shared across threads, with
+//!   concurrent writes cloning only the path to changed node(s). (*conflicts with stable
+//!   references*)
+//!
+//! These features are all largely zero-cost when not explicitly enabled.
 //!
 //! ## Feature flags
 //!
@@ -77,32 +72,42 @@
 //!
 //! ## Naming
 //!
-//! This library is named after [General Sherman], the largest tree by volume (on Earth, at time of
-//! writing).
+//! This library is named after [General Sherman], a really big tree.
 //!
 //! [General Sherman]: https://en.wikipedia.org/wiki/General_Sherman_(tree)
 
-#![deny(unsafe_op_in_unsafe_fn, rustdoc::broken_intra_doc_links)]
+#![deny(
+    unsafe_op_in_unsafe_fn,
+    missing_docs,
+    rustdoc::bare_urls,
+    rustdoc::broken_intra_doc_links,
+    rustdoc::invalid_codeblock_attributes,
+    rustdoc::invalid_html_tags,
+    rustdoc::private_intra_doc_links
+)]
 #![cfg_attr(feature = "nightly", feature(dropck_eyepatch))]
 #![cfg_attr(
     all(feature = "nightly", test),
     allow(incomplete_features),
-    feature(specialization)
+    feature(specialization) // Enabled only for MaybeDebug; see more below.
 )]
+#![cfg_attr(feature = "fuzz", feature(variant_count))]
 
 use std::fmt::{self, Debug, Formatter};
 
 #[macro_use]
 mod macros;
 
-#[cfg(feature = "fuzz")]
+#[cfg(any(test, feature = "fuzz"))]
+#[allow(missing_docs)]
 pub mod fuzz;
 
 mod public_traits;
 mod tree;
 
+pub mod param;
 pub use public_traits::{DirectionalAdd, DirectionalSub, Index, Slice, Zero};
-pub use tree::{Drain, IntoIter, Iter, Removed, RleTree, SliceEntry};
+pub use tree::{Drain, IntoIter, Iter, Removed, RleTree, SliceEntry, SliceRef};
 
 /// Helper implementation of [`Slice`] for *actual* run-length encoding - a run of identical values
 ///

@@ -8,6 +8,7 @@ use arbitrary::{Arbitrary, Unstructured};
 #[cfg(feature = "fuzz")]
 use std::fmt;
 
+#[cfg(any(test, feature = "fuzz"))]
 use crate::Slice;
 #[cfg(feature = "fuzz")]
 use crate::fuzz::{RustExpr, RustType};
@@ -22,6 +23,12 @@ mod fuzz_basic;
 mod fuzz_basic_range;
 #[cfg(test)]
 mod fuzz_checked;
+#[cfg(test)]
+mod fuzz_multi_cow;
+#[cfg(test)]
+mod fuzz_slice_ref;
+#[cfg(test)]
+mod fuzz_slice_ref_range;
 
 /// Helper type for fuzzing - a [`Slice`] implementation that joins continuous character ranges
 #[derive(Debug, Clone, PartialEq, Eq)]

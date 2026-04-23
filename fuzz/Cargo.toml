@@ -38,3 +38,31 @@ path = "fuzz_targets/checked_range.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "multi_cow"
+path = "fuzz_targets/multi_cow.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "multi_cow_range"
+path = "fuzz_targets/multi_cow_range.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "slice_ref"
+path = "fuzz_targets/slice_ref.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "slice_ref_range"
+path = "fuzz_targets/slice_ref_range.rs"
+test = false
+doc = false
+bench = false

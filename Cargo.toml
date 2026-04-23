@@ -11,6 +11,6 @@ description = "Run-length encoded, highly-parameterizable balanced binary search
 arbitrary = { version = "1.4.1", optional = true, features = ["derive"] }
 
 [features]
-default = ["fuzz"]
+default = []
 nightly = []
 fuzz = ["dep:arbitrary"]

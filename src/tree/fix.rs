@@ -2,15 +2,19 @@
 
 use std::num::NonZeroU16;
 
-use super::node::{HandleImmut, HandleMut, HandleUniqueOwned, Side};
-use crate::{Index, Slice};
+use super::node::{HandleImmut, HandleMut, HandleOwned, HandleUniqueOwned, Side};
+use crate::Index;
+#[cfg(any(test, feature = "fuzz"))]
+use crate::Slice;
+use crate::param::{RleTreeConfig, SupportsUpdate};
 
 /// Recursively validates that the subtree rooted at this node is balanced
 #[cfg(any(test, feature = "fuzz"))]
-pub(super) fn validate_balance<I, S>(node: HandleImmut<'_, I, S>)
+pub(super) fn validate_balance<I, S, P>(node: HandleImmut<'_, I, S, P>)
 where
     I: Index,
     S: Slice<I>,
+    P: RleTreeConfig<I, S>,
 {
     let addr = node.addr();
     let height = node.height();
@@ -35,7 +39,8 @@ where
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Copy, Clone, PartialEq, Eq)]
+#[cfg_attr(test, derive(Debug))]
 pub(super) enum FixMode {
     /// A normal deviation must be corrected, e.g. a single insertion or deletion
     ///
@@ -60,9 +65,10 @@ pub(super) enum FixMode {
 ///
 /// This function panics if the node does not have a parent. To fix a node with no parent, you
 /// should use [`fix_owned`] instead.
-pub(super) fn fix_mut<I, S>(mut node: HandleMut<I, S>, mode: FixMode) -> HandleMut<I, S>
+pub(super) fn fix_mut<I, S, P>(mut node: HandleMut<I, S, P>, mode: FixMode) -> HandleMut<I, S, P>
 where
     I: Index,
+    P: RleTreeConfig<I, S> + SupportsUpdate<I, S>,
 {
     if !node.has_parent() {
         panic!("internal error: cannot fix() node that has no parent");
@@ -82,27 +88,44 @@ where
     let mut this = match side {
         Side::Lhs => parent
             .take_lhs()
-            .expect("parent's LHS should be Some(_) if this node's parent side is LHS"),
+            .expect("parent's LHS should be Some(_) if this node's parent side is LHS")
+            .into_unique(),
         Side::Rhs => parent
             .take_rhs()
-            .expect("parent's LHS should be Some(_) if this node's parent side is LHS"),
+            .expect("parent's LHS should be Some(_) if this node's parent side is LHS")
+            .into_unique(),
     };
 
     this = fix_invasive(this, fix_side, mode);
 
     match side {
-        Side::Lhs => parent.insert_lhs(this),
-        Side::Rhs => parent.insert_rhs(this),
+        Side::Lhs => parent.insert_into_lhs(this),
+        Side::Rhs => parent.insert_into_rhs(this),
+    }
+}
+
+/// Rebalances the subtree rooted at this node, only if it is unique.
+///
+/// If the node is *not* unique, we can assume it was already fixed when it was unique.
+pub(super) fn fix_owned<I, S, P>(node: HandleOwned<I, S, P>, mode: FixMode) -> HandleOwned<I, S, P>
+where
+    I: Index,
+    P: RleTreeConfig<I, S> + SupportsUpdate<I, S>,
+{
+    match node.try_into_unique() {
+        Ok(unique) => fix_unique_owned(unique, mode).erase(),
+        Err(n) => n,
     }
 }
 
 /// Rebalances the subtree rooted at this node
-pub(super) fn fix_owned<I, S>(
-    mut node: HandleUniqueOwned<I, S>,
+pub(super) fn fix_unique_owned<I, S, P>(
+    mut node: HandleUniqueOwned<I, S, P>,
     mode: FixMode,
-) -> HandleUniqueOwned<I, S>
+) -> HandleUniqueOwned<I, S, P>
 where
     I: Index,
+    P: RleTreeConfig<I, S> + SupportsUpdate<I, S>,
 {
     reset_height(node.borrow_mut());
 
@@ -114,9 +137,10 @@ where
 }
 
 /// Sets the height of the node to match the left and right child, if any
-fn reset_height<I, S>(mut node: HandleMut<'_, I, S>)
+fn reset_height<I, S, P>(mut node: HandleMut<'_, I, S, P>)
 where
     I: Index,
+    P: RleTreeConfig<I, S>,
 {
     let lhs_height = node.lhs_height();
     let rhs_height = node.rhs_height();
@@ -126,7 +150,10 @@ where
 }
 
 /// If the subtree rooted at this node should be rebalanced, returns the child that is too tall
-fn needs_rebalance<I, S>(node: HandleImmut<'_, I, S>) -> Option<Side> {
+fn needs_rebalance<I, S, P>(node: HandleImmut<'_, I, S, P>) -> Option<Side>
+where
+    P: RleTreeConfig<I, S>,
+{
     let lhs_height = node.lhs_height();
     let rhs_height = node.rhs_height();
 
@@ -144,13 +171,14 @@ fn needs_rebalance<I, S>(node: HandleImmut<'_, I, S>) -> Option<Side> {
 /// Fixes an owned node, where `side` is higher.
 ///
 /// The left- and right-hand children of the node must already be balanced.
-fn fix_invasive<I, S>(
-    mut node: HandleUniqueOwned<I, S>,
+fn fix_invasive<I, S, P>(
+    mut node: HandleUniqueOwned<I, S, P>,
     side: Side,
     #[cfg_attr(not(debug_assertions), expect(unused))] mode: FixMode,
-) -> HandleUniqueOwned<I, S>
+) -> HandleUniqueOwned<I, S, P>
 where
     I: Index,
+    P: RleTreeConfig<I, S> + SupportsUpdate<I, S>,
 {
     match side {
         Side::Lhs => {
@@ -167,7 +195,6 @@ where
                 let mut lhs =
                     node.take_lhs().expect("lhs height cannot be > rhs height if lhs is None");
 
-                // let mut rotate_left_count = 0_usize;
                 'prepare_lhs: loop {
                     // We must rotate_left(lhs) under two conditions:
                     //
@@ -195,7 +222,7 @@ where
                         break 'prepare_lhs;
                     }
 
-                    lhs = rotate_left(lhs);
+                    lhs = rotate_left(lhs.into_unique()).erase();
                 }
                 // Put LHS back; we're done preparing it for rotate_right()
                 node.borrow_mut().insert_lhs(lhs);
@@ -217,7 +244,7 @@ where
                     let mut rhs = node
                         .take_rhs()
                         .expect("rhs must be present after rotate_right with non-zero lhs height");
-                    rhs = fix_owned(rhs, FixMode::Normal);
+                    rhs = fix_unique_owned(rhs.into_unique(), FixMode::Normal).erase();
                     node.borrow_mut().insert_rhs(rhs);
                     reset_height(node.borrow_mut());
                 }
@@ -282,7 +309,7 @@ where
                         break 'prepare_rhs;
                     }
 
-                    rhs = rotate_right(rhs);
+                    rhs = rotate_right(rhs.into_unique()).erase();
                 }
                 // Put RHS back; we're done with it for now.
                 node.borrow_mut().insert_rhs(rhs);
@@ -305,7 +332,7 @@ where
                     let mut lhs = node
                         .take_lhs()
                         .expect("lhs must be present after rotate_left with non-zero rhs height");
-                    lhs = fix_owned(lhs, FixMode::Normal);
+                    lhs = fix_unique_owned(lhs.into_unique(), FixMode::Normal).erase();
                     node.borrow_mut().insert_lhs(lhs);
                     reset_height(node.borrow_mut());
                 }
@@ -334,9 +361,10 @@ where
 }
 
 /// Performs a "rotate left" operation on the subtree rooted at the node
-fn rotate_left<I, S>(node: HandleUniqueOwned<I, S>) -> HandleUniqueOwned<I, S>
+fn rotate_left<I, S, P>(node: HandleUniqueOwned<I, S, P>) -> HandleUniqueOwned<I, S, P>
 where
     I: Index,
+    P: RleTreeConfig<I, S> + SupportsUpdate<I, S>,
 {
     // A "left" rotation makes the following transformation:
     // Given a node A with children B and C, with node C having children D and E, replace the
@@ -362,7 +390,8 @@ where
     let mut node_a = node;
     let mut node_c = node_a
         .take_rhs()
-        .expect("rotate_left() should only be called when RHS is Some(_)");
+        .expect("rotate_left() should only be called when RHS is Some(_)")
+        .into_unique();
     let node_d = node_c.take_lhs();
 
     // Collect starting information:
@@ -391,15 +420,16 @@ where
         node_a.borrow_mut().insert_rhs(d);
     }
     reset_height(node_a.borrow_mut());
-    node_c.borrow_mut().insert_lhs(node_a);
+    node_c.borrow_mut().insert_lhs(node_a.erase());
     reset_height(node_c.borrow_mut());
     node_c
 }
 
 /// Performs a "rotate right" operation on the subtree rooted at the node
-fn rotate_right<I, S>(node: HandleUniqueOwned<I, S>) -> HandleUniqueOwned<I, S>
+fn rotate_right<I, S, P>(node: HandleUniqueOwned<I, S, P>) -> HandleUniqueOwned<I, S, P>
 where
     I: Index,
+    P: RleTreeConfig<I, S> + SupportsUpdate<I, S>,
 {
     // A "right" rotation makes the following transformation:
     // Given a node A with children B and C, with node B having children D and E, replace the
@@ -425,7 +455,8 @@ where
     let mut node_a = node;
     let mut node_b = node_a
         .take_lhs()
-        .expect("rotate_right() should only be called when LHS is Some(_)");
+        .expect("rotate_right() should only be called when LHS is Some(_)")
+        .into_unique();
     let node_e = node_b.take_rhs();
 
     // Collect starting information:
@@ -454,7 +485,7 @@ where
         node_a.borrow_mut().insert_lhs(e);
     }
     reset_height(node_a.borrow_mut());
-    node_b.borrow_mut().insert_rhs(node_a);
+    node_b.borrow_mut().insert_rhs(node_a.erase());
     reset_height(node_b.borrow_mut());
     node_b
 }

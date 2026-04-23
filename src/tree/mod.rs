@@ -1,27 +1,31 @@
 #![allow(clippy::type_complexity)]
 
+#[cfg(test)]
 use std::fmt::{self, Debug};
 use std::ops::{ControlFlow, Range};
 
+use crate::param::{self, RleTreeConfig, SupportsUpdate};
 use crate::{Index, Slice};
 
 #[macro_use]
-mod borrow;
+pub(crate) mod borrow;
 
 mod drain;
 mod entry;
 mod fix;
 mod iter;
-mod node;
+pub(crate) mod node;
+pub(crate) mod rc;
 mod remove;
 
 pub(crate) mod tests;
 
 pub use drain::Drain;
-pub use entry::SliceEntry;
+pub use entry::{SliceEntry, SliceRef};
 use fix::FixMode;
 pub use iter::{IntoIter, Iter};
 use node::Side;
+use rc::Redirect as _;
 pub use remove::Removed;
 
 /// Generalized run-length encoded balanced binary search tree
@@ -67,37 +71,27 @@ pub use remove::Removed;
 /// Each node is itself represented by an internal abstraction over allocated values and borrows to
 /// them, which allows traversals through raw pointers without violating Rust's borrowing rules.
 /// (In particular, we test with `miri` under `-Zmiri-tree-borrows`.)
-pub struct RleTree<I, S> {
-    root: Option<Root<I, S>>,
+pub struct RleTree<I, S, P: RleTreeConfig<I, S> = param::NoFeatures> {
+    root: Option<Root<I, S, P>>,
 }
 
 /// The (owned) root node of an `RleTree`
-pub(super) struct Root<I, S> {
-    handle: node::HandleUniqueOwned<I, S>,
+pub(super) struct Root<I, S, P: RleTreeConfig<I, S>> {
+    handle: node::HandleOwned<I, S, P>,
 }
 
 #[cfg(not(feature = "nightly"))]
-impl<I, S> Drop for RleTree<I, S> {
+impl<I, S, P: RleTreeConfig<I, S>> Drop for RleTree<I, S, P> {
     fn drop(&mut self) {}
 }
 
 #[cfg(feature = "nightly")]
-unsafe impl<#[may_dangle] I, #[may_dangle] S> Drop for RleTree<I, S> {
+unsafe impl<#[may_dangle] I, #[may_dangle] S, P: RleTreeConfig<I, S>> Drop for RleTree<I, S, P> {
     fn drop(&mut self) {}
 }
 
-// SAFETY: It is safe to send RleTree<I, S> across threads if I: Send and S: Send because there is
-// no shared mutable state. All mutations are encapsulated in methods that take &mut RleTree, and
-// there are no returned types that can mutate the same state (unless that shared mutation comes
-// from I or S, but we know it shouldn't if they are both Send).
-unsafe impl<I: Send, S: Send> Send for RleTree<I, S> {}
-// SAFETY: It is safe to send &RleTree<I, S> if I: Sync and S: Sync because all mutations are done
-// through methods that take &mut RleTree, so no mutation of I or S can happen unless they,
-// themselves, allow unsynchronized mutation from an immutable borrow (in which case, they must not
-// be Sync).
-unsafe impl<I: Sync, S: Sync> Sync for RleTree<I, S> {}
-
-impl<I: Debug, S: Debug> Debug for Root<I, S> {
+#[cfg(test)]
+impl<I: Debug, S: Debug, P: RleTreeConfig<I, S>> Debug for Root<I, S, P> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let mut s = f.debug_struct("Root");
         s.field("node", &self.handle);
@@ -105,10 +99,11 @@ impl<I: Debug, S: Debug> Debug for Root<I, S> {
     }
 }
 
-impl<I, S> RleTree<I, S>
+impl<I, S, P> RleTree<I, S, P>
 where
     I: Index,
     S: Slice<I>,
+    P: RleTreeConfig<I, S>,
 {
     /// Creates a new, empty `RleTree`.
     pub const fn new_empty() -> Self {
@@ -125,13 +120,15 @@ where
             panic!("cannot create new slice with non-positive size {size:?}");
         }
 
-        let root = Root { handle: node::NodeHandle::alloc_new(slice, size) };
+        let root = Root {
+            handle: node::NodeHandle::alloc_new(slice, size).erase(),
+        };
 
         RleTree { root: Some(root) }
     }
 
     /// Internal helper method, mostly for tests
-    fn root(&self) -> Option<&Root<I, S>> {
+    fn root(&self) -> Option<&Root<I, S, P>> {
         self.root.as_ref()
     }
 
@@ -168,7 +165,7 @@ where
     ///
     /// This method will panic if `idx` is out of bounds -- i.e., if it is less than `I::ZERO` or
     /// greater than `self.size()`.
-    pub fn get(&self, idx: I) -> SliceEntry<'_, I, S> {
+    pub fn get(&self, idx: I) -> SliceEntry<'_, I, S, P> {
         if idx < I::ZERO {
             panic!("index {idx:?} out of bounds, less than zero");
         } else if idx >= self.size() {
@@ -182,7 +179,7 @@ where
         };
 
         let (node, range, offset_in_range) =
-            search(root.handle.borrow(), SearchBound::Included(idx));
+            search_node(root.handle.borrow(), SearchBound::Included(idx));
 
         // To reconstruct the absolute positions of the slice, we can subtract offset from idx to
         // get the absolute position of range.start (and therefore range.end as well.
@@ -213,7 +210,7 @@ where
     ///    equal to `self.size()` if `Included`.
     ///
     /// ALSO: This method will panic if the start bound is `Excluded`.
-    pub fn iter<R>(&self, range: R) -> Iter<'_, I, S>
+    pub fn iter<R>(&self, range: R) -> Iter<'_, I, S, P>
     where
         R: std::ops::RangeBounds<I>,
     {
@@ -236,7 +233,10 @@ where
     /// slice is not greater than zero -- i.e. if `size <= I::ZERO`.
     ///
     /// [`self.size()`]: Self::size
-    pub fn insert(&mut self, idx: I, slice: S, size: I) {
+    pub fn insert(&mut self, idx: I, slice: S, size: I)
+    where
+        P: SupportsUpdate<I, S>,
+    {
         if idx < I::ZERO {
             panic!("index {idx:?} out of bounds, less than zero");
         } else if idx > self.size() {
@@ -246,7 +246,7 @@ where
         }
 
         let mut root = match self.root.take() {
-            Some(r) => r,
+            Some(r) => r.handle.into_unique(),
             None => {
                 // This tree is completely empty, so we can actually just initialize it to just
                 // contain the value we want, and return. Given that `self.size()` must be zero, we
@@ -256,14 +256,9 @@ where
             }
         };
 
-        run_insert(
-            root.handle.borrow_mut(),
-            None,
-            false,
-            DownwardInsertState::new(idx, slice, size),
-        );
-        root.handle = fix::fix_owned(root.handle, FixMode::Normal);
-        self.root = Some(root);
+        run_insert(root.borrow_mut(), None, false, DownwardInsertState::new(idx, slice, size));
+        root = fix::fix_unique_owned(root, FixMode::Normal);
+        self.root = Some(Root { handle: root.erase() });
     }
 
     /// Replaces a range of values in the tree with a single new value, returning a [`Removed`]
@@ -272,8 +267,10 @@ where
     /// ## Algorithmic complexity
     ///
     /// This operation is `O(log(r))`, where `r` is the number of ranges of values in the tree.
+    ///
     /// Note that dropping the [`Removed`] values is an `O(k)` operation (where `k` is the number
-    /// of ranges of values removed).
+    /// of ranges of values removed) without COW. With COW, it is `O(q + log(s))` (where `q` is the
+    /// number of *unqiue* values removed and `s` is the number of shared values).
     ///
     /// ## Panics
     ///
@@ -284,8 +281,9 @@ where
     /// * The range's start bound is less than `I::ZERO`
     /// * The range's end bound is greater than the [`size`](Self::size) of the tree
     /// * The range's start bound is greater than its end bound
-    pub fn replace<R>(&mut self, range: R, value: S) -> Removed<I, S>
+    pub fn replace<R>(&mut self, range: R, value: S) -> Removed<I, S, P>
     where
+        P: SupportsUpdate<I, S>,
         R: std::ops::RangeBounds<I>,
     {
         let range = remove::check_bounds(self, "replace", range.start_bound(), range.end_bound());
@@ -301,8 +299,10 @@ where
     /// ## Algorithmic complexity
     ///
     /// This operation is `O(log(r))`, where `r` is the number of ranges of values in the tree.
+    ///
     /// Note that dropping the [`Removed`] values is an `O(k)` operation (where `k` is the number
-    /// of ranges of values removed).
+    /// of ranges of values removed) without COW. With COW, it is `O(q + log(s))` (where `q` is the
+    /// number of *unqiue* values removed and `s` is the number of shared values).
     ///
     /// ## Panics
     ///
@@ -317,8 +317,9 @@ where
     /// We cannot allow inclusive end bounds because that would require an increment operator to
     /// transform into an equivalent exclusive end bound, and index types might not necessarily
     /// have a natural definition of "increment".
-    pub fn remove<R>(&mut self, range: R) -> Removed<I, S>
+    pub fn remove<R>(&mut self, range: R) -> Removed<I, S, P>
     where
+        P: SupportsUpdate<I, S>,
         R: std::ops::RangeBounds<I>,
     {
         let range = remove::check_bounds(self, "remove", range.start_bound(), range.end_bound());
@@ -333,7 +334,11 @@ where
     ///
     /// Creating the iterator is `O(log(r))`, where `r` is the number of ranges of values in the
     /// tree. Each step of iterating the [`Drain`] is `O(log(k))` but amortized `O(1)`, where `k`
-    /// is the number of ranges of values removed. Note also that dropping the `Drain` is `O(k)`.
+    /// is the number of ranges of values removed.
+    ///
+    /// Note also that dropping the `Drain` is `O(k)`, unless COW is enabled, in which case it is
+    /// `O(q + log(s))`, where `q` is the number of unique values removed (including any
+    /// destructive iteration that has happened so far) and `s` is the number of shared values.
     ///
     /// ## Panics
     ///
@@ -344,13 +349,31 @@ where
     /// * The range's start bound is less than `I::ZERO`
     /// * The range's end bound is greater than the [`size`](Self::size) of the tree
     /// * The range's start bound is greater than its end bound
-    pub fn drain<R>(&mut self, range: R) -> Drain<I, S>
+    pub fn drain<R>(&mut self, range: R) -> Drain<I, S, P>
     where
+        P: SupportsUpdate<I, S>,
         R: std::ops::RangeBounds<I>,
     {
         let range = remove::check_bounds(self, "drain", range.start_bound(), range.end_bound());
         let removed = remove::remove(self, range, None);
         Drain::new(removed)
+    }
+}
+
+impl<I, S> RleTree<I, S, param::EnableCow>
+where
+    I: Index,
+    S: Slice<I>,
+{
+    /// Creates a new copy-on-write reference to the same tree
+    ///
+    /// ## Algorithmic complexity
+    ///
+    /// This operation is `O(1)`.
+    pub fn shallow_clone(&self) -> Self {
+        let root = self.root.as_ref().map(|r| Root { handle: r.handle.shallow_clone() });
+
+        RleTree { root }
     }
 }
 
@@ -363,7 +386,11 @@ enum SearchResult<I> {
     Rhs { offset: I },
 }
 
-fn search_step<I: Index, S>(node: node::HandleImmut<I, S>, target: I) -> SearchResult<I> {
+fn search_step<I, S, P>(node: node::HandleImmut<I, S, P>, target: I) -> SearchResult<I>
+where
+    I: Index,
+    P: RleTreeConfig<I, S>,
+{
     let value_range = node.value_range();
 
     if target < value_range.start {
@@ -382,28 +409,49 @@ fn search_step<I: Index, S>(node: node::HandleImmut<I, S>, target: I) -> SearchR
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Copy, Clone)]
+#[cfg_attr(test, derive(Debug))]
 enum SearchBound<I> {
     Included(I),
     Excluded(I),
 }
 
-fn search<I: Index, S>(
-    root: node::HandleImmut<'_, I, S>,
+fn search_node<'t, I, S, P>(
+    root: node::HandleImmut<'t, I, S, P>,
     target: SearchBound<I>,
-) -> (node::HandleImmut<'_, I, S>, Range<I>, I) {
-    let mut node = root;
+) -> (node::HandleImmut<'t, I, S, P>, Range<I>, I)
+where
+    I: Index,
+    P: RleTreeConfig<I, S>,
+{
+    search(root, target, |n| n.reborrow(), |_, child, _| child)
+}
+
+fn search<'t, I, S, P, St, Bo, Ch>(
+    state: St,
+    target: SearchBound<I>,
+    borrow: Bo,
+    into_child: Ch,
+) -> (St, Range<I>, I)
+where
+    I: 't + Index,
+    S: 't,
+    P: RleTreeConfig<I, S>,
+    Bo: Fn(&St) -> node::HandleImmut<'t, I, S, P>,
+    Ch: Fn(St, node::HandleImmut<'t, I, S, P>, Side) -> St,
+{
+    let mut node = state;
     let (mut target, exclusive) = match target {
         SearchBound::Included(i) => (i, false),
         SearchBound::Excluded(i) => (i, true),
     };
 
     let (range, offset_in_range) = loop {
-        match search_step(node.borrow(), target) {
+        match search_step(borrow(&node), target) {
             SearchResult::Lhs { offset } => {
                 target = offset;
-                node = match node.into_lhs() {
-                    Some(n) => n,
+                node = match borrow(&node).into_lhs() {
+                    Some(n) => into_child(node, n, Side::Lhs),
                     None => crate::panic_internal_error_or_bad_index::<I>(
                         "`SearchResult::Lhs` implies the left-hand child should exist",
                     ),
@@ -411,12 +459,12 @@ fn search<I: Index, S>(
             }
             SearchResult::RhsEdge => {
                 if exclusive {
-                    let r = node.value_range();
+                    let r = borrow(&node).value_range();
                     break (r.clone(), r.end.sub_left(r.start));
                 } else {
                     target = I::ZERO;
-                    node = match node.into_rhs() {
-                        Some(n) => n,
+                    node = match borrow(&node).into_rhs() {
+                        Some(n) => into_child(node, n, Side::Rhs),
                         None => crate::panic_internal_error_or_bad_index::<I>(
                             "`SearchResult::RhsEdge` implies the right-hand child should exist",
                         ),
@@ -425,8 +473,8 @@ fn search<I: Index, S>(
             }
             SearchResult::Rhs { offset } => {
                 target = offset;
-                node = match node.into_rhs() {
-                    Some(n) => n,
+                node = match borrow(&node).into_rhs() {
+                    Some(n) => into_child(node, n, Side::Rhs),
                     None => crate::panic_internal_error_or_bad_index::<I>(
                         "`SearchResult::Rhs` implies the right-hand child should exist",
                     ),
@@ -434,15 +482,15 @@ fn search<I: Index, S>(
             }
             SearchResult::LhsEdge => {
                 if !exclusive {
-                    break (node.value_range(), I::ZERO);
+                    break (borrow(&node).value_range(), I::ZERO);
                 } else {
-                    node = match node.into_lhs() {
-                        Some(n) => n,
+                    node = match borrow(&node).into_lhs() {
+                        Some(n) => into_child(node, n, Side::Lhs),
                         None => crate::panic_internal_error_or_bad_index::<I>(
                             "`SearchResult::LhsEdge` implies the left-hand child should exist",
                         ),
                     };
-                    target = node.subtree_size();
+                    target = borrow(&node).subtree_size();
                 }
             }
             SearchResult::Value { range, offset_in_range } => break (range, offset_in_range),
@@ -460,6 +508,7 @@ struct DownwardInsertState<I, S> {
     already_split_once: bool,
 }
 
+#[cfg(test)]
 impl<I: Debug, S: Debug> Debug for DownwardInsertState<I, S> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let mut s = f.debug_struct("DownwardInsertState");
@@ -472,13 +521,13 @@ impl<I: Debug, S: Debug> Debug for DownwardInsertState<I, S> {
     }
 }
 
-#[derive(Debug)]
+#[cfg_attr(test, derive(Debug))]
 struct InsertionValue<I, S> {
     slice: S,
     size: I,
 }
 
-#[derive(Debug)]
+#[cfg_attr(test, derive(Debug))]
 struct UpwardUpdateState<I> {
     old_size: I,
 }
@@ -487,12 +536,17 @@ struct UpwardUpdateState<I> {
 /// subtree sizes of each node.
 ///
 /// Upward traversal will terminate at `root`, and `root`'s subtree size will be updated to match.
-fn run_insert<'t, I: Index, S: Slice<I>>(
-    root: node::HandleMut<'t, I, S>,
+fn run_insert<'t, I, S, P>(
+    root: node::HandleMut<'t, I, S, P>,
     root_subtree_size: Option<I>,
     mut force_edge_rhs: bool,
     state: DownwardInsertState<I, S>,
-) -> node::HandleMut<'t, I, S> {
+) -> node::HandleMut<'t, I, S, P>
+where
+    I: Index,
+    S: Slice<I>,
+    P: RleTreeConfig<I, S> + SupportsUpdate<I, S>,
+{
     let root_addr = root.addr();
 
     let mut down_state = state;
@@ -542,10 +596,13 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
         }
     }
 
-    fn step(
+    fn step<P>(
         self,
-        node: node::HandleMut<I, S>,
-    ) -> (node::HandleMut<I, S>, ControlFlow<UpwardUpdateState<I>, Self>) {
+        node: node::HandleMut<I, S, P>,
+    ) -> (node::HandleMut<I, S, P>, ControlFlow<UpwardUpdateState<I>, Self>)
+    where
+        P: RleTreeConfig<I, S> + SupportsUpdate<I, S>,
+    {
         match search_step(node.borrow(), self.target) {
             SearchResult::Lhs { offset } => match node.into_lhs() {
                 // Recurse into LHS child:
@@ -573,10 +630,13 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
 
     /// Sub-case of `step` that handles the case where the target index is at the edge of the node
     /// and its LHS child (if there is one).
-    fn step_edge_lhs(
+    fn step_edge_lhs<P>(
         mut self,
-        mut node: node::HandleMut<I, S>,
-    ) -> (node::HandleMut<I, S>, ControlFlow<UpwardUpdateState<I>, Self>) {
+        mut node: node::HandleMut<I, S, P>,
+    ) -> (node::HandleMut<I, S, P>, ControlFlow<UpwardUpdateState<I>, Self>)
+    where
+        P: RleTreeConfig<I, S> + SupportsUpdate<I, S>,
+    {
         // Target is on the edge of this node and LHS subtree; try joining the slice with this
         // node.
         if self.allow_joining {
@@ -608,7 +668,9 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
                             .add_right(rhs_size);
                     }
 
-                    join_value = Self::try_join_traverse_lhs(node.borrow_mut(), join_value);
+                    let redirect = P::Redirect::to(node.borrow());
+                    join_value =
+                        Self::try_join_traverse_lhs(node.borrow_mut(), join_value, redirect);
 
                     node.set_value(join_value);
                     node.set_subtree_size(new_subtree_size);
@@ -630,14 +692,14 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
                     node::NodeHandle::alloc_new(self.fst_value.slice, self.fst_value.size);
 
                 if let Some(snd_value) = self.snd_value {
-                    new_lhs
-                        .borrow_mut()
-                        .insert_rhs(node::NodeHandle::alloc_new(snd_value.slice, snd_value.size));
+                    new_lhs.borrow_mut().insert_rhs(
+                        node::NodeHandle::alloc_new(snd_value.slice, snd_value.size).erase(),
+                    );
                     new_lhs.set_subtree_size(self.fst_value.size.add_right(snd_value.size));
-                    new_lhs = fix::fix_owned(new_lhs, FixMode::Normal);
+                    new_lhs = fix::fix_unique_owned(new_lhs, FixMode::Normal);
                 }
 
-                let child = n.insert_lhs(new_lhs);
+                let child = n.insert_into_lhs(new_lhs);
 
                 (child, ControlFlow::Break(UpwardUpdateState { old_size: I::ZERO }))
             }
@@ -646,10 +708,13 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
 
     /// Sub-case of `step` that handles the case where the target index is at the edge of the node
     /// and its RHS child (if there is one).
-    fn step_edge_rhs(
+    fn step_edge_rhs<P>(
         mut self,
-        mut node: node::HandleMut<I, S>,
-    ) -> (node::HandleMut<I, S>, ControlFlow<UpwardUpdateState<I>, Self>) {
+        mut node: node::HandleMut<I, S, P>,
+    ) -> (node::HandleMut<I, S, P>, ControlFlow<UpwardUpdateState<I>, Self>)
+    where
+        P: RleTreeConfig<I, S> + SupportsUpdate<I, S>,
+    {
         // Target is on the edge of this node and RHS subtree; try joining the slice
         // with this node.
         if self.allow_joining {
@@ -680,7 +745,9 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
                             .add_right(rhs_size);
                     }
 
-                    join_value = Self::try_join_traverse_rhs(node.borrow_mut(), join_value);
+                    let redirect = P::Redirect::to(node.borrow());
+                    join_value =
+                        Self::try_join_traverse_rhs(node.borrow_mut(), join_value, redirect);
 
                     node.set_value(join_value);
                     node.set_subtree_size(new_subtree_size);
@@ -702,13 +769,13 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
                     node::NodeHandle::alloc_new(self.fst_value.slice, self.fst_value.size);
 
                 if let Some(snd_value) = self.snd_value {
-                    new_rhs
-                        .borrow_mut()
-                        .insert_rhs(node::NodeHandle::alloc_new(snd_value.slice, snd_value.size));
+                    new_rhs.borrow_mut().insert_rhs(
+                        node::NodeHandle::alloc_new(snd_value.slice, snd_value.size).erase(),
+                    );
                     new_rhs.set_subtree_size(self.fst_value.size.add_right(snd_value.size));
                 }
 
-                let child = n.insert_rhs(new_rhs);
+                let child = n.insert_into_rhs(new_rhs);
 
                 (child, ControlFlow::Break(UpwardUpdateState { old_size: I::ZERO }))
             }
@@ -719,7 +786,14 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
     /// left-hand child (i.e., the RIGHT-MOST node in the subtree rooted at its left-hand child).
     ///
     /// Returns the result of attempting to join with `root_value`.
-    fn try_join_traverse_lhs(subtree_root: node::HandleMut<I, S>, root_value: S) -> S {
+    fn try_join_traverse_lhs<P>(
+        subtree_root: node::HandleMut<I, S, P>,
+        root_value: S,
+        redirect: P::Redirect,
+    ) -> S
+    where
+        P: RleTreeConfig<I, S> + SupportsUpdate<I, S>,
+    {
         let root_addr = subtree_root.addr();
 
         let mut immediate_lhs = match subtree_root.into_lhs() {
@@ -752,7 +826,10 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
                 return root_value;
             }
             // Did join -- we have complex operations ahead. More below.
-            Ok(v) => final_value = v,
+            Ok(v) => {
+                final_value = v;
+                immediate_lhs.write_redirect(redirect);
+            }
         }
 
         // Joined! Let's remove this lower node, replacing it with its own left-hand child, if
@@ -818,7 +895,14 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
     /// right-hand child (i.e., the LEFT-MOST node in the subtree rooted at its right-hand child).
     ///
     /// Returns the result of attempting to join with `root_value`.
-    fn try_join_traverse_rhs(subtree_root: node::HandleMut<I, S>, root_value: S) -> S {
+    fn try_join_traverse_rhs<P>(
+        subtree_root: node::HandleMut<I, S, P>,
+        root_value: S,
+        redirect: P::Redirect,
+    ) -> S
+    where
+        P: RleTreeConfig<I, S> + SupportsUpdate<I, S>,
+    {
         let root_addr = subtree_root.addr();
 
         let mut immediate_rhs = match subtree_root.into_rhs() {
@@ -851,7 +935,10 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
                 return root_value;
             }
             // Did join -- we have complex operations ahead. More below.
-            Ok(v) => final_value = v,
+            Ok(v) => {
+                final_value = v;
+                immediate_rhs.write_redirect(redirect);
+            }
         }
 
         // Joined! Let's remove this lower node, replacing it with its own left-hand child, if
@@ -913,12 +1000,15 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
         }
     }
 
-    fn step_split_value(
+    fn step_split_value<P>(
         self,
-        mut node: node::HandleMut<I, S>,
+        mut node: node::HandleMut<I, S, P>,
         range: Range<I>,
         offset_in_range: I,
-    ) -> (node::HandleMut<I, S>, ControlFlow<UpwardUpdateState<I>, Self>) {
+    ) -> (node::HandleMut<I, S, P>, ControlFlow<UpwardUpdateState<I>, Self>)
+    where
+        P: RleTreeConfig<I, S> + SupportsUpdate<I, S>,
+    {
         // At this point: the value is in the middle of the range, so we need to split this
         // node.
         // We'll end up with something like:
@@ -1044,11 +1134,15 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
 }
 
 impl<I: Index> UpwardUpdateState<I> {
-    fn step<S: Slice<I>>(
+    fn step<S, P>(
         self,
-        node: node::HandleMut<I, S>,
+        node: node::HandleMut<I, S, P>,
         override_parent_subtree_size: Option<I>,
-    ) -> (node::HandleMut<I, S>, Self) {
+    ) -> (node::HandleMut<I, S, P>, Self)
+    where
+        S: Slice<I>,
+        P: RleTreeConfig<I, S> + SupportsUpdate<I, S>,
+    {
         let lower_old_subtree_size = self.old_size;
         let lower_new_subtree_size = node.subtree_size();
         let lower_addr = node.addr();

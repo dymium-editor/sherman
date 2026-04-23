@@ -1,7 +1,16 @@
-MIRIFLAGS := '-Zmiri-tree-borrows'
+_default:
+    @just -l
 
+# Format code
 fmt:
     cargo +nightly fmt
+
+# Lint (with clippy)
+lint:
+    cargo +stable clippy
+    cargo +nightly clippy --features=nightly,fuzz
+    cargo +stable clippy --profile=test
+    cargo +nightly clippy --profile=test --features=nightly,fuzz
 
 # Run unit tests (without miri)
 test:
@@ -9,7 +18,7 @@ test:
 
 # Run unit tests with miri
 miri-test:
-    MIRIFLAGS={{ MIRIFLAGS }} cargo +nightly miri test
+    cargo +nightly miri test
 
 # List fuzzing targets
 fuzz-list:

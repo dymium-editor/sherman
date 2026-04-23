@@ -1,17 +1,23 @@
 //! Fuzzing related utilities
 
+#[cfg(feature = "fuzz")]
 use arbitrary::{Arbitrary, Unstructured};
 use std::fmt::{self, Debug};
 
+#[cfg(feature = "fuzz")]
 mod arbitrary_operation;
 mod as_rust;
 mod fake;
 mod tracked_index;
 
 pub use crate::tree::tests::CharRange;
-pub use arbitrary_operation::{ArbitraryOp, BasicOperation, CheckedIndexOperation, OpSequence};
+#[cfg(feature = "fuzz")]
+pub use arbitrary_operation::{
+    ArbitraryOp, BasicOperation, CheckedIndexOperation, MultiCowOperation, OpSequence,
+    SliceRefOperation,
+};
 pub use as_rust::{RustExpr, RustType};
-pub use fake::Fake;
+pub use fake::{Fake, FakeSliceRef};
 pub use tracked_index::{IndexInfo, TrackedIndex, TrackedSlice};
 
 /// Helper type for fuzzing - restricted character set that pretends it's `char`
@@ -24,6 +30,7 @@ impl Debug for UpperLetter {
     }
 }
 
+#[cfg(feature = "fuzz")]
 impl<'d> Arbitrary<'d> for UpperLetter {
     fn arbitrary(u: &mut Unstructured<'d>) -> arbitrary::Result<Self> {
         let idx = u.int_in_range(0_u8..=25)?;

@@ -16,12 +16,22 @@ pub struct Fake<I, S> {
     /// List of *end* positions and the slice in each run
     ///
     /// Slices are expected to be `Some(_)` except for transitional states.
-    runs: Vec<(I, Option<S>)>,
+    runs: Vec<(I, Option<S>, Option<RefId>)>,
+    /// For each `RefId`, the `RefId` that they should be redirected to, if any.
+    redirects: Vec<Option<RefId>>,
 }
+
+#[derive(Debug, Clone)]
+pub struct FakeSliceRef {
+    id: RefId,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+struct RefId(usize);
 
 impl<I: Index, S: Slice<I>> Fake<I, S> {
     pub fn new_empty() -> Self {
-        Fake { runs: Vec::new() }
+        Fake { runs: Vec::new(), redirects: Vec::new() }
     }
 
     pub fn new(slice: S, size: I) -> Self {
@@ -29,7 +39,10 @@ impl<I: Index, S: Slice<I>> Fake<I, S> {
             panic!("size less than zero");
         }
 
-        Fake { runs: vec![(size, Some(slice))] }
+        Fake {
+            runs: vec![(size, Some(slice), None)],
+            redirects: vec![None],
+        }
     }
 
     pub fn size(&self) -> I {
@@ -46,6 +59,37 @@ impl<I: Index, S: Slice<I>> Fake<I, S> {
         let end = self.runs[idx].0;
         let start = idx.checked_sub(1).map(|i| self.runs[i].0).unwrap_or(I::ZERO);
         (start..end, self.runs[idx].1.as_ref().unwrap())
+    }
+
+    pub fn make_ref(&mut self, index: I) -> FakeSliceRef {
+        assert!(index >= I::ZERO && index < self.size());
+        let idx = match self.runs.binary_search_by_key(&index, |(i, ..)| *i) {
+            Ok(i) => i + 1,
+            Err(i) => i,
+        };
+
+        // Return an existing id if we have it
+        if let &(.., Some(id)) = &self.runs[idx] {
+            return FakeSliceRef { id };
+        }
+
+        // ... otherwise, allocate a new RefId
+        let id = RefId(self.redirects.len());
+        self.redirects.push(None);
+        self.runs[idx].2 = Some(id);
+        FakeSliceRef { id }
+    }
+
+    pub fn get_ref(&self, r: &FakeSliceRef) -> Option<(Range<I>, &S)> {
+        let mut id = r.id;
+        while let Some(redirect) = self.redirects[id.0] {
+            id = redirect;
+        }
+
+        let (idx, (end, value, _)) =
+            self.runs.iter().enumerate().find(|&(_, &(.., r))| r == Some(id))?;
+        let start = idx.checked_sub(1).map(|i| self.runs[i].0).unwrap_or(I::ZERO);
+        Some((start..*end, value.as_ref().unwrap()))
     }
 
     pub fn iter(&self, range: impl std::ops::RangeBounds<I>) -> FakeIter<'_, I, S> {
@@ -120,7 +164,7 @@ impl<I: Index, S: Slice<I>> Fake<I, S> {
             self.runs[idx].1 = Some(lhs);
             let rhs_end = mem::replace(&mut self.runs[idx].0, pos_in_key);
             self.runs[idx].0 = index;
-            self.runs.insert(idx + 1, (rhs_end, Some(rhs)));
+            self.runs.insert(idx + 1, (rhs_end, Some(rhs), None));
             idx += 1;
         }
 
@@ -128,15 +172,17 @@ impl<I: Index, S: Slice<I>> Fake<I, S> {
         let mut old_size = I::ZERO;
         let mut new_size = size;
         let mut lhs_end_override = None;
+        let mut lhs_redirect = None;
+        let mut rhs_redirect = None;
 
         // insert at the the point between this key and the one before
 
         if let Some(p) = idx.checked_sub(1) {
-            let (lhs_end, lhs) = self.runs.remove(p);
+            let (lhs_end, lhs, lhs_ref) = self.runs.remove(p);
             assert_eq!(lhs_end, index);
             match lhs.unwrap().try_join(slice) {
                 Err((lhs, s)) => {
-                    self.runs.insert(p, (lhs_end, Some(lhs)));
+                    self.runs.insert(p, (lhs_end, Some(lhs), lhs_ref));
                     slice = s;
                 }
                 Ok(new) => {
@@ -148,16 +194,17 @@ impl<I: Index, S: Slice<I>> Fake<I, S> {
                     slice = new;
                     idx = p;
                     lhs_end_override = Some(lhs_end);
+                    lhs_redirect = lhs_ref;
                 }
             }
         }
 
         // `idx` is already the right-hand node, because `index` is equal to the end of `lhs`
         if idx < self.runs.len() {
-            let (rhs_end, rhs) = self.runs.remove(idx);
+            let (rhs_end, rhs, rhs_ref) = self.runs.remove(idx);
             match slice.try_join(rhs.unwrap()) {
                 Err((s, rhs)) => {
-                    self.runs.insert(idx, (rhs_end, Some(rhs)));
+                    self.runs.insert(idx, (rhs_end, Some(rhs), rhs_ref));
                     slice = s;
                 }
                 Ok(new) => {
@@ -168,11 +215,21 @@ impl<I: Index, S: Slice<I>> Fake<I, S> {
                     old_size = old_size.add_right(rhs_size);
                     new_size = new_size.add_right(rhs_size);
                     slice = new;
+                    rhs_redirect = rhs_ref;
                 }
             }
         }
 
-        self.runs.insert(idx, (base_pos.add_right(new_size), Some(slice)));
+        let new_ref = match (lhs_redirect, rhs_redirect) {
+            (None, None) => None,
+            (Some(r), None) | (None, Some(r)) => Some(r),
+            (Some(rx), Some(ry)) => {
+                assert!(self.redirects[ry.0].is_none());
+                self.redirects[ry.0] = Some(rx);
+                Some(rx)
+            }
+        };
+        self.runs.insert(idx, (base_pos.add_right(new_size), Some(slice), new_ref));
 
         let diff = base_pos.add_right(new_size).sub_left(base_pos.add_right(old_size));
 
@@ -243,16 +300,17 @@ impl<I: Index, S: Slice<I>> Fake<I, S> {
         if front_idx == back_idx && split_front && split_back {
             let idx = front_idx;
             let value = self.runs[idx].1.take().unwrap();
+            let value_ref = self.runs[idx].2.take();
             let value_start = idx.checked_sub(1).map(|i| self.runs[i].0).unwrap_or(I::ZERO);
 
             let (part, rhs) = value.split_at(end.sub_left(value_start));
             let (lhs, mid) = part.split_at(start.sub_left(value_start));
 
-            new_runs = vec![(end.sub_left(start), Some(mid))];
+            new_runs = vec![(end.sub_left(start), Some(mid), None)];
 
             // Put RHS back, and insert a new entry for LHS - we'll try joining later.
             self.runs[idx].1 = Some(rhs);
-            self.runs.insert(idx, (start, Some(lhs)));
+            self.runs.insert(idx, (start, Some(lhs), value_ref));
             front_idx += 1;
         } else {
             let back = if !split_back {
@@ -261,9 +319,10 @@ impl<I: Index, S: Slice<I>> Fake<I, S> {
                 let rhs_start = back_idx.checked_sub(1).map(|i| self.runs[i].0).unwrap_or(I::ZERO);
                 let (lhs, rhs) =
                     self.runs[back_idx].1.take().unwrap().split_at(end.sub_left(rhs_start));
+                let lhs_ref = self.runs[back_idx].2.take();
                 self.runs[back_idx].1 = Some(rhs);
 
-                Some((end.sub_left(start), Some(lhs)))
+                Some((end.sub_left(start), Some(lhs), lhs_ref))
             };
 
             let front = if !split_front {
@@ -286,19 +345,19 @@ impl<I: Index, S: Slice<I>> Fake<I, S> {
                 new_runs = self
                     .runs
                     .drain(front_idx..back_idx)
-                    .map(|(value_end, value)| (value_end.sub_left(start), value))
+                    .map(|(value_end, value, r)| (value_end.sub_left(start), value, r))
                     .collect();
             }
-            if let Some(pair) = front {
-                new_runs.insert(0, pair);
+            if let Some((idx, value)) = front {
+                new_runs.insert(0, (idx, value, None));
             }
-            if let Some(pair) = back {
-                new_runs.push(pair);
+            if let Some((idx, value, r)) = back {
+                new_runs.push((idx, value, r));
             }
         }
 
         if replace.is_none() {
-            for (value_end_pos, _) in &mut self.runs[front_idx..] {
+            for (value_end_pos, ..) in &mut self.runs[front_idx..] {
                 *value_end_pos = value_end_pos.sub_left(end).add_left(start);
             }
         }
@@ -351,7 +410,7 @@ impl<I: Index, S: Slice<I>> Fake<I, S> {
 
                 // Couldn't join with either. Insert the replacement back between LHS and RHS.
                 // Leaving `unjoined_replacement = true` will prevent trying to join again.
-                self.runs.insert(front_idx, (end, Some(repl)));
+                self.runs.insert(front_idx, (end, Some(repl), None));
             }
         }
 
@@ -361,7 +420,21 @@ impl<I: Index, S: Slice<I>> Fake<I, S> {
             let rhs = self.runs[front_idx].1.take().unwrap();
             match lhs.try_join(rhs) {
                 Ok(joined) => {
+                    // Handle refs / redirects
+                    let lhs_ref = self.runs[front_idx - 1].2.take();
+                    let rhs_ref = self.runs[front_idx].2.take();
+                    let new_ref = match (lhs_ref, rhs_ref) {
+                        (None, None) => None,
+                        (Some(r), None) | (None, Some(r)) => Some(r),
+                        (Some(rx), Some(ry)) => {
+                            assert!(self.redirects[ry.0].is_none());
+                            self.redirects[ry.0] = Some(rx);
+                            Some(rx)
+                        }
+                    };
+
                     self.runs[front_idx].1 = Some(joined);
+                    self.runs[front_idx].2 = new_ref;
                     self.runs.remove(front_idx - 1);
                 }
                 Err((lhs, rhs)) => {
@@ -371,13 +444,13 @@ impl<I: Index, S: Slice<I>> Fake<I, S> {
             }
         }
 
-        Fake { runs: new_runs }
+        Fake { runs: new_runs, redirects: self.redirects.clone() }
     }
 }
 
 #[derive(Debug)]
 pub struct FakeIter<'a, I, S> {
-    runs: &'a [(I, Option<S>)],
+    runs: &'a [(I, Option<S>, Option<RefId>)],
     front_idx: usize,
     back_idx: usize,
 }
@@ -395,7 +468,7 @@ where
 
         let start = self.front_idx.checked_sub(1).map(|i| self.runs[i].0).unwrap_or(I::ZERO);
 
-        let (end, slice) = self.runs.get(self.front_idx)?;
+        let (end, slice, _ref_id) = self.runs.get(self.front_idx)?;
         self.front_idx += 1;
 
         Some((start..*end, slice.as_ref().unwrap()))
@@ -414,7 +487,7 @@ where
         self.back_idx -= 1;
         let start = self.back_idx.checked_sub(1).map(|i| self.runs[i].0).unwrap_or(I::ZERO);
 
-        let (end, slice) = self.runs.get(self.back_idx)?;
+        let (end, slice, _ref_id) = self.runs.get(self.back_idx)?;
 
         Some((start..*end, slice.as_ref().unwrap()))
     }
@@ -746,5 +819,19 @@ mod tests {
             fake.iter(..).collect::<Vec<_>>(),
             [(0..2, &CharRange('B'..'D')), (2..10, &CharRange('K'..'S')),]
         );
+    }
+
+    #[test]
+    fn fuzz_01_slice_ref_basic_removal() {
+        // Discovered by fuzzing SliceRefOperation<u8, Constant<UpperLetter>>
+        let mut fake: Fake<u8, Constant<char>> = Fake::new_empty();
+        fake.insert(0, Constant('L'), 96);
+        let ref_0 = fake.make_ref(18);
+        _ = fake.remove(53..54);
+        {
+            let (range, slice) = fake.get_ref(&ref_0).unwrap();
+            assert_eq!(range, 0..95);
+            assert_eq!(slice, &Constant('L'));
+        }
     }
 }
