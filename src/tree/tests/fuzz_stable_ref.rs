@@ -1,4 +1,4 @@
-//! Tests generated from fuzzing for `SliceRefOperation<u8, Constant<UpperLetter>>`
+//! Tests generated from fuzzing for `StableRefOperation<u8, Constant<UpperLetter>>`
 
 use crate::param::EnableRefs;
 use crate::{Constant, RleTree};
@@ -16,7 +16,7 @@ fn test_02_basic_removal() {
     tree.insert(0, Constant('L'), 96);
     let ref_0 = tree.get(18).stable_ref();
     _ = tree.remove(53..54);
-    // This actually surfaced an issue with the fake API's handling of slice references, but it's
+    // This actually surfaced an issue with the fake API's handling of stable references, but it's
     // worth including here as well for coverage.
     {
         let entry = ref_0.get(&tree).unwrap();

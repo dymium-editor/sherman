@@ -26,9 +26,9 @@ mod fuzz_checked;
 #[cfg(test)]
 mod fuzz_multi_cow;
 #[cfg(test)]
-mod fuzz_slice_ref;
+mod fuzz_stable_ref;
 #[cfg(test)]
-mod fuzz_slice_ref_range;
+mod fuzz_stable_ref_range;
 
 /// Helper type for fuzzing - a [`Slice`] implementation that joins continuous character ranges
 #[derive(Debug, Clone, PartialEq, Eq)]

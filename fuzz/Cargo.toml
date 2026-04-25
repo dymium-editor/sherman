@@ -54,15 +54,15 @@ doc = false
 bench = false
 
 [[bin]]
-name = "slice_ref"
-path = "fuzz_targets/slice_ref.rs"
+name = "stable_ref"
+path = "fuzz_targets/stable_ref.rs"
 test = false
 doc = false
 bench = false
 
 [[bin]]
-name = "slice_ref_range"
-path = "fuzz_targets/slice_ref_range.rs"
+name = "stable_ref_range"
+path = "fuzz_targets/stable_ref_range.rs"
 test = false
 doc = false
 bench = false

@@ -1,4 +1,4 @@
-//! Tests generated from fuzzing for `SliceRefOperation<u8, CharRange>`
+//! Tests generated from fuzzing for `StableRefOperation<u8, CharRange>`
 
 use super::CharRange;
 use crate::RleTree;

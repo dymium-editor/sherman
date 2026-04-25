@@ -14,10 +14,10 @@ pub use crate::tree::tests::CharRange;
 #[cfg(feature = "fuzz")]
 pub use arbitrary_operation::{
     ArbitraryOp, BasicOperation, CheckedIndexOperation, MultiCowOperation, OpSequence,
-    SliceRefOperation,
+    StableRefOperation,
 };
 pub use as_rust::{RustExpr, RustType};
-pub use fake::{Fake, FakeSliceRef};
+pub use fake::{Fake, FakeStableRef};
 pub use tracked_index::{IndexInfo, TrackedIndex, TrackedSlice};
 
 /// Helper type for fuzzing - restricted character set that pretends it's `char`

@@ -21,7 +21,7 @@ mod remove;
 pub(crate) mod tests;
 
 pub use drain::Drain;
-pub use entry::{SliceEntry, SliceRef};
+pub use entry::{SliceEntry, StableRef};
 use fix::FixMode;
 pub use iter::{IntoIter, Iter};
 use node::Side;

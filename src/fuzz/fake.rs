@@ -22,7 +22,7 @@ pub struct Fake<I, S> {
 }
 
 #[derive(Debug, Clone)]
-pub struct FakeSliceRef {
+pub struct FakeStableRef {
     id: RefId,
 }
 
@@ -61,7 +61,7 @@ impl<I: Index, S: Slice<I>> Fake<I, S> {
         (start..end, self.runs[idx].1.as_ref().unwrap())
     }
 
-    pub fn make_ref(&mut self, index: I) -> FakeSliceRef {
+    pub fn make_ref(&mut self, index: I) -> FakeStableRef {
         assert!(index >= I::ZERO && index < self.size());
         let idx = match self.runs.binary_search_by_key(&index, |(i, ..)| *i) {
             Ok(i) => i + 1,
@@ -70,17 +70,17 @@ impl<I: Index, S: Slice<I>> Fake<I, S> {
 
         // Return an existing id if we have it
         if let &(.., Some(id)) = &self.runs[idx] {
-            return FakeSliceRef { id };
+            return FakeStableRef { id };
         }
 
         // ... otherwise, allocate a new RefId
         let id = RefId(self.redirects.len());
         self.redirects.push(None);
         self.runs[idx].2 = Some(id);
-        FakeSliceRef { id }
+        FakeStableRef { id }
     }
 
-    pub fn get_ref(&self, r: &FakeSliceRef) -> Option<(Range<I>, &S)> {
+    pub fn get_ref(&self, r: &FakeStableRef) -> Option<(Range<I>, &S)> {
         let mut id = r.id;
         while let Some(redirect) = self.redirects[id.0] {
             id = redirect;
@@ -822,8 +822,8 @@ mod tests {
     }
 
     #[test]
-    fn fuzz_01_slice_ref_basic_removal() {
-        // Discovered by fuzzing SliceRefOperation<u8, Constant<UpperLetter>>
+    fn fuzz_01_stable_ref_basic_removal() {
+        // Discovered by fuzzing StableRefOperation<u8, Constant<UpperLetter>>
         let mut fake: Fake<u8, Constant<char>> = Fake::new_empty();
         fake.insert(0, Constant('L'), 96);
         let ref_0 = fake.make_ref(18);

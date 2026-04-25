@@ -15,7 +15,7 @@ pub struct NoFeatures(PhantomData<()>);
 #[cfg_attr(test, derive(Debug))]
 pub struct EnableCow(PhantomData<std::sync::Arc<()>>);
 
-/// Marker type: Enable stable slice references for an [`RleTree`]
+/// Marker type: Enable stable references for an [`RleTree`]
 #[cfg_attr(test, derive(Debug))]
 pub struct EnableRefs(PhantomData<std::rc::Rc<()>>);
 
@@ -35,7 +35,7 @@ pub(crate) mod sealed {
 ///  1. [`NoFeatures`] - no special functionality
 ///  2. [`EnableCow`] - copy-on-write enabled, requires `S: Clone` and adds atomic reference
 ///     counters and makes the tree `Send`/`Sync` only if `I` and `S` are `Send + Sync`.
-///  3. [`EnableRefs`] - stable slice references enabled, makes the tree `!Send` and `!Sync`
+///  3. [`EnableRefs`] - stable references enabled, makes the tree `!Send` and `!Sync`
 ///
 /// Where applicable, the documentation on [`RleTree`] explains the algorithmic complexity.
 pub trait RleTreeConfig<I, S>: 'static + Sized + sealed::Sealed {

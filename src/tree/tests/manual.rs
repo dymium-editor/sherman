@@ -11,9 +11,9 @@ fn basic_insert() {
     tree.insert(6, Constant('g'), 3);
 }
 
-// Roughly a copy of the `SliceRef` docs.
+// Roughly a copy of the `StableRef` docs.
 #[test]
-fn varied_slice_ref() {
+fn varied_stable_ref() {
     let mut tree: RleTree<usize, Constant<char>, param::EnableRefs> = RleTree::new_empty();
     tree.insert(0, Constant('A'), 5);
 
