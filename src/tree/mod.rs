@@ -199,8 +199,7 @@ where
     /// ```
     /// use sherman::{Constant, RleTree};
     ///
-    /// let mut tree: RleTree<usize, Constant<&str>> =
-    ///     RleTree::new_empty();
+    /// let mut tree: RleTree<usize, Constant<&str>> = RleTree::new_empty();
     ///
     /// tree.insert(0, Constant("foo"), 4);
     /// tree.insert(4, Constant("bar"), 4);
@@ -298,8 +297,7 @@ where
     /// # use std::ops::Range;
     /// use sherman::{Constant, RleTree, SliceEntry};
     ///
-    /// let mut tree: RleTree<usize, Constant<&'static str>> =
-    ///     RleTree::new_empty();
+    /// let mut tree: RleTree<usize, Constant<&'static str>> = RleTree::new_empty();
     ///
     /// // Add values so that the tree looks like:
     /// //
@@ -363,8 +361,7 @@ where
     /// ```
     /// use sherman::{Constant, RleTree, SliceEntry};
     ///
-    /// let mut tree: RleTree<usize, Constant<&'static str>> =
-    ///     RleTree::new_empty();
+    /// let mut tree: RleTree<usize, Constant<&'static str>> = RleTree::new_empty();
     ///
     /// // Append values to the end, so the tree looks like:
     /// //
@@ -471,8 +468,7 @@ where
     /// ```
     /// use sherman::{Constant, RleTree};
     ///
-    /// let mut tree: RleTree<usize, Constant<&'static str>> =
-    ///     RleTree::new_empty();
+    /// let mut tree: RleTree<usize, Constant<&'static str>> = RleTree::new_empty();
     ///
     /// // Insert values so the tree looks like:
     /// //
@@ -490,9 +486,7 @@ where
     ///
     /// // ... and the values are as described:
     /// assert_eq!(
-    ///     tree.iter(..)
-    ///         .map(|e| (e.range(), e.slice()))
-    ///         .collect::<Vec<_>>(),
+    ///     tree.iter(..).map(|e| (e.range(), e.slice())).collect::<Vec<_>>(),
     ///     [
     ///         (0..3, &Constant("foo")),
     ///         (3..7, &Constant("baz")), // <- replacement
@@ -548,8 +542,7 @@ where
     /// ```
     /// use sherman::{Constant, RleTree};
     ///
-    /// let mut tree: RleTree<usize, Constant<&'static str>> =
-    ///     RleTree::new_empty();
+    /// let mut tree: RleTree<usize, Constant<&'static str>> = RleTree::new_empty();
     ///
     /// // Insert values so the tree looks like:
     /// //
@@ -569,9 +562,7 @@ where
     ///
     /// // ... and the parts of the original values are no longer present:
     /// assert_eq!(
-    ///     tree.iter(..)
-    ///         .map(|e| (e.range(), e.slice()))
-    ///         .collect::<Vec<_>>(),
+    ///     tree.iter(..).map(|e| (e.range(), e.slice())).collect::<Vec<_>>(),
     ///     [(0..2, &Constant("foo")), (2..6, &Constant("bar"))],
     /// );
     ///
