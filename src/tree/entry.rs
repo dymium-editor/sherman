@@ -12,7 +12,7 @@ use crate::{Index, RleTree, Slice};
 /// it can also be used to produce a "stable reference" to the value acros modification (see
 /// [`stable_ref`] or [`StableRef`] for more).
 ///
-/// [`stable_ref`]: Sef::stable_ref
+/// [`stable_ref`]: Self::stable_ref
 pub struct SliceEntry<'t, I, S, P: RleTreeConfig<I, S> = param::NoFeatures> {
     pub(super) range: Range<I>,
     pub(super) slice: node::NodeHandle<borrow::Immut<'t, node::Node<I, S, P>>>,

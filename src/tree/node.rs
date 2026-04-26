@@ -8,6 +8,8 @@ use std::ptr::NonNull;
 
 use super::borrow::{self, Borrow, Borrowed};
 use super::rc::{BorrowState, Redirect, RefCount};
+#[expect(unused)] // only added for docs
+use crate::Slice;
 use crate::param::{self, RleTreeConfig, SupportsUpdate};
 use crate::{DirectionalSub, Index};
 
@@ -460,6 +462,8 @@ impl<B: NodeBorrow> NodeHandle<B> {
     ///
     /// This method panics if the slice value was previously taken without being put back via
     /// [`set_value`].
+    ///
+    /// [`set_value`]: Self::set_value
     pub(super) fn take_value(&mut self) -> B::Slice
     where
         B: borrow::BorrowAsMut,
@@ -476,6 +480,8 @@ impl<B: NodeBorrow> NodeHandle<B> {
     /// # Panics
     ///
     /// This method panics if the slice value is already present in the node.
+    ///
+    /// [`take_value`]: Self::take_value
     pub(super) fn set_value(&mut self, value: B::Slice)
     where
         B: borrow::BorrowAsMut,
@@ -744,7 +750,7 @@ impl<'t, I, S, P: RleTreeConfig<I, S>> HandleImmut<'t, I, S, P> {
     /// # Panics
     ///
     /// This method panics if the slice value is not currently present, e.g. due to a prior call to
-    /// [`take_value`] without a corresponding [`set_value`].
+    /// [`take_value`](Self::take_value) without a corresponding [`set_value`](Self::set_value).
     pub(super) fn value(&self) -> &'t S {
         match self.inner.reborrow().into_ref::<f![Node::value]>() {
             Some(v) => v,

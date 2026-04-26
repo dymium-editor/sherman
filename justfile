@@ -5,12 +5,16 @@ _default:
 fmt:
     cargo +nightly fmt
 
-# Lint (with clippy)
+# Lint (with clippy & rustdoc)
 lint:
     cargo +stable clippy
-    cargo +nightly clippy --features=nightly,fuzz
+    cargo +nightly clippy --all-features
     cargo +stable clippy --profile=test
-    cargo +nightly clippy --profile=test --features=nightly,fuzz
+    cargo +nightly clippy --profile=test --all-features
+    cargo +stable doc --no-deps
+    cargo +nightly doc --no-deps --all-features
+    cargo +stable doc --document-private-items --no-deps
+    cargo +nightly doc --document-private-items --no-deps --all-features
 
 # Run unit tests (without miri)
 test:

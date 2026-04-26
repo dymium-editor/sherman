@@ -22,7 +22,7 @@ use super::{
 /// * Get the [`size`](Removed::size) or original [`range`](Removed::range) that was removed
 /// * Extract a single value with [`try_into_value()`](Removed::try_into_value)
 /// * Turn the removed values into a full `RleTree` with [`into_tree`](Removed::into_tree)
-/// * Iterate over the values with `into_iter` (into a [`Drain`](super::Drain))
+/// * Iterate over the values with `into_iter` (into a [`Drain`])
 pub struct Removed<I, S, P: RleTreeConfig<I, S> = param::NoFeatures> {
     pub(super) start: I,
     pub(super) kind: RemovedKind<I, S, P>,
