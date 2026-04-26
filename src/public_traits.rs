@@ -76,22 +76,6 @@ pub trait Slice<Idx>: Sized {
     }
 }
 
-/// Types that have a "zero" value, in the mathematical sense
-///
-/// Put simply, types should only implement `Zero` if there is some constant `ZERO` such that any
-/// addition or subtraction by `ZERO` returns the original value -- i.e.
-/// `x + ZERO == x == x - ZERO`. Addition and subtraction is a little bit more relaxed here,
-/// instead referring to [`DirectionalAdd`] and [`DirectionalSub`].
-///
-/// Unlike [`num::Zero`], we use a constant for this trait's zero value, because of its use as a
-/// supertrait of [`Index`] -- we need it to be guaranteed to be essentially "zero"-cost.
-///
-/// [`num::Zero`]: https://docs.rs/num/0.4.0/num/trait.Zero.html
-pub trait Zero {
-    /// Constant value of zero
-    const ZERO: Self;
-}
-
 /// Directional-arithmetic counterpart to [`std::ops::Add`]
 ///
 /// This trait goes alongside [`DirectionalSub`] as supertraits of [`Index`]. The explainer on what
