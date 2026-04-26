@@ -16,6 +16,14 @@ lint:
     cargo +stable doc --document-private-items --no-deps
     cargo +nightly doc --document-private-items --no-deps --all-features
 
+# Generate default documentation
+doc-minimal:
+    cargo doc --no-deps
+
+# Generate complete documentation
+doc-full:
+    cargo +nightly doc --no-deps --document-private-items --all-features
+
 # Run unit tests (without miri)
 test:
     RUST_BACKTRACE=1 cargo +nightly test --features=nightly
