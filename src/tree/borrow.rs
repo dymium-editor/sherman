@@ -168,7 +168,16 @@ pub struct Borrowed<B: Borrow> {
     marker: B,
 }
 
+#[cfg(not(feature = "nightly"))]
 impl<B: Borrow> Drop for Borrowed<B> {
+    fn drop(&mut self) {
+        // SAFETY: drop_impl can be called at most once, from Drop, which is true here.
+        unsafe { B::drop_value(self) }
+    }
+}
+
+#[cfg(feature = "nightly")]
+unsafe impl<#[may_dangle] B: Borrow> Drop for Borrowed<B> {
     fn drop(&mut self) {
         // SAFETY: drop_impl can be called at most once, from Drop, which is true here.
         unsafe { B::drop_value(self) }

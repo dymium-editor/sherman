@@ -30,7 +30,7 @@ test:
 
 # Run unit tests with miri
 miri-test:
-    cargo +nightly miri test
+    cargo +nightly miri test --features=nightly
 
 # List fuzzing targets
 fuzz-list:
