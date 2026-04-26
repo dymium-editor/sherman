@@ -26,6 +26,14 @@ unsafe impl<'t, I, S, P> Send for SliceEntry<'t, I, S, P> where
 {
 }
 
+impl<'t, I, S, P: RleTreeConfig<I, S>> PartialEq for SliceEntry<'t, I, S, P> {
+    fn eq(&self, other: &Self) -> bool {
+        self.slice.ptr() == other.slice.ptr()
+    }
+}
+
+impl<'t, I, S, P: RleTreeConfig<I, S>> Eq for SliceEntry<'t, I, S, P> {}
+
 impl<'t, I, S, P> SliceEntry<'t, I, S, P>
 where
     I: Index,

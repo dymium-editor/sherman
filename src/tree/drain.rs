@@ -2,6 +2,8 @@
 
 use std::ops::Range;
 
+#[expect(unused)]
+use crate::RleTree; // only added for docs
 use crate::param::{self, RleTreeConfig, SupportsUpdate};
 use crate::{Index, Slice};
 
@@ -9,12 +11,12 @@ use super::remove::{Removed, RemovedKind};
 use super::{Side, node};
 
 /// A destructive iterator over a range of values in an [`RleTree`], returned by [`RleTree::drain`]
-/// or `.remove().into_iter()`.
+/// or [`.remove()`]﻿[`.into_iter()`].
 ///
 /// See [`RleTree::drain`] for more information.
 ///
-/// [`RleTree`]: crate::RleTree
-/// [`RleTree::drain`]: crate::RleTree::drain
+/// [`.remove()`]: RleTree::remove
+/// [`.into_iter()`]: RleTree::into_iter
 pub struct Drain<I, S, P: RleTreeConfig<I, S>> {
     state: Option<DrainState<I, S, P>>,
 }

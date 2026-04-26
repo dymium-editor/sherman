@@ -6,7 +6,7 @@ use std::ops::{Add, Sub};
 /// Trait for types that can be used as an index in an [`RleTree`]
 ///
 /// This is abstracted, instead of just `usize` because there's some cases where it's valuable to
-/// allow multiple dimensions in indexes -- e.g., line & column number pairs. Treating these
+/// allow multiple dimensions in indexes — e.g., line & column number pairs. Treating these
 /// abstractly means that cases don't need to maintain a persistent 1D to 2D mapping.
 ///
 /// Implementations are provided for the unsigned integer primitives (`u8`, `u16`, etc.).
@@ -15,13 +15,8 @@ use std::ops::{Add, Sub};
 pub trait Index: Debug + Copy + Ord + DirectionalAdd + DirectionalSub {
     /// Constant value of zero for this index
     ///
-    /// The requirements on `ZERO` are limited just to the mathematical meaning; addition and
+    /// The requirements on `ZERO` are limited to the mathematical meaning: addition and
     /// subtraction by `ZERO` must return the original value.
-    ///
-    /// Unlike [`num::Zero`], we use a constant for this trait's zero value, because we need it to
-    /// be guaranteed to be essentially "zero"-cost.
-    ///
-    /// [`num::Zero`]: https://docs.rs/num/0.4.0/num/trait.Zero.html
     const ZERO: Self;
 
     /// Internal-only flag indicating whether we should assume that the `Index` implementation is
@@ -50,7 +45,7 @@ pub trait Slice<Idx>: Sized {
     /// you shouldn't rely upon this for unsafe code.
     ///
     /// For implementations of `Slice` that *are* just run-length encodings (like [`Constant`]),
-    /// simply copying the inner value suffices -- the index isn't necessary.
+    /// simply copying the inner value suffices — the index isn't necessary.
     ///
     /// Note for clarity: The provided index here is *within* the range covered by the slice, i.e.
     /// not global.
@@ -85,13 +80,13 @@ pub trait Slice<Idx>: Sized {
 /// interact with this trait if you are not writing a custom index type**. That said, this
 /// documentation is equally provided for the merely curious.
 ///
-/// ## Directional arithmetic -- Motivation
+/// ## Directional arithmetic — Motivation
 ///
 /// First off, it's worth addressing why we've gone to all these lengths to have "directional
-/// arithmetic" in the first place -- why couldn't the plain `Add` and `Sub` traits have worked?
+/// arithmetic" in the first place — why couldn't the plain `Add` and `Sub` traits have worked?
 ///
 /// Well, one of the abilities we *needed* to have when designing this crate was to be able to use
-/// two-dimensional indexes -- e.g., line & column number. It turns out these are really tricky to
+/// two-dimensional indexes — e.g., line & column number. It turns out these are really tricky to
 /// fit into a one-dimensional system, particularly because any single index for 2D values won't
 /// have commutative addition/subtraction. But it *is* possible with some restrictions, and much of
 /// the weird pieces of design in this crate are essentially required in order to enable this
@@ -99,18 +94,18 @@ pub trait Slice<Idx>: Sized {
 ///
 /// Thankfully for you, dear reader, any [`Index`] type for line/column pairs works as an effective
 /// approximation of the minimal set of guarantees provided by an [`Index`] type, so we'll tend to
-/// use that in the explanations here -- either implicitly (illustrations of ranges) or explicitly
+/// use that in the explanations here — either implicitly (illustrations of ranges) or explicitly
 /// (referring to some hypothetical file, with line/column pairs as points within it).
 ///
 /// ---
 ///
 /// The first key thing to notice about [`Index`] types is that they *also* represent the offset
-/// between two points -- this is required internally for [`RleTree`], but also implicit in the API
+/// between two points — this is required internally for [`RleTree`], but also implicit in the API
 /// of [`Slice`]. If we were just looking at integers, we might've assumed that this was part of
 /// indexes without second thought, but 2D index types require careful consideration.
 ///
 /// The essence of it is that offsets between 2D index types only *really* make sense when used
-/// between the original locations. This is basically what directional arithmetic provides --
+/// between the original locations. This is basically what directional arithmetic provides —
 /// operations where the original positions of the values are explicit in the function. In the
 /// documentation for each of the arithmetic operations, there are diagrams showing the
 /// relationship between the ranges of the inputs and outputs.
@@ -120,7 +115,7 @@ pub trait Slice<Idx>: Sized {
 /// there's no way to represent either `sub_left` or `sub_right` in terms of any of the other
 /// operations.
 ///
-/// ## Directional Arithmetic -- Precise semantics
+/// ## Directional Arithmetic — Precise semantics
 //
 // TODO: There's some work that could be done here to clarify the relationship between indexes and
 // ranges. The essential idea is that indexes are offsets, and offsets are attached to unique
@@ -133,7 +128,7 @@ pub trait Slice<Idx>: Sized {
 /// should be ok. The expected behavior of addition and subtraction *mostly* follows from the idea
 /// of operations on ranges.
 ///
-/// When we say "original range", really what we're talking about is that -- conceptually -- the
+/// When we say "original range", really what we're talking about is that — conceptually — the
 /// ranges at the borders of a range must remain the same. So if we know that `x.add_right(y)` is
 /// valid, `x.add_right(y.add_right(z))` must also be, but `x.add_right(z.add_right(y))` might not.
 /// Expressed visually:
@@ -151,11 +146,11 @@ pub trait Slice<Idx>: Sized {
 /// |---- x ----|--- z ---|--- y ---|
 /// ```
 ///
-/// In the final case, the result is undefined -- implementors can return whatever value they like,
+/// In the final case, the result is undefined — implementors can return whatever value they like,
 /// or panic (though you must not trigger UB). It is the caller's (i.e. *our*) responsibility to
 /// ensure that invalid operations are never attempted.
 ///
-/// The above property is a bit difficult to formalize, so I haven't attempted to here -- it is my hope
+/// The above property is a bit difficult to formalize, so I haven't attempted to here — it is my hope
 /// that the description as is should be clear *enough*. If there are any doubts, feel free to
 /// reach out.
 ///

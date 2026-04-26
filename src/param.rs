@@ -40,27 +40,34 @@ pub(crate) mod sealed {
 /// Where applicable, the documentation on [`RleTree`] explains the algorithmic complexity.
 pub trait RleTreeConfig<I, S>: 'static + Sized + sealed::Sealed {
     /// Is this type [`EnableCow`]?
+    #[doc(hidden)]
     const COW: bool;
     /// Is this type [`EnableRefs`]?
+    #[doc(hidden)]
     const REFS: bool;
 
     /// If `EnableCow` or `EnableRefs`, the number of owning references to the node
     ///
     /// With `EnableCow`, this value ranges from zero to many.
     /// With `EnableRefs` it is either zero or one.
+    #[doc(hidden)]
     type StrongCount: 'static + rc::RefCount + UnwindSafe + RefUnwindSafe;
 
     /// If `EnableRefs`, the number of weak references to the node
+    #[doc(hidden)]
     type WeakCount: 'static + rc::RefCount + UnwindSafe + RefUnwindSafe;
 
     /// If `EnableRefs`, inner state that allows tracking borrows.
+    #[doc(hidden)]
     type BorrowState: 'static + rc::BorrowState + UnwindSafe + RefUnwindSafe;
 
     /// If `EnableRefs`, an optional pointer to a node that the value was joined with
+    #[doc(hidden)]
     type Redirect: rc::Redirect<I, S, Self>;
 
     /// If `EnableCow`, a stack for managing disjoint parent pointers during tree traversal.
     /// Otherwise, just a borrow on a single node.
+    #[doc(hidden)]
     type BorrowStack<'a>: node::BorrowStack<'a, Index = I, Slice = S, Param = Self>
     where
         I: 'a,
@@ -114,15 +121,17 @@ impl<I, S> RleTreeConfig<I, S> for EnableRefs {
 
 /// Sealed marker trait: Can an [`RleTree`] be modified with the given [`RleTreeConfig`]?
 ///
-/// This is how we manage the `Clone` requirement for [`EnableCow`] without requiring it for the
-/// other parameterizations.
+/// With [`EnableCow`], we require that `S: Clone` when performing any operations.
+/// For other parameterizations, there are no additional requirements.
 pub trait SupportsUpdate<I, S>: 'static + sealed::Sealed {
     /// Copies the index `I`. This is only implemented for [`EnableCow`].
+    #[doc(hidden)]
     fn copy_index(_: &I) -> I {
         unreachable!();
     }
 
     /// Clones the slice `S`. This is only implemented for [`EnableCow`].
+    #[doc(hidden)]
     fn clone_slice(_: &S) -> S {
         unreachable!();
     }
@@ -147,20 +156,23 @@ impl<I: Copy, S: Clone> SupportsUpdate<I, S> for EnableCow {
 /// This trait exists for cleaner error messages (which would otherwise reference the internal
 /// contents of node pointers and such, which obscures the real reason).
 ///
+/// See also: [`RleTreeIsSync`].
+///
 /// # Which configurations implement `Send`?
 ///
 /// The short version is:
 ///
 /// * With [`NoFeatures`], `RleTree<I, S>: Send` if `I: Send` and `S: Send`
 /// * With [`EnableCow`], `RleTree<I, S>: Send` if `I: Send + Sync` and `S: Send + Sync`
-///   (roughly matching the behavior of [`Arc<(I, S)>`](std::sync::Arc))
-/// * With [`EnableRefs`], `RleTree` is never `Send`
-///   (roughly matching the behavior of [`Rc<(I, S)>`](std::rc::Rc))
+///   (roughly matching [`Arc<(I, S)>`](std::sync::Arc))
+/// * With [`EnableRefs`], `RleTree` is never `Send` (roughly matching [`Rc<(I, S)>`](std::rc::Rc))
 ///
-/// If you are building an abstraction on top of `RleTree` with `EnableRefs`, it *is* possible to
-/// implement `Send` for that abstraction, provided that whenver the `RleTree` is sent across
-/// threads, all stable references are sent with it (and vice versa, with respect to any stable
+/// If you are building an abstraction on top of [`RleTree`] with `EnableRefs`, it *is* safe to
+/// implement `Send` for that abstraction, provided that whenever the [`RleTree`] is sent across
+/// threads, all [`StableRef`]s are sent with it (and vice versa, with respect to any stable
 /// reference).
+///
+/// [`StableRef`]: crate::StableRef
 #[allow(clippy::missing_safety_doc)]
 pub unsafe trait RleTreeIsSend<I, S>: sealed::Sealed {}
 
@@ -185,21 +197,24 @@ unsafe impl<I, S, P> Send for RleTree<I, S, P> where P: RleTreeConfig<I, S> + Rl
 /// This trait exists for cleaner error messages (which would otherwise reference the internal
 /// contents of node pointers and such, which obscures the real reason).
 ///
+/// See also: [`RleTreeIsSend`].
+///
 /// # Which configurations implement `Sync`?
 ///
 /// The short version is:
 ///
 /// * With [`NoFeatures`], `RleTree<I, S>: Sync` if `I: Sync` and `S: Sync`
 /// * With [`EnableCow`], `RleTree<I, S>: Sync` if `I: Send + Sync` and `S: Send + Sync`
-///   (roughly matching the behavior of [`Arc<(I, S)>`](std::sync::Arc))
-/// * With [`EnableRefs`], `RleTree` is never `Sync`
-///   (roughly matching the behavior of [`Rc<(I, S)>`](std::rc::Rc))
+///   (roughly matching [`Arc<(I, S)>`](std::sync::Arc))
+/// * With [`EnableRefs`], `RleTree` is never `Sync` (roughly matching [`Rc<(I, S)>`](std::rc::Rc))
 ///
-/// If you are building an abstraction on top of `RleTree` with `EnableRefs`, it *is* possible to
-/// implement `Sync` for that abstraction, provided that (a) any stable references cannot be
-/// created/cloned/mutated/dropped concurrently with reads to the `RleTree` or any other stable
-/// references; and (b) the `RleTree` cannot be modified concurrently with any operation on any
-/// stable reference.
+/// If you are building an abstraction on top of [`RleTree`] with `EnableRefs`, it *is* safe to
+/// implement `Sync` for that abstraction, provided that (a) any [`StableRef`]s cannot be created,
+/// cloned, read from, or dropped concurrently with reads to the [`RleTree`] or any other
+/// [`StableRef`] operations; and (b) the [`RleTree`] cannot be modified concurrently with
+/// creating, cloning, reading from, or dropping any [`StableRef`].
+///
+/// [`StableRef`]: crate::StableRef
 #[allow(clippy::missing_safety_doc)]
 pub unsafe trait RleTreeIsSync<I, S>: sealed::Sealed {}
 

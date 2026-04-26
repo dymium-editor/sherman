@@ -4,7 +4,7 @@
 use std::fmt::{self, Debug};
 use std::ops::{ControlFlow, Range};
 
-use crate::param::{self, RleTreeConfig, SupportsUpdate};
+use crate::param::{self, EnableCow, RleTreeConfig, SupportsUpdate};
 use crate::{Index, Slice};
 
 #[macro_use]
@@ -42,35 +42,14 @@ pub use remove::Removed;
 ///
 /// [rope]: https://en.wikipedia.org/wiki/Rope_(data_structure)
 ///
-///
 /// The implementation of all operations on this data structure do not use unbounded recursion
 /// (i.e. in the places where recursion is used, it is at most a constant number of recursive
 /// calls).
 ///
-/// For more details on concepts or motivation, refer to the [crate-level documentation](crate).
+/// For more details on concepts or motivation, refer to the [crate-level documentation](crate).  
+/// For details on the internal implementation, see [ARCHITECTURE.md]
 ///
-/// ## Implementation
-///
-/// **Note:** Details about the implementation are an internal detail. This description is purely
-/// for informational purposes, and may be changed at any point in the future.
-///
-/// Under the hood, an `RleTree` is an [AVL tree](https://en.wikipedia.org/wiki/AVL_tree), where
-/// each node stores:
-///
-/// 1. The [`Slice`] `S` represented by the value of that node
-/// 2. The size `I` of the subtree rooted at that node
-/// 3. The height of the subtree rooted at that node (≥ 1)
-/// 4. A link to the parent node
-///
-/// The range represented by any particular slice `S` is determined by the node's position relative
-/// to the root of the tree, and its subtree size relative to the sizes of its children.
-///
-/// Every time the tree is mutated, we traverse down the tree to make the insertion / deletion, and
-/// then back up the tree to update each node's subtree size and potentially rebalance the tree.
-///
-/// Each node is itself represented by an internal abstraction over allocated values and borrows to
-/// them, which allows traversals through raw pointers without violating Rust's borrowing rules.
-/// (In particular, we test with `miri` under `-Zmiri-tree-borrows`.)
+/// [ARCHITECTURE.md]: https://github.com/dymium-editor/sherman/blob/main/ARCHITECTURE.md
 pub struct RleTree<I, S, P: RleTreeConfig<I, S> = param::NoFeatures> {
     root: Option<Root<I, S, P>>,
 }
@@ -106,15 +85,40 @@ where
     P: RleTreeConfig<I, S>,
 {
     /// Creates a new, empty `RleTree`.
+    ///
+    /// # Example usage
+    ///
+    /// ```
+    /// use sherman::{Constant, RleTree};
+    ///
+    /// let tree: RleTree<usize, Constant<&str>> = RleTree::new_empty();
+    /// assert_eq!(tree.size(), 0);
+    /// assert_eq!(tree.iter(..).count(), 0);
+    /// ```
     pub const fn new_empty() -> Self {
         RleTree { root: None }
     }
 
     /// Creates an `RleTree` initialized to contain only the initial slice of the given size
     ///
-    /// ## Panics
+    /// # Panics
     ///
-    /// This method will panic if `size` is not greater than zero -- i.e., if `size <= I::ZERO`.
+    /// This method will panic if `size` is not greater than zero — i.e., if `size <= I::ZERO`.
+    ///
+    /// # Example usage
+    ///
+    /// ```
+    /// use sherman::{Constant, RleTree};
+    ///
+    /// let tree: RleTree<usize, Constant<&str>> =
+    ///     RleTree::new(10, Constant("foo"));
+    /// assert_eq!(tree.size(), 10);
+    /// assert_eq!(tree.iter(..).count(), 1);
+    ///
+    /// let entry = tree.get(5);
+    /// assert_eq!(entry.range(), 0..10);
+    /// assert_eq!(entry.slice(), &Constant("foo"));
+    /// ```
     pub fn new(size: I, slice: S) -> Self {
         if size <= I::ZERO {
             panic!("cannot create new slice with non-positive size {size:?}");
@@ -140,11 +144,28 @@ where
         }
     }
 
-    /// Returns the total size of the tree -- i.e., the sum of the sizes of all the slices
+    /// Returns the total size of the tree — i.e., the sum of the sizes of all the slices
     ///
-    /// ## Algorithmic complexity
+    /// # Algorithmic complexity
     ///
     /// This operation is `O(1)`.
+    ///
+    /// # Example usage
+    ///
+    /// ```
+    /// use sherman::{Constant, RleTree};
+    ///
+    /// let mut tree: RleTree<usize, Constant<&str>> =
+    ///     RleTree::new(10, Constant("foo"));
+    /// assert_eq!(tree.size(), 10);
+    ///
+    /// tree.insert(3, Constant("baz"), 4);
+    /// assert_eq!(tree.size(), 14);
+    ///
+    /// let removed = tree.remove(2..7);
+    /// assert_eq!(tree.size(), 9);
+    /// assert_eq!(removed.size(), 5);
+    /// ```
     pub fn size(&self) -> I {
         match &self.root {
             Some(r) => r.handle.subtree_size(),
@@ -157,14 +178,62 @@ where
     /// Through the returned [`SliceEntry`], both the slice `S` and the range of values covered
     /// `Range<I>` can be retrieved.
     ///
-    /// ## Algorithmic complexity
+    /// # Algorithmic complexity
     ///
     /// This operation is `O(log(r))`, where `r` is the number of ranges of values in the tree.
     ///
-    /// ## Panics
+    /// # Panics
     ///
-    /// This method will panic if `idx` is out of bounds -- i.e., if it is less than `I::ZERO` or
+    /// This method will panic if `idx` is out of bounds — i.e., if it is less than `I::ZERO` or
     /// greater than `self.size()`.
+    ///
+    /// # Drop glue
+    ///
+    /// **Note:** Currently, [`SliceEntry`] can often require explicitly dropping it to release the
+    /// borrow on [`RleTree`]. The "nightly" feature adds `#[may_dangle]` to skip that requirement,
+    /// but we may also improve this crate's internals in the future to remove that need in the
+    /// future.
+    ///
+    /// # Example usage
+    ///
+    /// ```
+    /// use sherman::{Constant, RleTree};
+    ///
+    /// let mut tree: RleTree<usize, Constant<&str>> =
+    ///     RleTree::new_empty();
+    ///
+    /// tree.insert(0, Constant("foo"), 4);
+    /// tree.insert(4, Constant("bar"), 4);
+    ///
+    /// // Values now look like:
+    /// //
+    /// //   | "foo" | "bar" |
+    /// //   0       4       8
+    /// //
+    ///
+    /// // `get()` returns a `SliceEntry` that can be used to give the range
+    /// // of the value containing the index, and the value itself:
+    /// let fst = tree.get(2);
+    /// assert_eq!(fst.range(), 0..4);
+    /// assert_eq!(fst.slice(), &Constant("foo"));
+    ///
+    /// // Anything in the range returns the same slice:
+    /// assert_eq!(tree.get(0).slice(), fst.slice());
+    /// assert_eq!(tree.get(1).slice(), fst.slice());
+    /// assert_eq!(tree.get(2).slice(), fst.slice());
+    /// assert_eq!(tree.get(3).slice(), fst.slice());
+    ///
+    /// // The edge of two values is contained by the right-hand side:
+    /// let snd = tree.get(4);
+    /// assert_eq!(snd.range(), 4..8);
+    /// assert_eq!(snd.slice(), &Constant("bar"));
+    ///
+    /// drop((fst, snd)); // (required without the "nightly" feature)
+    ///
+    /// // `get()` at the end of the tree panics:
+    /// assert_eq!(tree.size(), 8);
+    /// assert!(std::panic::catch_unwind(move || _ = tree.get(8)).is_err());
+    /// ```
     pub fn get(&self, idx: I) -> SliceEntry<'_, I, S, P> {
         if idx < I::ZERO {
             panic!("index {idx:?} out of bounds, less than zero");
@@ -194,12 +263,17 @@ where
     /// one or both bounds outside `range`, but *will* contain some overlap with the requested
     /// `range`.
     ///
-    /// ## Algorithmic complexity
+    /// # Algorithmic complexity
     ///
     /// Creating the iterator is `O(log(r))`, where `r` is the number of ranges of values in the
-    /// tree. Each step of iteration is `O(log(r))` but amortized `O(1)`.
+    /// tree.  
+    /// Each step of iteration is `O(log(r))` but amortized `O(1)`.
     ///
-    /// ## Panics
+    /// With [`EnableCow`], the iterator maintains a stack of up to `O(log(r))` parent pointers as
+    /// it traverses the tree (depending on the number of shallow clones created). Otherwise, the
+    /// iterator uses `O(1)` memory.
+    ///
+    /// # Panics
     ///
     /// This method panics if any of the following are true:
     ///
@@ -210,6 +284,56 @@ where
     ///    equal to `self.size()` if `Included`.
     ///
     /// ALSO: This method will panic if the start bound is `Excluded`.
+    ///
+    /// # Drop glue
+    ///
+    /// **Note:** Currently, [`Iter`] can often require explicitly dropping it to release the
+    /// borrow on [`RleTree`]. The "nightly" feature adds `#[may_dangle]` to skip that requirement,
+    /// but we may also improve this crate's internals in the future to remove that need in the
+    /// future.
+    ///
+    /// # Example usage
+    ///
+    /// ```
+    /// # use std::ops::Range;
+    /// use sherman::{Constant, RleTree, SliceEntry};
+    ///
+    /// let mut tree: RleTree<usize, Constant<&'static str>> =
+    ///     RleTree::new_empty();
+    ///
+    /// // Add values so that the tree looks like:
+    /// //
+    /// //   | "foo" | "bar" | "baz" |
+    /// //   0       5       10      15
+    /// //
+    /// tree.insert(0, Constant("foo"), 5);
+    /// tree.insert(5, Constant("bar"), 5);
+    /// tree.insert(10, Constant("baz"), 5);
+    ///
+    /// // Helper for assertions below
+    /// fn pair<'e, 's>(
+    ///     entry: SliceEntry<'e, usize, Constant<&'s str>>,
+    /// ) -> (Range<usize>, &'e Constant<&'s str>) {
+    ///     (entry.range(), entry.slice())
+    /// }
+    ///
+    /// // Iterating over the full range:
+    /// let mut iter = tree.iter(..).map(pair);
+    /// assert_eq!(iter.next(), Some((0..5, &Constant("foo"))));
+    /// assert_eq!(iter.next_back(), Some((10..15, &Constant("baz"))));
+    /// assert_eq!(iter.next(), Some((5..10, &Constant("bar"))));
+    /// assert_eq!(iter.next(), None);
+    ///
+    /// // Iterating over a partial range includes all values it touches:
+    /// assert_eq!(
+    ///     tree.iter(6..12).map(pair).collect::<Vec<_>>(),
+    ///     [(5..10, &Constant("bar")), (10..15, &Constant("baz")),],
+    /// );
+    ///
+    /// // Zero-length iteration only returns something if it's within a value:
+    /// assert_eq!(tree.iter(3..3).count(), 1);
+    /// assert_eq!(tree.iter(5..5).count(), 0);
+    /// ```
     pub fn iter<R>(&self, range: R) -> Iter<'_, I, S, P>
     where
         R: std::ops::RangeBounds<I>,
@@ -222,17 +346,76 @@ where
     /// If there is any entry that contains `idx`, it will be split and encompass `slice` on either
     /// side after the insertion (unless `slice` joins with either/both sides).
     ///
-    /// ## Algorithmic complexity
+    /// # Algorithmic complexity
     ///
     /// This operation is `O(log(r))`, where `r` is the number of ranges of values in the tree.
     ///
-    /// ## Panics
+    /// # Panics
     ///
     /// This method will panic if `idx` is *greater* than [`self.size()`]. An index equal to the
     /// current size of the tree is explicitly allowed. It will also panic if the size of the new
-    /// slice is not greater than zero -- i.e. if `size <= I::ZERO`.
+    /// slice is not greater than zero — i.e. if `size <= I::ZERO`.
     ///
     /// [`self.size()`]: Self::size
+    ///
+    /// # Example usage
+    ///
+    /// ```
+    /// use sherman::{Constant, RleTree, SliceEntry};
+    ///
+    /// let mut tree: RleTree<usize, Constant<&'static str>> =
+    ///     RleTree::new_empty();
+    ///
+    /// // Append values to the end, so the tree looks like:
+    /// //
+    /// //   | "foo" | "bar" |
+    /// //   0       5       10
+    /// //
+    /// tree.insert(0, Constant("foo"), 5);
+    /// tree.insert(5, Constant("bar"), 4);
+    ///
+    /// let fst = tree.get(3);
+    /// assert_eq!(fst.range(), 0..5);
+    /// assert_eq!(fst.slice(), &Constant("foo"));
+    /// let snd = tree.get(5);
+    /// assert_eq!(snd.range(), 5..9);
+    /// assert_eq!(snd.slice(), &Constant("bar"));
+    /// drop((fst, snd)); // (required without the "nightly" feature)
+    ///
+    /// // Adding a new value in the middle shifts the indexes of later values.
+    /// tree.insert(5, Constant("baz"), 3);
+    /// // See how "bar" has been shifted:
+    /// let last = tree.get(10);
+    /// assert_eq!(last.range(), 8..12);
+    /// assert_eq!(last.slice(), &Constant("bar"));
+    /// drop(last);
+    ///
+    /// // Inserting in the middle of a value will split it.
+    /// // For `Constant`, splitting just means cloning the inner value:
+    /// tree.insert(2, Constant("<split>"), 4);
+    ///
+    /// let mut iter = tree.iter(..9).map(|entry| (entry.range(), entry.slice()));
+    /// assert_eq!(iter.next(), Some((0..2, &Constant("foo"))));
+    /// assert_eq!(iter.next(), Some((2..6, &Constant("<split>"))));
+    /// assert_eq!(iter.next(), Some((6..9, &Constant("foo"))));
+    /// drop(iter);
+    ///
+    /// // If the inserted value can "join" with either adjacent value, they
+    /// // will be merged into a single slice.
+    /// // For `Constant`, joining is allowed if the values are equal.
+    /// //
+    /// // Before:
+    /// let mid = tree.get(9);
+    /// assert_eq!(mid.range(), 9..12);
+    /// assert_eq!(mid.slice(), &Constant("baz"));
+    /// drop(mid);
+    /// // Join at the edge:
+    /// tree.insert(12, Constant("baz"), 2);
+    /// assert_eq!(tree.get(10).range(), 9..14);
+    /// // Re-join after insertion in the middle:
+    /// tree.insert(10, Constant("baz"), 4);
+    /// assert_eq!(tree.get(10).range(), 9..18);
+    /// ```
     pub fn insert(&mut self, idx: I, slice: S, size: I)
     where
         P: SupportsUpdate<I, S>,
@@ -264,15 +447,16 @@ where
     /// Replaces a range of values in the tree with a single new value, returning a [`Removed`]
     /// object representing what was replaced
     ///
-    /// ## Algorithmic complexity
+    /// # Algorithmic complexity
     ///
     /// This operation is `O(log(r))`, where `r` is the number of ranges of values in the tree.
     ///
-    /// Note that dropping the [`Removed`] values is an `O(k)` operation (where `k` is the number
-    /// of ranges of values removed) without COW. With COW, it is `O(q + log(s))` (where `q` is the
-    /// number of *unqiue* values removed and `s` is the number of shared values).
+    /// Without COW, dropping the [`Removed`] values is `O(k)` (where `k` is the number of ranges
+    /// of values removed).  
+    /// With [`EnableCow`], it is `O(q + log(s))` (where `q` is the number of *unique* ranges of
+    /// values removed and `s` is the number of shared ranges of values).
     ///
-    /// ## Panics
+    /// # Panics
     ///
     /// This method panics under the same conditions as [`remove`](Self::remove):
     ///
@@ -281,6 +465,46 @@ where
     /// * The range's start bound is less than `I::ZERO`
     /// * The range's end bound is greater than the [`size`](Self::size) of the tree
     /// * The range's start bound is greater than its end bound
+    ///
+    /// # Example usage
+    ///
+    /// ```
+    /// use sherman::{Constant, RleTree};
+    ///
+    /// let mut tree: RleTree<usize, Constant<&'static str>> =
+    ///     RleTree::new_empty();
+    ///
+    /// // Insert values so the tree looks like:
+    /// //
+    /// //   | "foo" | "bar" |
+    /// //   0       5       10
+    /// //
+    /// tree.insert(0, Constant("foo"), 5);
+    /// tree.insert(5, Constant("bar"), 5);
+    ///
+    /// assert_eq!(tree.size(), 10);
+    ///
+    /// // Replacing leaves the size of the tree unchanged.
+    /// let removed = tree.replace(3..7, Constant("baz"));
+    /// assert_eq!(tree.size(), 10);
+    ///
+    /// // ... and the values are as described:
+    /// assert_eq!(
+    ///     tree.iter(..)
+    ///         .map(|e| (e.range(), e.slice()))
+    ///         .collect::<Vec<_>>(),
+    ///     [
+    ///         (0..3, &Constant("foo")),
+    ///         (3..7, &Constant("baz")), // <- replacement
+    ///         (7..10, &Constant("bar")),
+    ///     ],
+    /// );
+    /// assert_eq!(
+    ///     removed.into_iter().collect::<Vec<_>>(),
+    ///     // Note that the original ranges are preserved:
+    ///     [(3..5, Constant("foo")), (5..7, Constant("bar"))],
+    /// );
+    /// ```
     pub fn replace<R>(&mut self, range: R, value: S) -> Removed<I, S, P>
     where
         P: SupportsUpdate<I, S>,
@@ -294,17 +518,18 @@ where
     ///
     /// To process the removed values, use [`drain`](Self::drain) on the tree or
     /// [`Removed::into_tier`](IntoIterator); or [`Removed::into_tree`] to turn it into a full
-    /// `RleTree`.
+    /// [`RleTree`].
     ///
-    /// ## Algorithmic complexity
+    /// # Algorithmic complexity
     ///
     /// This operation is `O(log(r))`, where `r` is the number of ranges of values in the tree.
     ///
-    /// Note that dropping the [`Removed`] values is an `O(k)` operation (where `k` is the number
-    /// of ranges of values removed) without COW. With COW, it is `O(q + log(s))` (where `q` is the
-    /// number of *unqiue* values removed and `s` is the number of shared values).
+    /// Without COW, dropping the [`Removed`] values is `O(k)` (where `k` is the number of ranges
+    /// of values removed).  
+    /// With [`EnableCow`], it is `O(q + log(s))` (where `q` is the number of *unique* ranges of
+    /// values removed and `s` is the number of shared ranges of values).
     ///
-    /// ## Panics
+    /// # Panics
     ///
     /// This method panics if:
     ///
@@ -317,6 +542,50 @@ where
     /// We cannot allow inclusive end bounds because that would require an increment operator to
     /// transform into an equivalent exclusive end bound, and index types might not necessarily
     /// have a natural definition of "increment".
+    ///
+    /// # Example usage
+    ///
+    /// ```
+    /// use sherman::{Constant, RleTree};
+    ///
+    /// let mut tree: RleTree<usize, Constant<&'static str>> =
+    ///     RleTree::new_empty();
+    ///
+    /// // Insert values so the tree looks like:
+    /// //
+    /// //   | "foo" | "bar" |
+    /// //   0       5       10
+    /// //
+    /// tree.insert(0, Constant("foo"), 5);
+    /// tree.insert(5, Constant("bar"), 5);
+    ///
+    /// assert_eq!(tree.size(), 10);
+    ///
+    /// let removed = tree.remove(2..6);
+    ///
+    /// // The tree is now smaller by the removed size:
+    /// assert_eq!(removed.size(), 4);
+    /// assert_eq!(tree.size(), 6);
+    ///
+    /// // ... and the parts of the original values are no longer present:
+    /// assert_eq!(
+    ///     tree.iter(..)
+    ///         .map(|e| (e.range(), e.slice()))
+    ///         .collect::<Vec<_>>(),
+    ///     [(0..2, &Constant("foo")), (2..6, &Constant("bar"))],
+    /// );
+    ///
+    /// // The removed range can also be turned into its own tree:
+    /// let removed_tree = removed.into_tree();
+    ///
+    /// assert_eq!(
+    ///     removed_tree
+    ///         .iter(..)
+    ///         .map(|e| (e.range(), e.slice()))
+    ///         .collect::<Vec<_>>(),
+    ///     [(0..3, &Constant("foo")), (3..4, &Constant("bar"))],
+    /// );
+    /// ```
     pub fn remove<R>(&mut self, range: R) -> Removed<I, S, P>
     where
         P: SupportsUpdate<I, S>,
@@ -330,17 +599,17 @@ where
     ///
     /// This is basically just a convenience method for `self.remove().into_iter()`.
     ///
-    /// ## Algorithmic complexity
+    /// # Algorithmic complexity
     ///
     /// Creating the iterator is `O(log(r))`, where `r` is the number of ranges of values in the
     /// tree. Each step of iterating the [`Drain`] is `O(log(k))` but amortized `O(1)`, where `k`
     /// is the number of ranges of values removed.
     ///
-    /// Note also that dropping the `Drain` is `O(k)`, unless COW is enabled, in which case it is
-    /// `O(q + log(s))`, where `q` is the number of unique values removed (including any
-    /// destructive iteration that has happened so far) and `s` is the number of shared values.
+    /// Without COW, dropping the [`Drain`] is `O(k)`.  
+    /// With [`EnableCow`], it is `O(q + log(s))` (where `q` is the number of *unique* ranges of
+    /// values removed and `s` is the number of shared ranges of values).
     ///
-    /// ## Panics
+    /// # Panics
     ///
     /// This method panics under the same conditions as [`remove`](Self::remove):
     ///
@@ -360,14 +629,14 @@ where
     }
 }
 
-impl<I, S> RleTree<I, S, param::EnableCow>
+impl<I, S> RleTree<I, S, EnableCow>
 where
     I: Index,
     S: Slice<I>,
 {
     /// Creates a new copy-on-write reference to the same tree
     ///
-    /// ## Algorithmic complexity
+    /// # Algorithmic complexity
     ///
     /// This operation is `O(1)`.
     pub fn shallow_clone(&self) -> Self {

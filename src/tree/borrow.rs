@@ -541,7 +541,7 @@ impl<'a, T: Borrowable> Borrowed<Mut<'a, T>> {
 
                 // SAFETY: At this point we know that `unique_owned` is actually uniquely owned by
                 // this thread, just that it's currently erased to `Owned`, so it's safe to provide
-                // exclusive access to it. And `unique_owned.ptr` is guaranteed to be vaild for
+                // exclusive access to it. And `unique_owned.ptr` is guaranteed to be valid for
                 // access by the invariants from the existence of a `Borrowed<Owned<T>>`.
                 Ok(unsafe { <Borrowed<Mut<T>>>::from_non_null(unique_owned.ptr) })
             }

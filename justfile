@@ -26,6 +26,7 @@ doc-full:
 
 # Run unit tests (without miri)
 test:
+    RUST_BACKTRACE=1 cargo +stable test
     RUST_BACKTRACE=1 cargo +nightly test --features=nightly
 
 # Run unit tests with miri
