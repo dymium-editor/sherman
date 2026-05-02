@@ -11,6 +11,8 @@ lint:
     cargo +nightly clippy --all-features
     cargo +stable clippy --profile=test
     cargo +nightly clippy --profile=test --all-features
+    cargo +stable clippy --profile=release
+    cargo +nightly clippy --profile=release --all-features
     cargo +stable doc --no-deps
     cargo +nightly doc --no-deps --all-features
     cargo +stable doc --document-private-items --no-deps

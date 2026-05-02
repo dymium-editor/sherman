@@ -174,7 +174,7 @@ where
 fn fix_invasive<I, S, P>(
     mut node: HandleUniqueOwned<I, S, P>,
     side: Side,
-    #[cfg_attr(not(debug_assertions), expect(unused))] mode: FixMode,
+    mode: FixMode,
 ) -> HandleUniqueOwned<I, S, P>
 where
     I: Index,
