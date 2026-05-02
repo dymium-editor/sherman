@@ -389,6 +389,22 @@ impl<B: NodeBorrow> NodeHandle<B> {
         *self.inner.borrow_mut().get_mut::<f![B::height]>() = height;
     }
 
+    /// Returns whether the node has a left-hand child
+    pub(super) fn has_lhs(&self) -> bool
+    where
+        B: borrow::BorrowAsImmut,
+    {
+        self.inner.get::<f![B::lhs]>().is_some()
+    }
+
+    /// Returns whether the node has a right-hand child
+    pub(super) fn has_rhs(&self) -> bool
+    where
+        B: borrow::BorrowAsImmut,
+    {
+        self.inner.get::<f![B::rhs]>().is_some()
+    }
+
     /// Returns the height of the subtree rooted at this node's left-hand child
     ///
     /// If this node has no left-hand child, then the return value will be zero.

@@ -10,6 +10,7 @@ use crate::{Index, Slice};
 #[macro_use]
 pub(crate) mod borrow;
 
+mod builder;
 mod drain;
 mod entry;
 mod fix;
@@ -20,6 +21,7 @@ mod remove;
 
 pub(crate) mod tests;
 
+pub use builder::Builder;
 pub use drain::Drain;
 pub use entry::{SliceEntry, StableRef};
 use fix::FixMode;
@@ -129,6 +131,14 @@ where
         };
 
         RleTree { root: Some(root) }
+    }
+
+    /// Returns a new [`Builder`] for efficient construction of an [`RleTree`].
+    ///
+    /// This is an alias for [`Builder::new`]. Refer to the documentation on [`Builder`] for
+    /// example usage and more information.
+    pub fn builder() -> Builder<I, S, P> {
+        Builder::new()
     }
 
     /// Internal helper method, mostly for tests
