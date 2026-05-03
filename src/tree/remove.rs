@@ -283,7 +283,7 @@ where
         // ... and then traverse back up the tree to fix the changes
         while node.has_parent() {
             node = fix::fix_mut(node, FixMode::Unbounded);
-            (node, up_state) = up_state.step(node, None);
+            (node, up_state) = up_state.step_up(node, None);
         }
     } else {
         (tree_root, _) =
@@ -1098,7 +1098,7 @@ where
                 let mut up_state = UpwardUpdateState { old_size: old_subtree_size };
                 let mut node = lhs_rightmost_child;
                 while node.has_parent() {
-                    (node, up_state) = up_state.step(node, None);
+                    (node, up_state) = up_state.step_up(node, None);
                 }
                 drop(node);
 
@@ -1218,7 +1218,7 @@ where
     let mut up_state = UpwardUpdateState { old_size: original_parent_size };
     while parent.has_parent() {
         parent = fix::fix_mut(parent, FixMode::Normal);
-        (parent, up_state) = up_state.step(parent, None);
+        (parent, up_state) = up_state.step_up(parent, None);
     }
 
     drop(parent);

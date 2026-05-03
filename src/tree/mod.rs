@@ -839,7 +839,7 @@ where
             force_edge_rhs = false;
             down_state.step_edge_rhs(node)
         } else {
-            down_state.step(node)
+            down_state.step_down(node)
         };
         node = n;
         match cf {
@@ -857,7 +857,7 @@ where
             true => root_subtree_size,
             false => None,
         };
-        (node, up_state) = up_state.step(node, override_size);
+        (node, up_state) = up_state.step_up(node, override_size);
     }
 
     if node.has_parent() {
@@ -878,7 +878,7 @@ impl<'s, I: Index, S: Slice<I>> DownwardInsertState<'s, I, S> {
         }
     }
 
-    fn step<P>(
+    fn step_down<P>(
         self,
         node: node::HandleMut<I, S, P>,
     ) -> (node::HandleMut<I, S, P>, ControlFlow<UpwardUpdateState<I>, Self>)
@@ -1401,7 +1401,7 @@ impl<'s, I: Index, S: Slice<I>> DownwardInsertState<'s, I, S> {
 }
 
 impl<I: Index> UpwardUpdateState<I> {
-    fn step<S, P>(
+    fn step_up<S, P>(
         self,
         node: node::HandleMut<I, S, P>,
         override_parent_subtree_size: Option<I>,
