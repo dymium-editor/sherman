@@ -181,7 +181,7 @@ impl<I, S, P> HandleUniqueOwned<I, S, P>
 where
     P: RleTreeConfig<I, S>,
 {
-    pub(super) fn alloc_new(slice: S, size: I) -> Self {
+    pub(super) fn alloc_new(slice: &mut Option<S>, size: I) -> Self {
         NodeHandle {
             inner: Borrowed::alloc_new(Node {
                 parent: None,
@@ -190,7 +190,7 @@ where
                 borrow_state: BorrowState::new(),
                 redirect: Redirect::empty(),
                 subtree_size: size,
-                value: Some(slice),
+                value: slice.take(),
                 height: NonZeroU16::new(1).unwrap(),
                 lhs: None,
                 rhs: None,
@@ -467,47 +467,6 @@ impl<B: NodeBorrow> NodeHandle<B> {
         start..end
     }
 
-    /// Removes the "slice" value from the node, returning it.
-    ///
-    /// This is should only be used for temporary operations that require ownership, like
-    /// [`Slice::try_join`].
-    ///
-    /// Once done, you should call [`set_value`] to place it back.
-    ///
-    /// # Panics
-    ///
-    /// This method panics if the slice value was previously taken without being put back via
-    /// [`set_value`].
-    ///
-    /// [`set_value`]: Self::set_value
-    pub(super) fn take_value(&mut self) -> B::Slice
-    where
-        B: borrow::BorrowAsMut,
-    {
-        let v = self.inner.borrow_mut().get_mut::<f![B::value]>().take();
-        match v {
-            Some(v) => v,
-            None => panic!("internal error: cannot `take_value()` that is already absent"),
-        }
-    }
-
-    /// Replaces the "slice" value that was previously removed by [`take_value`].
-    ///
-    /// # Panics
-    ///
-    /// This method panics if the slice value is already present in the node.
-    ///
-    /// [`take_value`]: Self::take_value
-    pub(super) fn set_value(&mut self, value: B::Slice)
-    where
-        B: borrow::BorrowAsMut,
-    {
-        let old = self.inner.borrow_mut().get_mut::<f![B::value]>().replace(value);
-        if old.is_some() {
-            panic!("internal error: cannot `set_value()` that is already present");
-        }
-    }
-
     /// Removes and returns the left-hand child of this node, if there is one
     pub(super) fn take_lhs(&mut self) -> Option<HandleOwned<B::Index, B::Slice, B::Param>>
     where
@@ -765,8 +724,8 @@ impl<'t, I, S, P: RleTreeConfig<I, S>> HandleImmut<'t, I, S, P> {
     ///
     /// # Panics
     ///
-    /// This method panics if the slice value is not currently present, e.g. due to a prior call to
-    /// [`take_value`](Self::take_value) without a corresponding [`set_value`](Self::set_value).
+    /// This method panics if the slice value is not currently present, e.g. due to `take`'ing the
+    /// value without replacing it back.
     pub(super) fn value(&self) -> &'t S {
         match self.inner.reborrow().into_ref::<f![Node::value]>() {
             Some(v) => v,
@@ -826,6 +785,11 @@ impl<'t, I, S, P: RleTreeConfig<I, S>> HandleMut<'t, I, S, P> {
             let inner = unsafe { <Borrowed<borrow::Mut<_>>>::from_non_null(p) };
             (NodeHandle { inner }, side)
         })
+    }
+
+    /// Produces a mutable reference to this node's "slice" value
+    pub(super) fn value_mut(&mut self) -> &mut Option<S> {
+        self.inner.get_mut::<f![Node::value]>()
     }
 
     /// Returns a mutable handle to the left-hand child, or `self` if there is no such child

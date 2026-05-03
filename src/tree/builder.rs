@@ -173,14 +173,17 @@ where
     /// # Panics
     ///
     /// This method panics if `size` is not greater than zero — i.e. if `size <= I::ZERO`.
+    #[inline]
     pub fn push(&mut self, size: I, slice: S) {
+        let mut slice = Some(slice);
+
         if size <= I::ZERO {
             panic!("cannot push slice with non-positive size {size:?}");
         }
 
         match self.inner.as_mut() {
-            None => self.inner = Some(BuilderInner::new(size, slice)),
-            Some(inner) => inner.push(slice, size),
+            None => self.inner = Some(BuilderInner::new(size, &mut slice)),
+            Some(inner) => inner.push(&mut slice, size),
         }
     }
 
@@ -225,13 +228,13 @@ where
     S: Slice<I>,
     P: RleTreeConfig<I, S>,
 {
-    fn new(size: I, slice: S) -> Self {
+    fn new(size: I, slice: &mut Option<S>) -> Self {
         let root = node::HandleUniqueOwned::alloc_new(slice, size);
 
         BuilderInner { edge_ptr: root.ptr(), root }
     }
 
-    fn push(&mut self, mut slice: S, size: I) {
+    fn push(&mut self, slice: &mut Option<S>, size: I) {
         // SAFETY: the BuilderInner invariants guarantee that `self.edge_ptr` points to a valid
         // node, and that we can create a mutable handle to it with this pointer. In return, we are
         // required to drop `edge` before accessing `self.root` (and reset `self.edge_ptr` after),
@@ -239,20 +242,18 @@ where
         let mut edge = unsafe { node::HandleMut::from_ptr(self.edge_ptr) };
 
         // Try to join with `edge`.
-        match edge.take_value().try_join(slice) {
-            Ok(new_value) => {
-                edge.set_value(new_value);
+        let edge_value = edge.value_mut();
+        S::try_join_into_lhs(edge_value, slice);
+        match slice {
+            // Couldn't join - continue below.
+            Some(_) => (),
+            // Successfully joined - we're basically done.
+            None => {
                 // Because `edge_ptr` will always be the rightmost node, and its ancestors don't
                 // include its subtree size, it's sound to just add to the subtree size of the edge
                 let new_subtree_size = edge.subtree_size().add_right(size);
                 edge.set_subtree_size(new_subtree_size);
-                // Successfully joined and all further updates will be handled automatically, so
-                // there's nothing left for us to do.
                 return;
-            }
-            Err((lhs, rhs)) => {
-                edge.set_value(lhs);
-                slice = rhs;
             }
         }
 

@@ -134,6 +134,46 @@ impl<Idx, T: Clone + PartialEq> Slice<Idx> for Constant<T> {
             Err((self, other))
         }
     }
+
+    fn try_join_into_lhs(lhs: &mut Option<Self>, rhs: &mut Option<Self>) {
+        let Some(lhs_ref) = lhs.as_ref() else {
+            #[cfg(debug_assertions)]
+            panic!("internal error: `try_join_lhs_opt_mut` called with `lhs = None`");
+            #[cfg(not(debug_assertions))]
+            return;
+        };
+        let Some(rhs_ref) = rhs.as_ref() else {
+            #[cfg(debug_assertions)]
+            panic!("internal error: `try_join_lhs_opt_mut` called with `rhs = None`");
+            #[cfg(not(debug_assertions))]
+            return;
+        };
+
+        // If equal, join simply by setting `rhs = None`.
+        if lhs_ref == rhs_ref {
+            *rhs = None;
+        }
+    }
+
+    fn try_join_into_rhs(lhs: &mut Option<Self>, rhs: &mut Option<Self>) {
+        let Some(lhs_ref) = lhs.as_ref() else {
+            #[cfg(debug_assertions)]
+            panic!("internal error: `try_join_rhs_opt_mut` called with `lhs = None`");
+            #[cfg(not(debug_assertions))]
+            return;
+        };
+        let Some(rhs_ref) = rhs.as_ref() else {
+            #[cfg(debug_assertions)]
+            panic!("internal error: `try_join_rhs_opt_mut` called with `rhs = None`");
+            #[cfg(not(debug_assertions))]
+            return;
+        };
+
+        // If equal, join simply by setting `lhs = None`.
+        if lhs_ref == rhs_ref {
+            *lhs = None;
+        }
+    }
 }
 
 #[cfg(feature = "fuzz")]

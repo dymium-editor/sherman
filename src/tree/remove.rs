@@ -161,7 +161,7 @@ where
 pub(super) fn remove<I, S, P>(
     tree: &mut RleTree<I, S, P>,
     range: Range<I>,
-    replacement: Option<S>,
+    replacement: Option<&mut Option<S>>,
 ) -> Removed<I, S, P>
 where
     I: Index,
@@ -178,7 +178,7 @@ where
     if range.start == I::ZERO && range.end == tree.size() {
         let new = match replacement {
             None => RleTree::new_empty(),
-            Some(r) => RleTree::new(range.end, r),
+            Some(r) => RleTree::new_from_opt(range.end, r),
         };
         let old = std::mem::replace(tree, new);
         return Removed::from_tree(old);
@@ -191,18 +191,23 @@ where
         }
     };
 
-    let (new_root, removed_kind) = run_removal(root, range.start, range.end, replacement);
+    let mut removed_kind = None;
+    let new_root = run_removal(root, range.start, range.end, replacement, &mut removed_kind);
     tree.root = Some(new_root);
 
-    Removed { start: range.start, kind: removed_kind }
+    Removed {
+        start: range.start,
+        kind: removed_kind.expect("`removed_kind` should be `Some(_)`"),
+    }
 }
 
 fn run_removal<I, S, P>(
     tree: Root<I, S, P>,
     start: I,
     end: I,
-    replacement: Option<S>,
-) -> (Root<I, S, P>, RemovedKind<I, S, P>)
+    replacement: Option<&mut Option<S>>,
+    removed: &mut Option<RemovedKind<I, S, P>>,
+) -> Root<I, S, P>
 where
     I: Index,
     S: Slice<I>,
@@ -254,7 +259,6 @@ where
     };
 
     // Temporarily remove the node from its parent, and then run the removal on that owned subtree.
-    let removed;
     if let Some((mut parent, side)) = removal_root.into_parent() {
         let mut child = match side {
             Side::Lhs => parent
@@ -268,8 +272,8 @@ where
         };
 
         let mut up_state;
-        (child, up_state, removed) =
-            run_removal_within_subtree(child, search_start, search_end, replacement);
+        (child, up_state) =
+            run_removal_within_subtree(child, search_start, search_end, replacement, removed);
 
         // Put the child back into its parent
         let mut node = match side {
@@ -282,14 +286,14 @@ where
             (node, up_state) = up_state.step(node, None);
         }
     } else {
-        (tree_root, _, removed) =
-            run_removal_within_subtree(tree_root, search_start, search_end, replacement);
+        (tree_root, _) =
+            run_removal_within_subtree(tree_root, search_start, search_end, replacement, removed);
     }
 
     // perform a final fix on the root, if needed:
     tree_root = fix::fix_unique_owned(tree_root, FixMode::Unbounded);
 
-    (Root { handle: tree_root.erase() }, removed)
+    Root { handle: tree_root.erase() }
 }
 
 /// Performs a removal whose bounds are just barely contained by the subtree rooted at the node
@@ -297,8 +301,9 @@ fn run_removal_within_subtree<I, S, P>(
     mut root: node::HandleUniqueOwned<I, S, P>,
     start: SearchResult<I>,
     mut end: SearchResult<I>,
-    replacement: Option<(I, S)>,
-) -> (node::HandleUniqueOwned<I, S, P>, UpwardUpdateState<I>, RemovedKind<I, S, P>)
+    replacement: Option<(I, &mut Option<S>)>,
+    removed: &mut Option<RemovedKind<I, S, P>>,
+) -> (node::HandleUniqueOwned<I, S, P>, UpwardUpdateState<I>)
 where
     I: Index,
     S: Slice<I>,
@@ -318,9 +323,16 @@ where
                     *start_offset,
                     *end_offset,
                     repl_value,
+                    removed,
                 );
             } else {
-                return run_removal_within_node(root, range.clone(), *start_offset, *end_offset);
+                return run_removal_within_node(
+                    root,
+                    range.clone(),
+                    *start_offset,
+                    *end_offset,
+                    removed,
+                );
             }
         }
 
@@ -383,10 +395,11 @@ where
         None => join_trees(lhs_split.lhs, rhs_split.rhs, true).into_unique(),
     };
     let final_removed = join_trees(lhs_split.rhs, rhs_split.lhs, false);
+    *removed = Some(RemovedKind::Tree(final_removed));
 
     let up_state = UpwardUpdateState { old_size: root_size };
 
-    (final_tree, up_state, RemovedKind::Tree(final_removed))
+    (final_tree, up_state)
 }
 
 /// Performs a replacement whose bounds are contained by the values of a single node
@@ -396,90 +409,101 @@ fn run_replacement_within_node<I, S, P>(
     value_range: Range<I>,
     start_offset: I,
     end_offset: I,
-    replacement: S,
-) -> (node::HandleUniqueOwned<I, S, P>, UpwardUpdateState<I>, RemovedKind<I, S, P>)
+    replacement: &mut Option<S>,
+    removed: &mut Option<RemovedKind<I, S, P>>,
+) -> (node::HandleUniqueOwned<I, S, P>, UpwardUpdateState<I>)
 where
     I: Index,
     S: Slice<I>,
     P: RleTreeConfig<I, S> + SupportsUpdate<I, S>,
 {
+    let mut node_mut = node.borrow_mut();
+
     let value_size = end_offset.sub_left(start_offset);
     let range_size = value_range.end.sub_left(value_range.start);
     let rhs_size = range_size.sub_left(end_offset);
+    let subtree_size = node_mut.subtree_size();
 
-    let original_value = node.take_value();
-    let (lhs, removed_value) = original_value.split_at(start_offset);
-    let (removed_value, rhs) = removed_value.split_at(value_size);
-
-    let subtree_size = node.subtree_size();
+    let lhs = node_mut.value_mut();
+    let mut removed_value = None;
+    let mut rhs = None;
+    S::split_at_mut(lhs, start_offset, &mut removed_value);
+    S::split_at_mut(&mut removed_value, value_size, &mut rhs);
 
     // Try merging the replacement with LHS and/or RHS
-    match lhs.try_join(replacement) {
-        Ok(new_lhs) => match new_lhs.try_join(rhs) {
-            // Joined with both RHS & LHS - we're actually all done, because the node is still the
-            // same size and we didn't generate anything new.
-            Ok(new_value) => {
-                node.set_value(new_value);
-            }
-            // Joined with LHS but not RHS. We'll need to re-insert RHS.
-            Err((new_lhs, rhs)) => {
-                node.set_value(new_lhs);
-                super::run_insert(
-                    node.borrow_mut(),
-                    Some(subtree_size),
-                    true,
-                    DownwardInsertState {
-                        target: value_range.end,
-                        fst_value: InsertionValue { slice: rhs, size: rhs_size },
-                        snd_value: None,
-                        allow_joining: false,
-                        already_split_once: true,
-                    },
-                );
-            }
-        },
-        Err((lhs, replacement)) => match replacement.try_join(rhs) {
-            // Joined with RHS but not LHS. We need to (re-)insert the joined RHS.
-            Ok(new_rhs) => {
-                node.set_value(lhs);
-                super::run_insert(
-                    node.borrow_mut(),
-                    Some(subtree_size),
-                    true,
-                    DownwardInsertState {
-                        target: value_range.end,
-                        fst_value: InsertionValue {
-                            slice: new_rhs,
-                            size: value_size.add_right(rhs_size),
+    S::try_join_into_lhs(lhs, replacement);
+    match replacement {
+        None => {
+            // Joined with LHS. Try with RHS now.
+            S::try_join_into_lhs(lhs, &mut rhs);
+            match rhs {
+                // Joined with both RHS & LHS - we're actually all done, because the node is still
+                // the same size and we didn't generate anything new.
+                None => drop(node_mut),
+                // Joined with LHS but not RHS. We'll need to re-insert RHS.
+                Some(_) => {
+                    super::run_insert(
+                        node_mut,
+                        Some(subtree_size),
+                        true,
+                        DownwardInsertState {
+                            target: value_range.end,
+                            fst_value: InsertionValue { slice: &mut rhs, size: rhs_size },
+                            snd_value: None,
+                            allow_joining: false,
+                            already_split_once: true,
                         },
-                        snd_value: None,
-                        allow_joining: false,
-                        already_split_once: true,
-                    },
-                );
+                    );
+                }
             }
-            // Couldn't join with either LHS or RHS. We need to insert both replacement and RHS.
-            Err((replacement, rhs)) => {
-                node.set_value(lhs);
-                super::run_insert(
-                    node.borrow_mut(),
-                    Some(subtree_size),
-                    true,
-                    DownwardInsertState {
-                        target: value_range.end,
-                        fst_value: InsertionValue { slice: replacement, size: value_size },
-                        snd_value: Some(InsertionValue { slice: rhs, size: rhs_size }),
-                        allow_joining: false,
-                        already_split_once: true,
-                    },
-                );
+        }
+        Some(_) => {
+            // Couldn't join with LHS. Try with RHS.
+            S::try_join_into_lhs(replacement, &mut rhs);
+            match rhs {
+                // Joined with RHS but not LHS. We need to (re-)insert the joined RHS.
+                None => {
+                    super::run_insert(
+                        node_mut,
+                        Some(subtree_size),
+                        true,
+                        DownwardInsertState {
+                            target: value_range.end,
+                            fst_value: InsertionValue {
+                                slice: replacement,
+                                size: value_size.add_right(rhs_size),
+                            },
+                            snd_value: None,
+                            allow_joining: false,
+                            already_split_once: true,
+                        },
+                    );
+                }
+                // Couldn't join with either LHS or RHS. We need to insert replacement and RHS.
+                Some(_) => {
+                    super::run_insert(
+                        node_mut,
+                        Some(subtree_size),
+                        true,
+                        DownwardInsertState {
+                            target: value_range.end,
+                            fst_value: InsertionValue { slice: replacement, size: value_size },
+                            snd_value: Some(InsertionValue { slice: &mut rhs, size: rhs_size }),
+                            allow_joining: false,
+                            already_split_once: true,
+                        },
+                    );
+                }
             }
-        },
+        }
     }
 
     let up_state = UpwardUpdateState { old_size: subtree_size };
-    let removed = RemovedKind::Slice { size: value_size, slice: removed_value };
-    (node, up_state, removed)
+    *removed = Some(RemovedKind::Slice {
+        size: value_size,
+        slice: removed_value.expect("`removed_value` should be `Some(_)`"),
+    });
+    (node, up_state)
 }
 
 /// Performs a removal whose bounds are contained by the values of a single node
@@ -489,25 +513,27 @@ fn run_removal_within_node<I, S, P>(
     value_range: Range<I>,
     start_offset: I,
     end_offset: I,
-) -> (node::HandleUniqueOwned<I, S, P>, UpwardUpdateState<I>, RemovedKind<I, S, P>)
+    removed: &mut Option<RemovedKind<I, S, P>>,
+) -> (node::HandleUniqueOwned<I, S, P>, UpwardUpdateState<I>)
 where
     I: Index,
     S: Slice<I>,
     P: RleTreeConfig<I, S> + SupportsUpdate<I, S>,
 {
-    let value = node.take_value();
-    let (lhs, removed_value) = value.split_at(start_offset);
+    let mut node_mut = node.borrow_mut();
+
+    let lhs = node_mut.value_mut();
+    let mut removed_value = None;
+    let mut rhs = None;
+    S::split_at_mut(lhs, start_offset, &mut removed_value);
     let value_size = end_offset.sub_left(start_offset);
-    let (removed_value, rhs) = removed_value.split_at(value_size);
+    S::split_at_mut(&mut removed_value, value_size, &mut rhs);
 
     // Try merging `lhs` and `rhs`. If successful, we'll have nothing left to do but recurse back
     // up the tree.
-    let (replacement_value, insert_rhs) = match lhs.try_join(rhs) {
-        Ok(v) => (v, None),
-        Err((lhs, rhs)) => (lhs, Some(rhs)),
-    };
+    S::try_join_into_lhs(lhs, &mut rhs);
 
-    node.set_value(replacement_value);
+    drop(node_mut); // Done accessing the value directly; need to release the borrow.
 
     // Before removal:
     //
@@ -553,14 +579,14 @@ where
         .add_right(rhs_subtree_size);
     node.set_subtree_size(new_subtree_size);
 
-    if let Some(value) = insert_rhs {
+    if rhs.is_some() {
         super::run_insert(
             node.borrow_mut(),
             Some(new_subtree_size),
             true,
             DownwardInsertState {
                 target: new_subtree_size.sub_right(rhs_subtree_size),
-                fst_value: InsertionValue { slice: value, size: value_rhs_size },
+                fst_value: InsertionValue { slice: &mut rhs, size: value_rhs_size },
                 snd_value: None,
                 allow_joining: false,
                 already_split_once: true,
@@ -569,8 +595,12 @@ where
     }
 
     let up_state = UpwardUpdateState { old_size: old_subtree_size };
+    *removed = Some(RemovedKind::Slice {
+        size: value_size,
+        slice: removed_value.expect("`removed_value` should be `Some(_)`"),
+    });
 
-    (node, up_state, RemovedKind::Slice { size: value_size, slice: removed_value })
+    (node, up_state)
 }
 
 fn split_removal_lhs<I, S, P>(
@@ -743,8 +773,9 @@ where
         Err((range, offset_in_range)) => {
             // Split this node's value
             let rhs_value_size = range.end.sub_left(range.start).sub_left(offset_in_range);
-            let (lhs_value, rhs_value) = node.take_value().split_at(offset_in_range);
-            node.set_value(lhs_value);
+            let lhs_value = node.value_mut();
+            let mut rhs_value = None;
+            S::split_at_mut(lhs_value, offset_in_range, &mut rhs_value);
 
             let rhs_subtree = node.take_rhs();
             let rhs_subtree_size =
@@ -755,7 +786,7 @@ where
                 old_subtree_size.sub_right(rhs_subtree_size).sub_right(rhs_value_size),
             );
 
-            let mut rhs_node = node::HandleUniqueOwned::alloc_new(rhs_value, rhs_value_size);
+            let mut rhs_node = node::HandleUniqueOwned::alloc_new(&mut rhs_value, rhs_value_size);
             if let Some(n) = rhs_subtree {
                 rhs_node.borrow_mut().insert_rhs(n);
                 rhs_node.set_subtree_size(rhs_value_size.add_right(rhs_subtree_size));
@@ -885,7 +916,7 @@ where
 
 fn join_trees_with_middle<I, S, P>(
     mut lhs: Option<node::HandleOwned<I, S, P>>,
-    (mid_size, mid_slice): (I, S),
+    (mid_size, mid_slice): (I, &mut Option<S>),
     mut rhs: Option<node::HandleOwned<I, S, P>>,
 ) -> node::HandleUniqueOwned<I, S, P>
 where
@@ -893,22 +924,20 @@ where
     S: Slice<I>,
     P: RleTreeConfig<I, S> + SupportsUpdate<I, S>,
 {
-    let mut mid = None;
-
     // Try joining with LHS
     if let Some(lhs_node) = lhs {
         let mut lhs_node = lhs_node.into_unique();
         let mut lhs_rightmost_child = find_transitive_rightmost_child(lhs_node.borrow_mut());
-        let lhs_value = lhs_rightmost_child.take_value();
 
-        match lhs_value.try_join(mid_slice) {
-            Err((lhs_value, mid_slice)) => {
-                mid = Some(mid_slice);
-                lhs_rightmost_child.set_value(lhs_value);
+        let lhs_value = lhs_rightmost_child.value_mut();
+        S::try_join_into_lhs(lhs_value, mid_slice);
+
+        match &mid_slice {
+            // Couldn't join with LHS
+            Some(_) => {
                 drop(lhs_rightmost_child);
             }
-            Ok(new_lhs_value) => {
-                lhs_rightmost_child.set_value(new_lhs_value);
+            None => {
                 // Update subtree sizes all the way up the tree
                 let mut node = Some(lhs_rightmost_child);
                 while let Some(mut n) = node {
@@ -920,32 +949,26 @@ where
         }
 
         lhs = Some(lhs_node.erase());
-    } else {
-        mid = Some(mid_slice);
+        if mid_slice.is_none() {
+            // If we successfully joined with LHS, we can fall through to `join_trees` to finish
+            // merging the two sides.
+            return join_trees(lhs, rhs, true).into_unique();
+        }
     }
-
-    let Some(mid_slice) = mid else {
-        // If we successfully joined with LHS, we can fall through to `join_trees` to finish
-        // merging the two sides.
-        return join_trees(lhs, rhs, true).into_unique();
-    };
-
-    mid = None;
 
     // Try joining with RHS
     if let Some(rhs_node) = rhs {
         let mut rhs_node = rhs_node.into_unique();
         let mut rhs_leftmost_child = find_transitive_leftmost_child(rhs_node.borrow_mut());
-        let rhs_value = rhs_leftmost_child.take_value();
 
-        match mid_slice.try_join(rhs_value) {
-            Err((mid_slice, rhs_value)) => {
-                mid = Some(mid_slice);
-                rhs_leftmost_child.set_value(rhs_value);
+        let rhs_value = rhs_leftmost_child.value_mut();
+        S::try_join_into_rhs(mid_slice, rhs_value);
+        match &mid_slice {
+            // Couldn't join with RHS
+            Some(_) => {
                 drop(rhs_leftmost_child);
             }
-            Ok(new_rhs_value) => {
-                rhs_leftmost_child.set_value(new_rhs_value);
+            None => {
                 // Update subtree sizes all the way up the tree
                 let mut node = Some(rhs_leftmost_child);
                 while let Some(mut n) = node {
@@ -957,16 +980,15 @@ where
         }
 
         rhs = Some(rhs_node.erase());
-    } else {
-        mid = Some(mid_slice);
+        if mid_slice.is_none() {
+            // If we successfully joined with RHS, we can fall through to `join_trees` to finish
+            // merging the two sides.
+            //
+            // note: unlike with LHS, we don't need try_join_slices = true, because we already
+            // tried joining with RHS.
+            return join_trees(lhs, rhs, false).into_unique();
+        };
     }
-
-    let Some(mid_slice) = mid else {
-        // If we successfully joined with RHS, we can fall through to `join_trees` to finish
-        // merging the two sides.
-        // note: unlike with LHS, we don't need try_join_slices = true, because we already tried.
-        return join_trees(lhs, rhs, false).into_unique();
-    };
 
     // If we couldn't join with either side, then - in the general case - we can use the middle
     // value as the new root (and then do an unbounded rebalance).
@@ -1049,16 +1071,16 @@ where
         let mut lhs_unique = lhs.into_unique();
 
         let mut lhs_rightmost_child = find_transitive_rightmost_child(lhs_unique.borrow_mut());
-        let lhs_value = lhs_rightmost_child.take_value();
-        let rhs_value = middle_node.take_value();
+        let mut middle_node_mut = middle_node.borrow_mut();
 
-        match lhs_value.try_join(rhs_value) {
-            // Put the values back, nothing to do - we'll fall through to the normal case below
+        let lhs_value = lhs_rightmost_child.value_mut();
+        let rhs_value = middle_node_mut.value_mut();
+        S::try_join_into_lhs(lhs_value, rhs_value);
+
+        match &rhs_value {
+            // Couldn't join. We'll fall through to the normal case below.
             // (i.e. as if !try_join_slices)
-            Err((lhs_value, rhs_value)) => {
-                lhs_rightmost_child.set_value(lhs_value);
-                middle_node.set_value(rhs_value);
-
+            Some(_) => {
                 // We already gave up `lhs` to make it unique; erase the type again.
                 drop(lhs_rightmost_child);
                 lhs = lhs_unique.erase();
@@ -1066,9 +1088,8 @@ where
             // Otherwise, we just joined the middle value into LHS, so we need to:
             // 1. Record the updated size back up the LHS tree
             // 2. Try joining the LHS & RHS trees again, now that we just consumed middle_node
-            Ok(new_value) => {
-                lhs_rightmost_child.set_value(new_value);
-                middle_node.write_redirect(P::Redirect::to(lhs_rightmost_child.borrow()));
+            None => {
+                middle_node_mut.write_redirect(P::Redirect::to(lhs_rightmost_child.borrow()));
 
                 let old_subtree_size = lhs_rightmost_child.subtree_size();
                 lhs_rightmost_child.set_subtree_size(old_subtree_size.add_right(middle_size));

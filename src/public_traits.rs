@@ -53,6 +53,38 @@ pub trait Slice<Idx>: Sized {
     /// [`Constant`]: crate::Constant
     fn split_at(self, idx: Idx) -> (Self, Self);
 
+    /// Specialized version of [`split_at`] that modifies `this` in-place and writes the result
+    /// into `rhs`.
+    ///
+    /// The default implementation forwards to `split_at` by moving out of `this`. Implementing
+    /// this for you own `Slice` type is generally worthwhile when the cost of moving a value is
+    /// substantial (for example, a 1KiB+ chunk of data on the stack).
+    ///
+    /// `split_at_mut` is only ever called with `this = Some(_)` and `rhs = None`, although this
+    /// should not be relied upon in unsafe code. In return, implementors guarantee that `this` and
+    /// `rhs` will both be `Some(_)` upon completion.
+    ///
+    /// [`split_at`]: Self::split_at
+    fn split_at_mut(this: &mut Option<Self>, idx: Idx, rhs: &mut Option<Self>) {
+        let Some(lhs) = this.take() else {
+            #[cfg(debug_assertions)]
+            panic!("internal error: `split_at_mut` called with `this = None`");
+            #[cfg(not(debug_assertions))]
+            return;
+        };
+
+        if rhs.is_some() {
+            #[cfg(debug_assertions)]
+            panic!("internal error: `split_at_mut` called with `rhs = Some(_)`");
+            #[cfg(not(debug_assertions))]
+            return;
+        }
+
+        let (new_lhs, new_rhs) = lhs.split_at(idx);
+        *this = Some(new_lhs);
+        *rhs = Some(new_rhs);
+    }
+
     /// Attempts to join two slices into one, returning `Ok(joined)` or `Err((self, other))`
     ///
     /// This function will *always* be called whenever the slice on either side of this one
@@ -68,6 +100,67 @@ pub trait Slice<Idx>: Sized {
     /// The default implementation always errors (i.e. never successfully joins).
     fn try_join(self, other: Self) -> Result<Self, (Self, Self)> {
         Err((self, other))
+    }
+
+    /// Specialized version of [`try_join`]: try to merge `rhs` into `lhs`. If and only if
+    /// successful, `rhs` should be left `None`.
+    ///
+    /// The default implementation forwards to `try_join` by moving out of the `Option`s.
+    /// Implementing this for your own `Slice` type is generally worthwhile when the cost of moving
+    /// a value is substantial (for example, a 1KiB+ chunk of data on the stack).
+    ///
+    /// `try_join_opt_mut` is only ever called with both operands equal to `Some(_)`, although this
+    /// should not be relied upon in unsafe code. In return, implementors guarantee that `lhs` is
+    /// always equal to `Some(_)` upon completion.
+    ///
+    /// [`try_join`]: Self::try_join
+    fn try_join_into_lhs(lhs: &mut Option<Self>, rhs: &mut Option<Self>) {
+        let Some(lhs_value) = lhs.take() else {
+            #[cfg(debug_assertions)]
+            panic!("internal error: `try_join_lhs_opt_mut` called with `lhs = None`");
+            #[cfg(not(debug_assertions))]
+            return;
+        };
+        let Some(rhs_value) = rhs.take() else {
+            #[cfg(debug_assertions)]
+            panic!("internal error: `try_join_lhs_opt_mut` called with `rhs = None`");
+            #[cfg(not(debug_assertions))]
+            return;
+        };
+
+        match Self::try_join(lhs_value, rhs_value) {
+            Ok(new_lhs) => *lhs = Some(new_lhs),
+            Err((lhsv, rhsv)) => {
+                *lhs = Some(lhsv);
+                *rhs = Some(rhsv);
+            }
+        }
+    }
+
+    /// Exactly the same as `try_join_into_lhs`, but merging into `rhs` instead of `lhs`.
+    ///
+    /// On success, `lhs` should be left `None`; `rhs` should always be `Some(_)`.
+    fn try_join_into_rhs(lhs: &mut Option<Self>, rhs: &mut Option<Self>) {
+        let Some(lhs_value) = lhs.take() else {
+            #[cfg(debug_assertions)]
+            panic!("internal error: `try_join_rhs_opt_mut` called with `lhs = None`");
+            #[cfg(not(debug_assertions))]
+            return;
+        };
+        let Some(rhs_value) = rhs.take() else {
+            #[cfg(debug_assertions)]
+            panic!("internal error: `try_join_rhs_opt_mut` called with `rhs = None`");
+            #[cfg(not(debug_assertions))]
+            return;
+        };
+
+        match Self::try_join(lhs_value, rhs_value) {
+            Ok(new_rhs) => *rhs = Some(new_rhs),
+            Err((lhsv, rhsv)) => {
+                *lhs = Some(lhsv);
+                *rhs = Some(rhsv);
+            }
+        }
     }
 }
 

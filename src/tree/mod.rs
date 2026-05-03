@@ -122,15 +122,21 @@ where
     /// assert_eq!(entry.slice(), &Constant("foo"));
     /// ```
     pub fn new(size: I, slice: S) -> Self {
+        let mut slice = Some(slice);
+
         if size <= I::ZERO {
             panic!("cannot create new slice with non-positive size {size:?}");
         }
 
-        let root = Root {
-            handle: node::NodeHandle::alloc_new(slice, size).erase(),
-        };
+        Self::new_from_opt(size, &mut slice)
+    }
 
-        RleTree { root: Some(root) }
+    fn new_from_opt(size: I, slice: &mut Option<S>) -> Self {
+        RleTree {
+            root: Some(Root {
+                handle: node::NodeHandle::alloc_new(slice, size).erase(),
+            }),
+        }
     }
 
     /// Returns a new [`Builder`] for efficient construction of an [`RleTree`].
@@ -423,10 +429,13 @@ where
     /// tree.insert(10, Constant("baz"), 4);
     /// assert_eq!(tree.get(10).range(), 9..18);
     /// ```
+    #[inline(always)]
     pub fn insert(&mut self, idx: I, slice: S, size: I)
     where
         P: SupportsUpdate<I, S>,
     {
+        let mut slice = Some(slice); // Wrap in `Some(_)` so that we can pass &mut Option<S>
+
         if idx < I::ZERO {
             panic!("index {idx:?} out of bounds, less than zero");
         } else if idx > self.size() {
@@ -441,12 +450,12 @@ where
                 // This tree is completely empty, so we can actually just initialize it to just
                 // contain the value we want, and return. Given that `self.size()` must be zero, we
                 // know that `idx` is also zero.
-                *self = RleTree::new(size, slice);
+                *self = Self::new_from_opt(size, &mut slice);
                 return;
             }
         };
 
-        run_insert(root.borrow_mut(), None, false, DownwardInsertState::new(idx, slice, size));
+        run_insert(root.borrow_mut(), None, false, DownwardInsertState::new(idx, &mut slice, size));
         root = fix::fix_unique_owned(root, FixMode::Normal);
         self.root = Some(Root { handle: root.erase() });
     }
@@ -509,13 +518,15 @@ where
     ///     [(3..5, Constant("foo")), (5..7, Constant("bar"))],
     /// );
     /// ```
+    #[inline(always)]
     pub fn replace<R>(&mut self, range: R, value: S) -> Removed<I, S, P>
     where
         P: SupportsUpdate<I, S>,
         R: std::ops::RangeBounds<I>,
     {
+        let mut value = Some(value);
         let range = remove::check_bounds(self, "replace", range.start_bound(), range.end_bound());
-        remove::remove(self, range, Some(value))
+        remove::remove(self, range, Some(&mut value))
     }
 
     /// Removes a range of values from the tree, returning a [`Removed`] object representing them.
@@ -587,6 +598,7 @@ where
     ///     [(0..3, &Constant("foo")), (3..4, &Constant("bar"))],
     /// );
     /// ```
+    #[inline(always)]
     pub fn remove<R>(&mut self, range: R) -> Removed<I, S, P>
     where
         P: SupportsUpdate<I, S>,
@@ -770,16 +782,16 @@ where
     (node, range, offset_in_range)
 }
 
-struct DownwardInsertState<I, S> {
+struct DownwardInsertState<'s, I, S> {
     target: I,
-    fst_value: InsertionValue<I, S>,
-    snd_value: Option<InsertionValue<I, S>>,
+    fst_value: InsertionValue<'s, I, S>,
+    snd_value: Option<InsertionValue<'s, I, S>>,
     allow_joining: bool,
     already_split_once: bool,
 }
 
 #[cfg(test)]
-impl<I: Debug, S: Debug> Debug for DownwardInsertState<I, S> {
+impl<'s, I: Debug, S: Debug> Debug for DownwardInsertState<'s, I, S> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let mut s = f.debug_struct("DownwardInsertState");
         s.field("target", &self.target);
@@ -792,8 +804,8 @@ impl<I: Debug, S: Debug> Debug for DownwardInsertState<I, S> {
 }
 
 #[cfg_attr(test, derive(Debug))]
-struct InsertionValue<I, S> {
-    slice: S,
+struct InsertionValue<'s, I, S> {
+    slice: &'s mut Option<S>,
     size: I,
 }
 
@@ -855,8 +867,8 @@ where
     node
 }
 
-impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
-    fn new(target: I, slice: S, size: I) -> Self {
+impl<'s, I: Index, S: Slice<I>> DownwardInsertState<'s, I, S> {
+    fn new(target: I, slice: &'s mut Option<S>, size: I) -> Self {
         DownwardInsertState {
             target,
             fst_value: InsertionValue { slice, size },
@@ -901,7 +913,7 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
     /// Sub-case of `step` that handles the case where the target index is at the edge of the node
     /// and its LHS child (if there is one).
     fn step_edge_lhs<P>(
-        mut self,
+        self,
         mut node: node::HandleMut<I, S, P>,
     ) -> (node::HandleMut<I, S, P>, ControlFlow<UpwardUpdateState<I>, Self>)
     where
@@ -912,13 +924,13 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
         if self.allow_joining {
             debug_assert!(self.snd_value.is_none());
 
-            match self.fst_value.slice.try_join(node.take_value()) {
-                Err((slice, this_value)) => {
-                    // Couldn't join; put the node's value back.
-                    node.set_value(this_value);
-                    self.fst_value.slice = slice;
+            let node_value = node.value_mut();
+            S::try_join_into_rhs(self.fst_value.slice, node_value);
+            match self.fst_value.slice {
+                Some(_) => {
+                    // Couldn't join. Values are left as they are, so nothing left to do.
                 }
-                Ok(mut join_value) => {
+                None => {
                     // Successfully joined with this node. We potentially could still join with a
                     // node to the left, if there is one. Any left-hand node higher up the tree
                     // would have already been attempted and failed, so we just need to traverse
@@ -939,10 +951,8 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
                     }
 
                     let redirect = P::Redirect::to(node.borrow());
-                    join_value =
-                        Self::try_join_traverse_lhs(node.borrow_mut(), join_value, redirect);
+                    Self::try_join_traverse_lhs(node.borrow_mut(), redirect);
 
-                    node.set_value(join_value);
                     node.set_subtree_size(new_subtree_size);
                     return (
                         node,
@@ -979,7 +989,7 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
     /// Sub-case of `step` that handles the case where the target index is at the edge of the node
     /// and its RHS child (if there is one).
     fn step_edge_rhs<P>(
-        mut self,
+        self,
         mut node: node::HandleMut<I, S, P>,
     ) -> (node::HandleMut<I, S, P>, ControlFlow<UpwardUpdateState<I>, Self>)
     where
@@ -990,13 +1000,13 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
         if self.allow_joining {
             debug_assert!(self.snd_value.is_none());
 
-            match node.take_value().try_join(self.fst_value.slice) {
-                Err((this_value, slice)) => {
-                    // Couldn't join; put the node's value back.
-                    node.set_value(this_value);
-                    self.fst_value.slice = slice;
+            let node_value = node.value_mut();
+            S::try_join_into_lhs(node_value, self.fst_value.slice);
+            match self.fst_value.slice {
+                Some(_) => {
+                    // Couldn't join. Values are left as they are, so nothing left to do.
                 }
-                Ok(mut join_value) => {
+                None => {
                     // Successfully joined with this node. If we haven't already tried joining with
                     // the node immediately to the right, we need to traverse the tree to try_join
                     // again.
@@ -1016,10 +1026,8 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
                     }
 
                     let redirect = P::Redirect::to(node.borrow());
-                    join_value =
-                        Self::try_join_traverse_rhs(node.borrow_mut(), join_value, redirect);
+                    Self::try_join_traverse_rhs(node.borrow_mut(), redirect);
 
-                    node.set_value(join_value);
                     node.set_subtree_size(new_subtree_size);
                     return (
                         node,
@@ -1056,18 +1064,21 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
     /// left-hand child (i.e., the RIGHT-MOST node in the subtree rooted at its left-hand child).
     ///
     /// Returns the result of attempting to join with `root_value`.
-    fn try_join_traverse_lhs<P>(
-        subtree_root: node::HandleMut<I, S, P>,
-        root_value: S,
-        redirect: P::Redirect,
-    ) -> S
+    fn try_join_traverse_lhs<P>(mut subtree_root: node::HandleMut<I, S, P>, redirect: P::Redirect)
     where
         P: RleTreeConfig<I, S> + SupportsUpdate<I, S>,
     {
         let root_addr = subtree_root.addr();
 
+        // SAFETY: We're generating a longer-lived reference `subtree_root`'s value. This is sound
+        // only because further usage of `subtree_root` only touches the `lhs` field.
+        let root_value = unsafe {
+            let v: &mut Option<S> = subtree_root.value_mut();
+            &mut *(v as *mut Option<S>) // produce a reference, not directly borrowing subtree_root
+        };
+
         let mut immediate_lhs = match subtree_root.into_lhs() {
-            Err(_) => return root_value,
+            Err(_) => return,
             Ok(child) => child,
         };
 
@@ -1086,20 +1097,13 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
             }
         }
 
-        let final_value; // <- if we successfully join.
-
-        let lhs_value = immediate_lhs.take_value();
-        match lhs_value.try_join(root_value) {
-            // Couldn't join, put the values back:
-            Err((lhs, root_value)) => {
-                immediate_lhs.set_value(lhs);
-                return root_value;
-            }
+        let lhs_value = immediate_lhs.value_mut();
+        S::try_join_into_rhs(lhs_value, root_value);
+        match lhs_value {
+            // Couldn't join, nothing left to do.
+            Some(_) => return,
             // Did join -- we have complex operations ahead. More below.
-            Ok(v) => {
-                final_value = v;
-                immediate_lhs.write_redirect(redirect);
-            }
+            None => immediate_lhs.write_redirect(redirect),
         }
 
         // Joined! Let's remove this lower node, replacing it with its own left-hand child, if
@@ -1130,11 +1134,11 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
                         drop(parent.take_lhs());
                         // reinsert the node's left-hand child, if it had one:
                         if let Some(lhs) = lower_lhs.take() {
-                            parent.borrow_mut().insert_lhs(lhs);
+                            parent.insert_lhs(lhs);
                         }
                     }
 
-                    return final_value;
+                    return;
                 }
                 // Right-hand side of the parent means there's more recursion we'll have to do.
                 // Let's fix the immediate parent if we need to, and then continue upwards.
@@ -1144,7 +1148,7 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
                         drop(parent.take_rhs());
                         // reinsert the node's left-hand child, if it had one:
                         if let Some(lhs) = lower_lhs.take() {
-                            parent.borrow_mut().insert_rhs(lhs);
+                            parent.insert_rhs(lhs);
                         }
                         replaced_empty_node = true;
                     }
@@ -1165,18 +1169,21 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
     /// right-hand child (i.e., the LEFT-MOST node in the subtree rooted at its right-hand child).
     ///
     /// Returns the result of attempting to join with `root_value`.
-    fn try_join_traverse_rhs<P>(
-        subtree_root: node::HandleMut<I, S, P>,
-        root_value: S,
-        redirect: P::Redirect,
-    ) -> S
+    fn try_join_traverse_rhs<P>(mut subtree_root: node::HandleMut<I, S, P>, redirect: P::Redirect)
     where
         P: RleTreeConfig<I, S> + SupportsUpdate<I, S>,
     {
         let root_addr = subtree_root.addr();
 
+        // SAFETY: We're generating a longer-lived reference `subtree_root`'s value. This is sound
+        // only because further usage of `subtree_root` only touches the `rhs` field.
+        let root_value = unsafe {
+            let v: &mut Option<S> = subtree_root.value_mut();
+            &mut *(v as *mut Option<S>) // produce a reference, not directly borrowing subtree_root
+        };
+
         let mut immediate_rhs = match subtree_root.into_rhs() {
-            Err(_) => return root_value,
+            Err(_) => return,
             Ok(child) => child,
         };
 
@@ -1195,20 +1202,13 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
             }
         }
 
-        let final_value; // <- if we successfully join.
-
-        let rhs_value = immediate_rhs.take_value();
-        match root_value.try_join(rhs_value) {
-            // Couldn't join, put the values back
-            Err((root_value, rhs)) => {
-                immediate_rhs.set_value(rhs);
-                return root_value;
-            }
+        let rhs_value = immediate_rhs.value_mut();
+        S::try_join_into_lhs(root_value, rhs_value);
+        match rhs_value {
+            // Couldn't join, nothing left to do.
+            Some(_) => return,
             // Did join -- we have complex operations ahead. More below.
-            Ok(v) => {
-                final_value = v;
-                immediate_rhs.write_redirect(redirect);
-            }
+            None => immediate_rhs.write_redirect(redirect),
         }
 
         // Joined! Let's remove this lower node, replacing it with its own left-hand child, if
@@ -1239,11 +1239,11 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
                         drop(parent.take_rhs());
                         // reinsert the node's left-hand child, if it had one:
                         if let Some(rhs) = lower_rhs.take() {
-                            parent.borrow_mut().insert_rhs(rhs);
+                            parent.insert_rhs(rhs);
                         }
                     }
 
-                    return final_value;
+                    return;
                 }
                 // Left-hand side of the parent means there's more recursion we'll have to do.
                 // Let's fix the immediate parent if we need to, then continue upwards.
@@ -1253,7 +1253,7 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
                         drop(parent.take_lhs());
                         // reinsert the node's right-hand child, if it had one:
                         if let Some(rhs) = lower_rhs.take() {
-                            parent.borrow_mut().insert_lhs(rhs);
+                            parent.insert_lhs(rhs);
                         }
                         replaced_empty_node = true;
                     }
@@ -1271,7 +1271,7 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
     }
 
     fn step_split_value<P>(
-        self,
+        mut self,
         mut node: node::HandleMut<I, S, P>,
         range: Range<I>,
         offset_in_range: I,
@@ -1309,64 +1309,61 @@ impl<I: Index, S: Slice<I>> DownwardInsertState<I, S> {
         let node_lhs_size = range.start;
         let node_rhs_size = original_size.sub_left(range.end);
 
-        let (split_lhs, split_rhs) = node.take_value().split_at(offset_in_range);
+        let split_lhs = node.value_mut();
+        let mut split_rhs = None;
+        S::split_at_mut(split_lhs, offset_in_range, &mut split_rhs);
         let split_lhs_size = offset_in_range;
         let split_rhs_size = range.end.sub_left(range.start).sub_left(offset_in_range);
 
-        let replacement: S;
         let replacement_size: I;
         let to_insert: Option<(InsertionValue<I, S>, Option<InsertionValue<I, S>>)>;
 
         // Try joining `slice` to lhs:
-        match split_lhs.try_join(self.fst_value.slice) {
-            Ok(new_value) => {
+        S::try_join_into_lhs(split_lhs, self.fst_value.slice);
+        match self.fst_value.slice {
+            None => {
                 // Joined with LHS. Try to re-join with RHS.
-                match new_value.try_join(split_rhs) {
-                    Ok(final_value) => {
+                S::try_join_into_lhs(split_lhs, &mut split_rhs);
+                match &split_rhs {
+                    None => {
                         // Successfully joined all three pieces. Nothing left to do.
-                        replacement = final_value;
+                        // replacement = final_value;
                         replacement_size =
                             split_lhs_size.add_right(self.fst_value.size).add_right(split_rhs_size);
                         to_insert = None;
                     }
-                    Err((lhs, rhs)) => {
+                    Some(_) => {
                         // Joined LHS+slice but not RHS. We'll have to re-insert it.
-                        replacement = lhs;
                         replacement_size = split_lhs_size.add_right(self.fst_value.size);
-                        to_insert =
-                            Some((InsertionValue { slice: rhs, size: split_rhs_size }, None));
-                    }
-                }
-            }
-            Err((lhs, slice)) => {
-                // Couldn't join with LHS. Try joining with RHS.
-                replacement = lhs;
-                replacement_size = split_lhs_size;
-
-                match slice.try_join(split_rhs) {
-                    Ok(new_value) => {
-                        // Joined slice+RHS but not with LHS. We'll have to re-insert
-                        // slice+RHS.
                         to_insert = Some((
-                            InsertionValue {
-                                slice: new_value,
-                                size: self.fst_value.size.add_right(split_rhs_size),
-                            },
+                            InsertionValue { slice: &mut split_rhs, size: split_rhs_size },
                             None,
                         ));
                     }
-                    Err((slice, rhs)) => {
+                }
+            }
+            Some(_) => {
+                // Couldn't join with LHS. Try joining with RHS.
+                replacement_size = split_lhs_size;
+
+                S::try_join_into_lhs(self.fst_value.slice, &mut split_rhs);
+                match &split_rhs {
+                    None => {
+                        // Joined slice+RHS, but didn't join with LHS earlier.
+                        // We'll have to re-insert slice+RHS.
+                        self.fst_value.size = self.fst_value.size.add_right(split_rhs_size);
+                        to_insert = Some((self.fst_value, None));
+                    }
+                    Some(_) => {
+                        // Didn't join with either LHS or RHS.
                         to_insert = Some((
-                            InsertionValue { slice, size: self.fst_value.size },
-                            Some(InsertionValue { slice: rhs, size: split_rhs_size }),
+                            self.fst_value,
+                            Some(InsertionValue { slice: &mut split_rhs, size: split_rhs_size }),
                         ));
                     }
                 }
             }
         }
-
-        // Put everything back, maybe continue inserting.
-        node.set_value(replacement);
 
         let old_subtree_size = original_size;
         let insertion_size = match &to_insert {

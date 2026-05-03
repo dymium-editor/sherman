@@ -138,7 +138,7 @@ where
         // SAFETY: Invariants on the `DrainTreeState` guarantee that `front_ptr` is valid and that
         // our usage does not violate aliasing requirements.
         let mut node = unsafe { node::HandleMut::from_ptr(front_ptr) };
-        let value = node.take_value();
+        let value = node.value_mut().take().expect("node value should be `Some(_)`");
 
         // We can progress the iteration as long as the two edges haven't already met.
         // If they have, we've actually exhausted everything.
@@ -165,7 +165,7 @@ where
         // SAFETY: Invariants on the `DrainTreeState` guarantee that `back_ptr` is valid and that
         // our usage does not violate aliasing requirements.
         let mut node = unsafe { node::HandleMut::from_ptr(back_ptr) };
-        let value = node.take_value();
+        let value = node.value_mut().take().expect("node value should be `Some(_)`");
 
         // We can progress the iteration as long as the two edges haven't already met.
         // If they have, we've actually exhausted everything.
