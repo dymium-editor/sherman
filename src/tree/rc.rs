@@ -94,10 +94,12 @@ unsafe impl RefCount for UsizeCell {
 }
 
 unsafe impl RefCount for AtomicUsize {
+    #[inline(always)]
     fn one() -> Self {
         AtomicUsize::new(1)
     }
 
+    #[inline(always)]
     fn is_unique(&self) -> bool {
         // `Acquire` here matches with the `Release` in decrement so that any writes before
         // decrementing in another thread must be visible. This is needed because `is_unique`
@@ -119,6 +121,7 @@ unsafe impl RefCount for AtomicUsize {
         self.load(Ordering::Acquire) == 1
     }
 
+    #[inline(always)]
     fn increment(&self) {
         // `Relaxed` is ok here because we only care that the count is *at least* one, and the
         // caller should not increment if the value is zero. Dropping the handle on this ref count
@@ -129,12 +132,14 @@ unsafe impl RefCount for AtomicUsize {
         }
     }
 
+    #[inline(always)]
     fn reset(&self) {
         // `Relaxed` is ok here because the caller guarantees that current ownership is unique.
         // This is similar to how `increment` is relaxed.
         self.store(1, Ordering::Relaxed);
     }
 
+    #[inline(always)]
     fn decrement_and_is_zero(&self) -> bool {
         // Two parts to note here.
         //

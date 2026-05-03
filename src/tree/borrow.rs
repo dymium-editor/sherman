@@ -512,6 +512,7 @@ impl<'a, T: Borrowable> Borrowed<Mut<'a, T>> {
 
         // If it's not unique: clone it and replace the value in the field.
         if !owned.get::<T::StrongCountField>().is_unique() {
+            std::hint::cold_path();
             let new_value = Borrowed::alloc_new(clone(owned.borrow()));
             *owned = new_value.erase();
         }
