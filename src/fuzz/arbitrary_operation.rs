@@ -1,6 +1,6 @@
 use arbitrary::{Arbitrary, Unstructured};
 use std::fmt::{self, Debug, Display};
-use std::ops::{Bound, Range};
+use std::ops::Range;
 use std::panic::{self, RefUnwindSafe, UnwindSafe};
 
 use crate::fuzz::{Fake, FakeStableRef, IndexInfo, RustExpr, RustType, TrackedIndex, TrackedSlice};
@@ -181,8 +181,6 @@ pub enum BasicOperation<I, S> {
         start: Bound<I>,
         end: Bound<I>,
         slice: S,
-        /// Helper information: `tree.size()` before this operation
-        tree_size: I,
         /// Is this removal expected to panic?
         panics: bool,
     },
@@ -193,8 +191,6 @@ pub enum BasicOperation<I, S> {
     Remove {
         start: Bound<I>,
         end: Bound<I>,
-        /// Helper information: `tree.size()` before this operation
-        tree_size: I,
         /// Is this removal expected to panic?
         panics: bool,
     },
@@ -202,8 +198,6 @@ pub enum BasicOperation<I, S> {
     Drain {
         start: Bound<I>,
         end: Bound<I>,
-        /// Helper information: `tree.size()` before this operation
-        tree_size: I,
         /// If the call to `drain()` should panic, then `Err(())`; otherwise, the sequence of
         /// operations on the iterator, and their expected results.
         access: Result<Vec<IterOperation<I, S>>, ()>,
@@ -224,20 +218,54 @@ enum IterDirection {
     Back,
 }
 
+#[derive(Copy, Clone)]
+pub enum Bound<I> {
+    Unbounded(I),
+    Included(I),
+    Excluded(I),
+}
+
+impl<I> Bound<I> {
+    fn into_std(self) -> std::ops::Bound<I> {
+        match self {
+            Bound::Unbounded(_) => std::ops::Bound::Unbounded,
+            Bound::Included(i) => std::ops::Bound::Included(i),
+            Bound::Excluded(i) => std::ops::Bound::Excluded(i),
+        }
+    }
+
+    fn map<F, R>(self, f: F) -> Bound<R>
+    where
+        F: FnOnce(I) -> R,
+    {
+        match self {
+            Bound::Unbounded(i) => Bound::Unbounded(f(i)),
+            Bound::Included(i) => Bound::Included(f(i)),
+            Bound::Excluded(i) => Bound::Excluded(f(i)),
+        }
+    }
+
+    fn value(self) -> I {
+        match self {
+            Bound::Unbounded(i) | Bound::Included(i) | Bound::Excluded(i) => i,
+        }
+    }
+}
+
 fn format_bounds<'b, I: RustExpr>(start: &'b Bound<I>, end: &'b Bound<I>) -> impl 'b + Display {
     struct R<'b, I>(&'b Bound<I>, &'b Bound<I>);
     impl<'b, I: RustExpr> Display for R<'b, I> {
         fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
             match (self.0, self.1) {
-                (Bound::Unbounded, Bound::Unbounded) => f.write_str(".."),
-                (Bound::Unbounded, Bound::Excluded(e)) => {
+                (Bound::Unbounded(_), Bound::Unbounded(_)) => f.write_str(".."),
+                (Bound::Unbounded(_), Bound::Excluded(e)) => {
                     f.write_fmt(format_args!("..{}", e.display_rust_expr()))
                 }
-                (Bound::Unbounded, Bound::Included(e)) => {
+                (Bound::Unbounded(_), Bound::Included(e)) => {
                     f.write_fmt(format_args!("..={}", e.display_rust_expr()))
                 }
                 (Bound::Excluded(_), _) => unreachable!(),
-                (Bound::Included(s), Bound::Unbounded) => {
+                (Bound::Included(s), Bound::Unbounded(_)) => {
                     f.write_fmt(format_args!("{}..", s.display_rust_expr()))
                 }
                 (Bound::Included(s), Bound::Excluded(e)) => f.write_fmt(format_args!(
@@ -349,12 +377,12 @@ impl<I, S> BasicOperation<I, S> {
             // BasicOperation::Iter
             1 => {
                 let start = match u.int_in_range(0..=1)? {
-                    0 => Bound::Unbounded,
+                    0 => Bound::Unbounded(I::ZERO),
                     1 => Bound::Included(I::arbitrary(u)?),
                     _ => unreachable!(),
                 };
                 let end = match u.int_in_range(0..=2)? {
-                    0 => Bound::Unbounded,
+                    0 => Bound::Unbounded(fake.size()),
                     1 => Bound::Included(I::arbitrary(u)?),
                     2 => Bound::Excluded(I::arbitrary(u)?),
                     _ => unreachable!(),
@@ -362,7 +390,7 @@ impl<I, S> BasicOperation<I, S> {
 
                 let access_directions = u.arbitrary::<Vec<IterDirection>>()?;
                 let result = expect_might_panic(move || {
-                    let mut iter = fake.iter((start, end));
+                    let mut iter = fake.iter((start.into_std(), end.into_std()));
                     let mut access = Vec::new();
                     for direction in access_directions {
                         let v = match direction {
@@ -420,22 +448,21 @@ impl<I, S> BasicOperation<I, S> {
             // BasicOperation::Replace
             4 => {
                 let start = match u.int_in_range(0..=1)? {
-                    0 => Bound::Unbounded,
+                    0 => Bound::Unbounded(I::ZERO),
                     1 => Bound::Included(I::arbitrary(u)?),
                     _ => unreachable!(),
                 };
                 let end = match u.int_in_range(0..=1)? {
-                    0 => Bound::Unbounded,
+                    0 => Bound::Unbounded(fake.size()),
                     1 => Bound::Excluded(I::arbitrary(u)?),
                     _ => unreachable!(),
                 };
-                let tree_size = fake.size();
 
                 let slice = S::arbitrary(u)?;
 
                 let slice_cloned = slice.clone();
                 let result = expect_might_panic(move || {
-                    _ = fake.replace((start, end), slice_cloned);
+                    _ = fake.replace((start.into_std(), end.into_std()), slice_cloned);
                     fake
                 });
 
@@ -444,24 +471,23 @@ impl<I, S> BasicOperation<I, S> {
                     Err(_) => (true, None),
                 };
 
-                Ok((BasicOperation::Replace { start, end, slice, tree_size, panics }, new_state))
+                Ok((BasicOperation::Replace { start, end, slice, panics }, new_state))
             }
             // BasicOperation::Remove
             5 => {
                 let start = match u.int_in_range(0..=1)? {
-                    0 => Bound::Unbounded,
+                    0 => Bound::Unbounded(I::ZERO),
                     1 => Bound::Included(I::arbitrary(u)?),
                     _ => unreachable!(),
                 };
                 let end = match u.int_in_range(0..=1)? {
-                    0 => Bound::Unbounded,
+                    0 => Bound::Unbounded(fake.size()),
                     1 => Bound::Excluded(I::arbitrary(u)?),
                     _ => unreachable!(),
                 };
-                let tree_size = fake.size();
 
                 let result = expect_might_panic(move || {
-                    let removed = fake.remove((start, end));
+                    let removed = fake.remove((start.into_std(), end.into_std()));
                     (fake, removed)
                 });
 
@@ -470,25 +496,24 @@ impl<I, S> BasicOperation<I, S> {
                     Err(_) => (true, None),
                 };
 
-                Ok((BasicOperation::Remove { start, end, tree_size, panics }, new_state))
+                Ok((BasicOperation::Remove { start, end, panics }, new_state))
             }
             // BasicOperation::Drain
             6 => {
                 let start = match u.int_in_range(0..=1)? {
-                    0 => Bound::Unbounded,
+                    0 => Bound::Unbounded(I::ZERO),
                     1 => Bound::Included(I::arbitrary(u)?),
                     _ => unreachable!(),
                 };
                 let end = match u.int_in_range(0..=1)? {
-                    0 => Bound::Unbounded,
+                    0 => Bound::Unbounded(fake.size()),
                     1 => Bound::Excluded(I::arbitrary(u)?),
                     _ => unreachable!(),
                 };
-                let tree_size = fake.size();
 
                 let access_directions = u.arbitrary::<Vec<IterDirection>>()?;
                 let result = expect_might_panic(move || {
-                    let mut drain = fake.drain((start, end));
+                    let mut drain = fake.drain((start.into_std(), end.into_std()));
                     let mut access = Vec::new();
                     for direction in access_directions {
                         let value = match direction {
@@ -506,7 +531,7 @@ impl<I, S> BasicOperation<I, S> {
                     Err(_) => (Err(()), None),
                 };
 
-                Ok((BasicOperation::Drain { start, end, tree_size, access }, new_state))
+                Ok((BasicOperation::Drain { start, end, access }, new_state))
             }
             // BasicOperation::Validate
             7 => Ok((BasicOperation::Validate, Some((fake, None)))),
@@ -541,7 +566,7 @@ impl<I, S> BasicOperation<I, S> {
             },
             &BasicOperation::Iter { start, end, ref access } => match access {
                 Ok(seq) => {
-                    let mut iter = tree.iter((start, end));
+                    let mut iter = tree.iter((start.into_std(), end.into_std()));
                     for op in seq {
                         let item = match op.direction {
                             IterDirection::Front => iter.next(),
@@ -555,7 +580,10 @@ impl<I, S> BasicOperation<I, S> {
                     Some((tree, None))
                 }
                 Err(()) => {
-                    assert!(expect_might_panic(|| tree.iter((start, end))).is_err());
+                    assert!(
+                        expect_might_panic(|| tree.iter((start.into_std(), end.into_std())))
+                            .is_err()
+                    );
                     None
                 }
             },
@@ -585,33 +613,38 @@ impl<I, S> BasicOperation<I, S> {
                     None
                 }
             },
-            BasicOperation::Replace { start, end, slice, panics, .. } => match panics {
+            BasicOperation::Replace { start, end, slice, panics } => match panics {
                 false => {
-                    _ = tree.replace((*start, *end), slice.clone());
+                    _ = tree.replace((start.into_std(), end.into_std()), slice.clone());
                     Some((tree, None))
                 }
                 true => {
                     let slice_clone = slice.clone();
                     assert!(
-                        expect_might_panic(move || tree.replace((*start, *end), slice_clone))
+                        expect_might_panic(
+                            move || tree.replace((start.into_std(), end.into_std()), slice_clone,)
+                        )
+                        .is_err()
+                    );
+                    None
+                }
+            },
+            BasicOperation::Remove { start, end, panics } => match panics {
+                false => {
+                    let removed = tree.remove((start.into_std(), end.into_std()));
+                    Some((tree, Some(removed.into_tree())))
+                }
+                true => {
+                    assert!(
+                        expect_might_panic(move || tree.remove((start.into_std(), end.into_std())))
                             .is_err()
                     );
                     None
                 }
             },
-            BasicOperation::Remove { start, end, panics, .. } => match panics {
-                false => {
-                    let removed = tree.remove((*start, *end));
-                    Some((tree, Some(removed.into_tree())))
-                }
-                true => {
-                    assert!(expect_might_panic(move || tree.remove((*start, *end))).is_err());
-                    None
-                }
-            },
-            BasicOperation::Drain { start, end, access, .. } => match access {
+            BasicOperation::Drain { start, end, access } => match access {
                 Ok(seq) => {
-                    let mut drain = tree.drain((*start, *end));
+                    let mut drain = tree.drain((start.into_std(), end.into_std()));
                     for op in seq {
                         let item = match op.direction {
                             IterDirection::Front => drain.next(),
@@ -626,7 +659,7 @@ impl<I, S> BasicOperation<I, S> {
                 Err(()) => {
                     assert!(
                         expect_might_panic(move || {
-                            _ = tree.drain((*start, *end));
+                            _ = tree.drain((start.into_std(), end.into_std()));
                         })
                         .is_err()
                     );
@@ -762,7 +795,7 @@ impl<I, S> BasicOperation<I, S> {
                     size = size.display_rust_expr(),
                 )),
             },
-            BasicOperation::Replace { start, end, slice, panics, .. } => match panics {
+            BasicOperation::Replace { start, end, slice, panics } => match panics {
                 false => f.write_fmt(format_args!(
                     "    _ = {tree}.replace({range}, {slice});\n",
                     range = format_bounds(start, end),
@@ -774,7 +807,7 @@ impl<I, S> BasicOperation<I, S> {
                     slice = slice.display_rust_expr(),
                 )),
             },
-            BasicOperation::Remove { start, end, panics, .. } => match panics {
+            BasicOperation::Remove { start, end, panics } => match panics {
                 false => f.write_fmt(format_args!(
                     "    {lhs} = {tree}.remove({range});\n",
                     lhs = remove_into.unwrap_or(&"_"),
@@ -785,7 +818,7 @@ impl<I, S> BasicOperation<I, S> {
                     range = format_bounds(start, end),
                 )),
             },
-            BasicOperation::Drain { start, end, access, .. } => match access {
+            BasicOperation::Drain { start, end, access } => match access {
                 Ok(seq) if seq.is_empty() => f.write_fmt(format_args!(
                     "    let _ = {tree}.drain({range});\n",
                     range = format_bounds(start, end),
@@ -878,11 +911,7 @@ where
     ) -> Option<RleTree<TrackedIndex<'c, I>, TrackedSlice<S>>> {
         // Convert from: BasicOperation<I, S> to BasicOperation<TrackedIndex<I>, TrackedSlice<S>>,
         // matching the RleTree.
-        let map_bound = |bound| match bound {
-            Bound::Unbounded => Bound::Unbounded,
-            Bound::Included(idx) => Bound::Included(info.i(idx)),
-            Bound::Excluded(idx) => Bound::Excluded(info.i(idx)),
-        };
+        let map_bound = |bound: Bound<I>| bound.map(|idx| info.i(idx));
         let map_range = |range: Range<_>| info.i(range.start)..info.i(range.end);
         let map_iter_seq = |seq: Vec<IterOperation<_, _>>| {
             seq.into_iter()
@@ -891,10 +920,6 @@ where
                     value: op.value.map(|(r, s)| (map_range(r), TrackedSlice(s))),
                 })
                 .collect::<Vec<_>>()
-        };
-        let bound_value = |bound, default| match bound {
-            Bound::Unbounded => default,
-            Bound::Included(idx) | Bound::Excluded(idx) => idx,
         };
 
         let tracked = match self.0.clone() {
@@ -914,31 +939,28 @@ where
                 let (index, size) = info.prepare_insert(index, size);
                 BasicOperation::Insert { index, slice: TrackedSlice(slice), size, panics }
             }
-            BasicOperation::Replace { start, end, slice, tree_size, panics } => {
+            BasicOperation::Replace { start, end, slice, panics } => {
                 let start = map_bound(start);
                 let end = map_bound(end);
                 let slice = TrackedSlice(slice);
-                let tree_size = info.i(tree_size);
-                BasicOperation::Replace { start, end, slice, tree_size, panics }
+                BasicOperation::Replace { start, end, slice, panics }
             }
-            BasicOperation::Remove { start, end, tree_size, panics } => {
-                let range_start = bound_value(start, I::ZERO);
-                let range_end = bound_value(end, tree.size().value());
+            BasicOperation::Remove { start, end, panics } => {
+                let range_start = start.value();
+                let range_end = end.value();
                 let start = map_bound(start);
                 let end = map_bound(end);
-                let tree_size = info.i(tree_size);
                 info.prepare_remove(range_start, range_end);
-                BasicOperation::Remove { start, end, panics, tree_size }
+                BasicOperation::Remove { start, end, panics }
             }
-            BasicOperation::Drain { start, end, tree_size, access } => {
-                let range_start = bound_value(start, I::ZERO);
-                let range_end = bound_value(end, tree.size().value());
+            BasicOperation::Drain { start, end, access } => {
+                let range_start = start.value();
+                let range_end = end.value();
                 let start = map_bound(start);
                 let end = map_bound(end);
-                let tree_size = info.i(tree_size);
                 let access = access.map(map_iter_seq);
                 info.prepare_remove(range_start, range_end);
-                BasicOperation::Drain { start, end, tree_size, access }
+                BasicOperation::Drain { start, end, access }
             }
             BasicOperation::Validate => BasicOperation::Validate,
         };
@@ -964,11 +986,7 @@ where
         // things like insertions & removals.
         let map_range =
             |range: Range<_>| CheckedIndex::Current(range.start)..CheckedIndex::Current(range.end);
-        let map_bound = |bound| match bound {
-            Bound::Unbounded => Bound::Unbounded,
-            Bound::Included(idx) => Bound::Included(CheckedIndex::Current(idx)),
-            Bound::Excluded(idx) => Bound::Excluded(CheckedIndex::Current(idx)),
-        };
+        let map_bound = |bound: Bound<I>| bound.map(CheckedIndex::Current);
         let map_iter_seq = |seq: Vec<IterOperation<_, _>>| {
             seq.into_iter()
                 .map(|op| IterOperation {
@@ -1005,18 +1023,15 @@ where
                     panics,
                 }
             }
-            BasicOperation::Replace { start, end, slice, tree_size, panics } => {
-                BasicOperation::Replace {
-                    start: map_bound(start),
-                    end: map_bound(end),
-                    slice: CheckedSlice(slice),
-                    tree_size: CheckedIndex::Current(tree_size),
-                    panics,
-                }
-            }
-            BasicOperation::Remove { start, end, panics, tree_size } => {
+            BasicOperation::Replace { start, end, slice, panics } => BasicOperation::Replace {
+                start: start.map(|_| CheckedIndex::Named("range.start")),
+                end: end.map(|_| CheckedIndex::Named("range.end")),
+                slice: CheckedSlice(slice),
+                panics,
+            },
+            BasicOperation::Remove { start, end, panics } => {
                 let (start, start_var, start_idx) = match start {
-                    Bound::Unbounded => (Bound::Unbounded, "_", I::ZERO),
+                    Bound::Unbounded(idx) => (Bound::Unbounded(CheckedIndex::Named("_")), "_", idx),
                     Bound::Included(idx) => {
                         (Bound::Included(CheckedIndex::Named("start")), "start", idx)
                     }
@@ -1025,7 +1040,7 @@ where
                     }
                 };
                 let (end, end_var, end_idx) = match end {
-                    Bound::Unbounded => (Bound::Unbounded, "_", tree_size),
+                    Bound::Unbounded(idx) => (Bound::Unbounded(CheckedIndex::Named("_")), "_", idx),
                     Bound::Included(idx) => {
                         (Bound::Included(CheckedIndex::Named("end")), "end", idx)
                     }
@@ -1039,12 +1054,11 @@ where
                     start_idx = start_idx.display_rust_expr(),
                     end_idx = end_idx.display_rust_expr(),
                 ))?;
-                let tree_size = CheckedIndex::Previous(tree_size);
-                BasicOperation::Remove { start, end, tree_size, panics }
+                BasicOperation::Remove { start, end, panics }
             }
-            BasicOperation::Drain { start, end, tree_size, access } => {
+            BasicOperation::Drain { start, end, access } => {
                 let (start, start_var, start_idx) = match start {
-                    Bound::Unbounded => (Bound::Unbounded, "_", I::ZERO),
+                    Bound::Unbounded(idx) => (Bound::Unbounded(CheckedIndex::Named("_")), "_", idx),
                     Bound::Included(idx) => {
                         (Bound::Included(CheckedIndex::Named("start")), "start", idx)
                     }
@@ -1053,7 +1067,7 @@ where
                     }
                 };
                 let (end, end_var, end_idx) = match end {
-                    Bound::Unbounded => (Bound::Unbounded, "_", tree_size),
+                    Bound::Unbounded(idx) => (Bound::Unbounded(CheckedIndex::Named("_")), "_", idx),
                     Bound::Included(idx) => {
                         (Bound::Included(CheckedIndex::Named("end")), "end", idx)
                     }
@@ -1067,8 +1081,6 @@ where
                     start_idx = start_idx.display_rust_expr(),
                     end_idx = end_idx.display_rust_expr(),
                 ))?;
-
-                let tree_size = CheckedIndex::Previous(tree_size);
 
                 let access = access.map(|seq| {
                     seq.into_iter()
@@ -1084,7 +1096,7 @@ where
                         .collect::<Vec<_>>()
                 });
 
-                BasicOperation::Drain { start, end, tree_size, access }
+                BasicOperation::Drain { start, end, access }
             }
             BasicOperation::Validate => BasicOperation::Validate,
         };
