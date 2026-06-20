@@ -29,6 +29,7 @@ pub use iter::{IntoIter, Iter};
 use node::Side;
 use rc::Redirect as _;
 pub use replace::Removed;
+use replace::Replacement;
 
 /// Generalized run-length encoded balanced binary search tree
 ///
@@ -463,6 +464,8 @@ where
     /// Replaces a range of values in the tree with a single new value, returning a [`Removed`]
     /// object representing what was replaced
     ///
+    /// To replace the range with a full `RleTree`, see [`replace_many`](Self::replace_many).
+    ///
     /// # Algorithmic complexity
     ///
     /// This operation is `O(log(r))`, where `r` is the number of ranges of values in the tree.
@@ -532,7 +535,52 @@ where
 
         let mut value = Some(value);
         let range = replace::check_bounds(self, "replace", range.start_bound(), range.end_bound());
-        replace::replace(self, range, Some((size, &mut value)))
+        replace::replace(self, range, Replacement::Slice(size, &mut value))
+    }
+
+    /// Replaces a range of values in the tree with the contents of a secondary `RleTree`,
+    /// returning a [`Removed`] object representing what was replaced
+    ///
+    /// To replace a range with exactly one value, see [`replace`](Self::replace).
+    ///
+    /// Note that this method is fully valid for use with COW-enabled trees, allowing for trees
+    /// that use vastly less memory than the number of values would indicate - at least, in theory.
+    ///
+    /// # Algorithmic complexity
+    ///
+    /// This operation is `O(log(r₁) + log(r₂))`, where `r₁` and `r₂` represent the number of
+    /// ranges of values in `self` and `replacement`, respectively.
+    ///
+    /// Without COW, dropping the [`Removed`] values is `O(k)` (where `k` is the number of ranges
+    /// of values removed).  
+    /// With [`EnableCow`], it is `O(q + log(s))` (where `q` is the number of *unique* ranges of
+    /// values removed and `s` is the number of shared ranges of values).
+    ///
+    /// # Panics
+    ///
+    /// This method panics under the same conditions as [`remove`](Self::remove):
+    ///
+    /// * The range's start bound is exclusive
+    /// * The range's **end bound is inclusive** (e.g. `1..=3`)
+    /// * The range's start bound is less than `I::ZERO`
+    /// * The range's end bound is greater than the [`size`](Self::size) of the tree
+    /// * The range's start bound is greater than its end bound
+    pub fn replace_many<R>(&mut self, range: R, replacement: Self) -> Removed<I, S, P>
+    where
+        P: SupportsUpdate<I, S>,
+        R: std::ops::RangeBounds<I>,
+    {
+        if let size = replacement.size()
+            && size < I::ZERO
+        {
+            crate::panic_internal_error_or_bad_index::<I>(format_args!(
+                "cannot replace range with negative size {size:?}"
+            ));
+        }
+
+        let range =
+            replace::check_bounds(self, "replace_many", range.start_bound(), range.end_bound());
+        replace::replace(self, range, Replacement::Tree(replacement))
     }
 
     /// Removes a range of values from the tree, returning a [`Removed`] object representing them.
@@ -611,7 +659,7 @@ where
         R: std::ops::RangeBounds<I>,
     {
         let range = replace::check_bounds(self, "remove", range.start_bound(), range.end_bound());
-        replace::replace(self, range, None)
+        replace::replace(self, range, Replacement::Nothing)
     }
 
     /// Removes a range of values from the tree, returning an iterator over the values
@@ -643,7 +691,7 @@ where
         R: std::ops::RangeBounds<I>,
     {
         let range = replace::check_bounds(self, "drain", range.start_bound(), range.end_bound());
-        let removed = replace::replace(self, range, None);
+        let removed = replace::replace(self, range, Replacement::Nothing);
         Drain::new(removed)
     }
 }

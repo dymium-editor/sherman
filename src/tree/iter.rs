@@ -248,8 +248,15 @@ where
         match &self.last_back {
             // If there's already been calls to `next_back()`, check if we've caught up to the
             // backwards iteration.
-            Edge::Ongoing(_, last_back_stack) => {
-                if last_back_stack.reborrow().addr() == next_front_stack.reborrow().addr() {
+            Edge::Ongoing(last_range, last_back_stack) => {
+                // With COW-enabled trees, we can come across the same node multiple times during
+                // iteration, at different points in the tree, for example due to `replace_many`.
+                // So while for most trees we can just compare addresses, with COW-enabled trees we
+                // must also compare the positions themselves.
+                let addr_eq =
+                    last_back_stack.reborrow().addr() == next_front_stack.reborrow().addr();
+                let value_eq = !P::COW || range.start == last_range.start;
+                if addr_eq && value_eq {
                     return None;
                 }
             }
@@ -282,8 +289,12 @@ where
         match &self.last_front {
             // If there's already been calls to `next()`, check if we've caught up to the forwards
             // iteration.
-            Edge::Ongoing(_, last_front_stack) => {
-                if last_front_stack.reborrow().addr() == next_back_stack.reborrow().addr() {
+            Edge::Ongoing(last_range, last_front_stack) => {
+                let addr_eq =
+                    last_front_stack.reborrow().addr() == next_back_stack.reborrow().addr();
+                // See next() for why we must check the range for COW-enabled trees.
+                let value_eq = !P::COW || range.start == last_range.start;
+                if addr_eq && value_eq {
                     return None;
                 }
             }

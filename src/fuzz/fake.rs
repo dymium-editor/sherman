@@ -181,8 +181,15 @@ impl<I: Index, S: Slice<I>> Fake<I, S> {
         with: S,
         size: I,
     ) -> Fake<I, S> {
+        self.replace_many(range, Fake::new(with, size))
+    }
+
+    pub fn replace_many(
+        &mut self,
+        range: impl std::ops::RangeBounds<I>,
+        replacement: Fake<I, S>,
+    ) -> Fake<I, S> {
         let std::ops::Range { start, end } = self.resolve_removal_bounds(range);
-        let replacement = Fake::new(with, size);
         self.replace_internal(start, end, Some(replacement))
     }
 

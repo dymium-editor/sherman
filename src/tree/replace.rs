@@ -98,7 +98,14 @@ where
     pub fn into_tree(self) -> RleTree<I, S, P> {
         match self.kind {
             RemovedKind::Empty => RleTree::new_empty(),
-            RemovedKind::Slice { size, slice } => RleTree::new(size, slice),
+            RemovedKind::Slice { size, slice } => {
+                if size <= I::ZERO {
+                    crate::panic_internal_error_or_bad_index::<I>(format_args!(
+                        "`Removed` slice length is less than zero: {size:?}"
+                    ));
+                }
+                RleTree::new(size, slice)
+            }
             RemovedKind::Tree(handle) => RleTree { root: Some(Root { handle }) },
         }
     }
@@ -158,10 +165,26 @@ where
     start..end
 }
 
+pub(super) enum Replacement<'s, I, S, P: RleTreeConfig<I, S>> {
+    Nothing,
+    Slice(I, &'s mut Option<S>),
+    Tree(RleTree<I, S, P>),
+}
+
+impl<'s, I: Index, S: Slice<I>, P: RleTreeConfig<I, S>> Replacement<'s, I, S, P> {
+    fn is_empty(&self) -> bool {
+        match self {
+            Replacement::Nothing => true,
+            Replacement::Slice(size, _) => *size == I::ZERO,
+            Replacement::Tree(tree) => tree.size() == I::ZERO,
+        }
+    }
+}
+
 pub(super) fn replace<I, S, P>(
     tree: &mut RleTree<I, S, P>,
     range: Range<I>,
-    replacement: Option<(I, &mut Option<S>)>,
+    replacement: Replacement<'_, I, S, P>,
 ) -> Removed<I, S, P>
 where
     I: Index,
@@ -169,7 +192,7 @@ where
     P: RleTreeConfig<I, S> + SupportsUpdate<I, S>,
 {
     // Special case: allow empty ranges, but if there isn't anything to insert there, do nothing.
-    if range.start == range.end && replacement.is_none() {
+    if range.start == range.end && replacement.is_empty() {
         return Removed::empty(range.start);
     }
 
@@ -177,8 +200,9 @@ where
     // assume later that we'll have at least one node left over after the operation.
     if range.start == I::ZERO && range.end == tree.size() {
         let new = match replacement {
-            None => RleTree::new_empty(),
-            Some((size, r)) => RleTree::new_from_opt(size, r),
+            Replacement::Nothing => RleTree::new_empty(),
+            Replacement::Slice(size, r) => RleTree::new_from_opt(size, r),
+            Replacement::Tree(tree) => tree,
         };
         let old = std::mem::replace(tree, new);
         return Removed::from_tree(old);
@@ -205,7 +229,7 @@ fn run_replace<I, S, P>(
     tree: Root<I, S, P>,
     start: I,
     end: I,
-    replacement: Option<(I, &mut Option<S>)>,
+    replacement: Replacement<'_, I, S, P>,
     removed: &mut Option<RemovedKind<I, S, P>>,
 ) -> Root<I, S, P>
 where
@@ -299,7 +323,7 @@ fn run_replace_within_subtree<I, S, P>(
     mut root: node::HandleUniqueOwned<I, S, P>,
     start: SearchResult<I>,
     mut end: SearchResult<I>,
-    replacement: Option<(I, &mut Option<S>)>,
+    replacement: Replacement<'_, I, S, P>,
     removed: &mut Option<RemovedKind<I, S, P>>,
 ) -> (node::HandleUniqueOwned<I, S, P>, UpwardUpdateState<I>)
 where
@@ -313,9 +337,19 @@ where
         (
             SearchResult::Value { range, offset_in_range: start_offset },
             SearchResult::Value { offset_in_range: end_offset, .. },
-        ) => {
-            if let Some((repl_size, repl_value)) = replacement {
-                return run_replace_within_node(
+        ) => match replacement {
+            Replacement::Tree(mut t) if t.root.is_some() => {
+                return run_replace_tree_within_node(
+                    root,
+                    range.clone(),
+                    *start_offset,
+                    *end_offset,
+                    t.root.take().unwrap().handle, // guaranteed Some(_) by pattern guard
+                    removed,
+                );
+            }
+            Replacement::Slice(repl_size, repl_value) if repl_size != I::ZERO => {
+                return run_replace_value_within_node(
                     root,
                     range.clone(),
                     *start_offset,
@@ -324,7 +358,8 @@ where
                     repl_size,
                     removed,
                 );
-            } else {
+            }
+            _ => {
                 return run_remove_within_node(
                     root,
                     range.clone(),
@@ -333,7 +368,7 @@ where
                     removed,
                 );
             }
-        }
+        },
 
         // In some cases, we must treat the root node as belonging to a particular side.
         //
@@ -390,8 +425,21 @@ where
     let rhs_split = split_removal_rhs(rhs_tree, root_side, end);
 
     let final_tree = match replacement {
-        Some(pair) => join_trees_with_middle(lhs_split.lhs, pair, rhs_split.rhs),
-        None => match join_trees(lhs_split.lhs, rhs_split.rhs, true) {
+        Replacement::Tree(mut middle) => {
+            let middle = middle.root.take().map(|r| r.handle);
+            let new_lhs = join_trees(lhs_split.lhs, middle, true);
+            let new_tree = join_trees(new_lhs, rhs_split.rhs, true);
+            match new_tree {
+                Some(r) => r.into_unique(),
+                None => crate::panic_internal_error_or_bad_index::<I>(
+                    "got no nodes to join together for final tree, but should have had `middle = Some(_)`",
+                ),
+            }
+        }
+        Replacement::Slice(size, opt) => {
+            join_trees_with_middle(lhs_split.lhs, (size, opt), rhs_split.rhs)
+        }
+        Replacement::Nothing => match join_trees(lhs_split.lhs, rhs_split.rhs, true) {
             Some(r) => r.into_unique(),
             None => crate::panic_internal_error_or_bad_index::<I>(
                 "got no nodes to join together for final tree",
@@ -406,9 +454,72 @@ where
     (final_tree, up_state)
 }
 
-/// Performs a replacement whose bounds are contained by the values of a single node
+/// Performs a replacement with a tree, whose bounds are contained by the values of a single node
 /// (special case of `run_replace_within_subtree`)
-fn run_replace_within_node<I, S, P>(
+fn run_replace_tree_within_node<I, S, P>(
+    mut node: node::HandleUniqueOwned<I, S, P>,
+    value_range: Range<I>,
+    start_offset: I,
+    end_offset: I,
+    replacement: node::HandleOwned<I, S, P>,
+    removed: &mut Option<RemovedKind<I, S, P>>,
+) -> (node::HandleUniqueOwned<I, S, P>, UpwardUpdateState<I>)
+where
+    I: Index,
+    S: Slice<I>,
+    P: RleTreeConfig<I, S> + SupportsUpdate<I, S>,
+{
+    let mut node_mut = node.borrow_mut();
+
+    let value_size = end_offset.sub_left(start_offset);
+    let range_size = value_range.end.sub_left(value_range.start);
+    let value_rhs_size = range_size.sub_left(end_offset);
+
+    let old_subtree_size = node_mut.subtree_size();
+    let new_lhs_tree_size = value_range.start.add_right(start_offset);
+
+    let lhs_value = node_mut.value_mut();
+    let mut removed_value = None;
+    let mut rhs_value = None;
+    if value_size > I::ZERO {
+        S::split_at_mut(lhs_value, start_offset, &mut removed_value);
+        S::split_at_mut(&mut removed_value, value_size, &mut rhs_value);
+    } else {
+        S::split_at_mut(lhs_value, start_offset, &mut rhs_value);
+    }
+
+    let rhs_child = node_mut.take_rhs();
+    node_mut.set_subtree_size(new_lhs_tree_size);
+
+    drop(node_mut);
+
+    let final_tree = join_trees_with_middle(
+        // TODO: This inner fix+join can probably be much more efficient by manually adding
+        // `replacement` as the right-hand child of `node` and then fixing. Or even further, not
+        // rebalancing to an intermediate state given that we have a secondary join following it,
+        // where we could repeat the same.
+        join_trees(
+            Some(fix::fix_unique_owned(node, FixMode::Unbounded).erase()),
+            Some(fix::fix_owned(replacement, FixMode::Unbounded)),
+            true,
+        ),
+        (value_rhs_size, &mut rhs_value),
+        rhs_child,
+    );
+
+    let up_state = UpwardUpdateState { old_size: old_subtree_size };
+
+    *removed = Some(match removed_value {
+        Some(slice) => RemovedKind::Slice { size: value_size, slice },
+        None => RemovedKind::Empty,
+    });
+
+    (final_tree, up_state)
+}
+
+/// Performs a replacement with a value, whose bounds are contained by the values of a single node
+/// (special case of `run_replace_within_subtree`)
+fn run_replace_value_within_node<I, S, P>(
     mut node: node::HandleUniqueOwned<I, S, P>,
     value_range: Range<I>,
     start_offset: I,
@@ -440,8 +551,12 @@ where
     let lhs = node_mut.value_mut();
     let mut removed_value = None;
     let mut rhs = None;
-    S::split_at_mut(lhs, start_offset, &mut removed_value);
-    S::split_at_mut(&mut removed_value, value_size, &mut rhs);
+    if value_size > I::ZERO {
+        S::split_at_mut(lhs, start_offset, &mut removed_value);
+        S::split_at_mut(&mut removed_value, value_size, &mut rhs);
+    } else {
+        S::split_at_mut(lhs, start_offset, &mut rhs);
+    }
 
     // Try merging the replacement with LHS and/or RHS
     S::try_join_into_lhs(lhs, replacement);
@@ -520,9 +635,9 @@ where
     }
 
     let up_state = UpwardUpdateState { old_size: old_subtree_size };
-    *removed = Some(RemovedKind::Slice {
-        size: value_size,
-        slice: removed_value.expect("`removed_value` should be `Some(_)`"),
+    *removed = Some(match removed_value {
+        Some(slice) => RemovedKind::Slice { size: value_size, slice },
+        None => RemovedKind::Empty,
     });
     (node, up_state)
 }

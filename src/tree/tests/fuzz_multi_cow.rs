@@ -94,3 +94,63 @@ fn test_05_multi_drop_rewrite_parent() {
     // overwritten on downward traversal during drop.
     drop(tree_5);
 }
+
+#[test]
+fn test_06_recursive_replace_requires_rebalance() {
+    // Trimmed down from the original test, for clarity.
+    let mut tree_0: RleTree<u8, Constant<char>, EnableCow> = RleTree::new_empty();
+    tree_0.insert(0, Constant('J'), 255);
+    _ = tree_0.replace(51.., Constant('U'), 3).into_tree();
+    let mut tree_1 = tree_0.shallow_clone();
+    tree_1.insert(51, Constant('C'), 104);
+    _ = tree_0.replace_many(2..43, tree_1).into_tree();
+    // This will panic if we do not adequately rebalance `tree_0` as part the replacement.
+    tree_0.validate_balance();
+}
+
+#[test]
+fn test_07_iter_across_duplicate_addrs() {
+    // Trimmed down from the original test, for clarity.
+    let mut tree_0: RleTree<u8, Constant<char>, EnableCow> = RleTree::new_empty();
+    tree_0.insert(0, Constant('N'), 4);
+    tree_0.insert(4, Constant('T'), 95);
+    tree_0.insert(40, Constant('A'), 1);
+
+    // At this point, tree_0 looks like:
+    //
+    //               |- A -|
+    //   |- N -|           |- T -|
+    //         |- T -|
+    //   0     4    40    41    100
+    //
+    // and after replacement, we should expect a series of values like:
+    //
+    //   | N | T | A | N | T | A | T |
+    //   0   4  40  42  46  82  83  142
+    //
+    // But there's some complications because we can find the same node in multiple places
+    // representing different ranges.
+    let tree_1 = tree_0.shallow_clone();
+    _ = tree_0.replace_many(42..47, tree_1);
+    {
+        let mut iter = tree_0.iter(0..80);
+        {
+            let item = iter.next_back().unwrap();
+            assert_eq!(item.range(), 46..82);
+            assert_eq!(item.slice(), &Constant('T'));
+        }
+        {
+            let item = iter.next().unwrap();
+            assert_eq!(item.range(), 0..4);
+            assert_eq!(item.slice(), &Constant('N'));
+        }
+        // The address of the node representing this 'T' is actually the same as the one
+        // representing the 47..82 range, so if the iterator implementation is checking completion
+        // by comparing addresses, it can prematurely terminate here.
+        {
+            let item = iter.next().unwrap();
+            assert_eq!(item.range(), 4..40);
+            assert_eq!(item.slice(), &Constant('T'));
+        }
+    }
+}

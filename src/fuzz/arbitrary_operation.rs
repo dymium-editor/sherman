@@ -464,12 +464,13 @@ impl<I, S> BasicOperation<I, S> {
 
                 let slice_cloned = slice.clone();
                 let result = expect_might_panic(move || {
-                    _ = fake.replace((start.into_std(), end.into_std()), slice_cloned, size);
-                    fake
+                    let removed =
+                        fake.replace((start.into_std(), end.into_std()), slice_cloned, size);
+                    (fake, removed)
                 });
 
                 let (panics, new_state) = match result {
-                    Ok(fake) => (false, Some((fake, None))),
+                    Ok((fake, removed)) => (false, Some((fake, Some(removed)))),
                     Err(_) => (true, None),
                 };
 
@@ -617,8 +618,9 @@ impl<I, S> BasicOperation<I, S> {
             },
             BasicOperation::Replace { start, end, slice, size, panics } => match panics {
                 false => {
-                    _ = tree.replace((start.into_std(), end.into_std()), slice.clone(), *size);
-                    Some((tree, None))
+                    let removed =
+                        tree.replace((start.into_std(), end.into_std()), slice.clone(), *size);
+                    Some((tree, Some(removed.into_tree())))
                 }
                 true => {
                     let slice_clone = slice.clone();
@@ -801,7 +803,8 @@ impl<I, S> BasicOperation<I, S> {
             },
             BasicOperation::Replace { start, end, slice, size, panics } => match panics {
                 false => f.write_fmt(format_args!(
-                    "    _ = {tree}.replace({range}, {slice}, {size});\n",
+                    "    {lhs} = {tree}.replace({range}, {slice}, {size}).into_tree();\n",
+                    lhs = remove_into.unwrap_or(&"_"),
                     range = format_bounds(start, end),
                     slice = slice.display_rust_expr(),
                     size = size.display_rust_expr(),
@@ -815,7 +818,7 @@ impl<I, S> BasicOperation<I, S> {
             },
             BasicOperation::Remove { start, end, panics } => match panics {
                 false => f.write_fmt(format_args!(
-                    "    {lhs} = {tree}.remove({range});\n",
+                    "    {lhs} = {tree}.remove({range}).into_tree();\n",
                     lhs = remove_into.unwrap_or(&"_"),
                     range = format_bounds(start, end),
                 )),
@@ -1158,12 +1161,25 @@ impl<S: RustExpr> RustExpr for CheckedSlice<S> {
 pub enum MultiCowOperation<I, S> {
     /// A `BasicOperation` on an existing tree
     ///
-    /// Those operations behave the same, with the exception that `BasicOperation::Remove` also
-    /// creates a new tree (in which case the new `TreeId` will be the final parameter).
+    /// Those operations behave the same, with the exception that `BasicOperation::Remove` and
+    /// `BasicOperation::Replace` also create new trees (in which case the new `TreeId` will be the
+    /// final parameter).
     Basic(TreeId, BasicOperation<I, S>, Option<TreeId>),
+
+    /// `let {0} = RleTree::new_empty()`
+    NewEmpty(TreeId),
 
     /// `let {1} = {0}.shallow_clone()`
     ShallowClone(TreeId, TreeId),
+
+    /// `{new_id} = {dst}.replace_many((start, end), {src}).into_tree()`
+    ReplaceMany {
+        dst: TreeId,
+        src: TreeId,
+        start: Bound<I>,
+        end: Bound<I>,
+        new_id: Result<TreeId, ()>,
+    },
 }
 
 impl<I, S> ArbitraryOp for MultiCowOperation<I, S>
@@ -1197,20 +1213,81 @@ where
         u: &mut Unstructured<'_>,
         mut group: Self::FakeState,
     ) -> arbitrary::Result<(Self, Option<Self::FakeState>)> {
-        let base_id = group.generate_id(u)?;
+        let (base_id, snd_id) = group.generate_id_pair(u)?;
 
         let basic_count = std::mem::variant_count::<BasicOperation<I, S>>();
-        let cow_count = std::mem::variant_count::<MultiCowOperation<I, S>>() - 1;
-        match u.int_in_range(0..=basic_count + cow_count - 1)? {
-            // MultiCowOperation::ShallowClone
+        let cow_single_count = 2;
+        let cow_dual_count = 1;
+        assert_eq!(
+            cow_single_count + cow_dual_count,
+            std::mem::variant_count::<MultiCowOperation<I, S>>() - 1
+        );
+
+        let total_count = match snd_id {
+            Some(_) => basic_count + cow_single_count + cow_dual_count,
+            None => basic_count + cow_single_count,
+        };
+
+        match u.int_in_range(0..=total_count - 1)? {
+            // MultiCowOperation::NewEmpty
             0 => {
+                let new_fake = Fake::new_empty();
+                let new_id = group.add(new_fake);
+                let op = MultiCowOperation::NewEmpty(new_id);
+                Ok((op, Some(group)))
+            }
+            // MultiCowOperation::ShallowClone
+            1 => {
                 let new_fake = group.get(base_id).clone();
                 let new_id = group.add(new_fake);
                 let op = MultiCowOperation::ShallowClone(base_id, new_id);
                 Ok((op, Some(group)))
             }
+            // MultiCowOperation::ReplaceMany
+            2 if let Some(src_id) = snd_id => {
+                let (group, src_fake) = group.take(src_id);
+                let group = group.discard().unwrap();
+                let (group, mut dst_fake) = group.take(base_id);
+
+                let start = match u.int_in_range(0..=1)? {
+                    0 => Bound::Unbounded(I::ZERO),
+                    1 => Bound::Included(I::arbitrary(u)?),
+                    _ => unreachable!(),
+                };
+                let end = match u.int_in_range(0..=1)? {
+                    0 => Bound::Unbounded(dst_fake.size()),
+                    1 => Bound::Excluded(I::arbitrary(u)?),
+                    _ => unreachable!(),
+                };
+
+                let result = expect_might_panic(move || {
+                    let removed =
+                        dst_fake.replace_many((start.into_std(), end.into_std()), src_fake);
+                    (dst_fake, removed)
+                });
+
+                let (new_id, new_state) = match result {
+                    Ok((fake, removed)) => {
+                        let mut group = group.done(fake);
+                        let new_id = group.add(removed);
+                        (Ok(new_id), Some(group))
+                    }
+                    Err(_) => (Err(()), None),
+                };
+
+                Ok((
+                    MultiCowOperation::ReplaceMany {
+                        dst: base_id,
+                        src: src_id,
+                        start,
+                        end,
+                        new_id,
+                    },
+                    new_state,
+                ))
+            }
             // MultiCowOperation::Basic(_) ...
-            c if c >= cow_count => {
+            c if c >= total_count - basic_count => {
                 let (group, fake) = group.take(base_id);
                 let (basic, fake) = BasicOperation::generate(u, fake)?;
                 let (group, dst_id) = match fake {
@@ -1245,22 +1322,52 @@ where
                     }
                 }
             }
+            &MultiCowOperation::NewEmpty(dst_id) => {
+                let t = RleTree::new_empty();
+                assert_eq!(dst_id, group.add(t));
+                Some(group)
+            }
             &MultiCowOperation::ShallowClone(src_id, dst_id) => {
                 let src = group.get(src_id);
                 let dst = src.shallow_clone();
                 assert_eq!(dst_id, group.add(dst));
                 Some(group)
             }
+            &MultiCowOperation::ReplaceMany { dst, src, start, end, new_id } => match new_id {
+                Ok(new_id) => {
+                    let (g, src_tree) = group.take(src);
+                    let group = g.discard().unwrap();
+                    let (g, mut dst_tree) = group.take(dst);
+
+                    let removed =
+                        dst_tree.replace_many((start.into_std(), end.into_std()), src_tree);
+
+                    let mut group = g.done(dst_tree);
+                    let id = group.add(removed.into_tree());
+                    assert_eq!(id, new_id);
+
+                    Some(group)
+                }
+                Err(()) => {
+                    let (g, src_tree) = group.take(src);
+                    let group = g.discard().unwrap();
+                    let (g, mut dst_tree) = group.take(dst);
+
+                    assert!(
+                        expect_might_panic(move || dst_tree
+                            .replace_many((start.into_std(), end.into_std()), src_tree,))
+                        .is_err()
+                    );
+
+                    g.discard()
+                }
+            },
         }
     }
 
     fn write_init_stmts(f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_fmt(format_args!(
-            "    let mut {id}: RleTree<{I}, {S}, EnableCow> = RleTree::new_empty();\n",
-            id = TreeId(0),
-            I = I::display_rust_type(),
-            S = S::display_rust_type(),
-        ))
+        let op = Self::NewEmpty(TreeId(0));
+        op.write_execute_stmts(f)
     }
 
     fn write_execute_stmts(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -1282,9 +1389,26 @@ where
                     },
                 )
             }
+            MultiCowOperation::NewEmpty(dst_id) => {
+                f.write_fmt(format_args!(
+                    "    let mut {dst_id}: RleTree<{I}, {S}, EnableCow> = RleTree::new_empty();\n",
+                    I = I::display_rust_type(),
+                    S = S::display_rust_type(),
+                ))
+            },
             MultiCowOperation::ShallowClone(src_id, dst_id) => {
                 f.write_fmt(format_args!("    let mut {dst_id} = {src_id}.shallow_clone();\n"))
             }
+            MultiCowOperation::ReplaceMany { dst, src, start, end, new_id } => match new_id {
+                Ok(new_id) => f.write_fmt(format_args!(
+                    "    let mut {new_id} = {dst}.replace_many({range}, {src});\n",
+                    range = format_bounds(start, end),
+                )),
+                Err(()) => f.write_fmt(format_args!(
+                    "    assert!(std::panic::catch_unwind(move || {dst}.replace_many({range}, {src})).is_err());\n",
+                    range = format_bounds(start, end),
+                )),
+            },
         }
     }
 }
@@ -1317,19 +1441,47 @@ where
         FakeCowGroup { fakes: vec![Some(Fake::new_empty())], count: 1 }
     }
 
-    fn generate_id(&self, u: &mut Unstructured<'_>) -> arbitrary::Result<TreeId> {
-        let mut idx = u.choose_index(self.count)?;
-        for (i, f) in self.fakes.iter().enumerate() {
-            if f.is_none() {
-                idx += 1;
+    fn generate_id_pair(
+        &self,
+        u: &mut Unstructured<'_>,
+    ) -> arbitrary::Result<(TreeId, Option<TreeId>)> {
+        let mut fst_idx = u.choose_index(self.count)?;
+        let fst_id = 'fst: {
+            for (i, f) in self.fakes.iter().enumerate() {
+                if f.is_none() {
+                    fst_idx += 1;
+                }
+                if fst_idx == i {
+                    assert!(f.is_some());
+                    break 'fst TreeId(fst_idx);
+                }
             }
-            if idx == i {
-                assert!(f.is_some());
-                return Ok(TreeId(idx));
-            }
+
+            panic!("unexpectedly failed to generate TreeId")
+        };
+
+        // If there's only one value, return that:
+        if self.count <= 1 {
+            return Ok((fst_id, None));
         }
 
-        panic!("unexpectedly failed to generate TreeId")
+        // Otherwise, generate a second:
+        let mut snd_idx = u.choose_index(self.count - 1)?;
+        let snd_id = 'snd: {
+            for (i, f) in self.fakes.iter().enumerate() {
+                if f.is_none() || i == fst_id.0 {
+                    snd_idx += 1;
+                }
+                if snd_idx == i {
+                    assert!(f.is_some());
+                    break 'snd TreeId(snd_idx);
+                }
+            }
+
+            panic!("unexpectedly failed to generate TreeId")
+        };
+
+        Ok((fst_id, Some(snd_id)))
     }
 
     fn get(&self, id: TreeId) -> &Fake<I, S> {

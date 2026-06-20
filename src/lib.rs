@@ -192,7 +192,7 @@ impl<T: fuzz::RustExpr> fuzz::RustExpr for Constant<T> {
 
 #[cold]
 #[track_caller]
-pub(crate) fn panic_internal_error_or_bad_index<I: Index>(msg: &str) -> ! {
+pub(crate) fn panic_internal_error_or_bad_index<I: Index>(msg: impl fmt::Display) -> ! {
     if I::TRUSTED {
         panic!("internal error: {msg}");
     } else {
