@@ -158,27 +158,27 @@ where
     start..end
 }
 
-pub(super) fn remove<I, S, P>(
+pub(super) fn replace<I, S, P>(
     tree: &mut RleTree<I, S, P>,
     range: Range<I>,
-    replacement: Option<&mut Option<S>>,
+    replacement: Option<(I, &mut Option<S>)>,
 ) -> Removed<I, S, P>
 where
     I: Index,
     S: Slice<I>,
     P: RleTreeConfig<I, S> + SupportsUpdate<I, S>,
 {
-    // Special case: allow empty ranges, but don't do anything with them
-    if range.start == range.end {
+    // Special case: allow empty ranges, but if there isn't anything to insert there, do nothing.
+    if range.start == range.end && replacement.is_none() {
         return Removed::empty(range.start);
     }
 
     // Special case: If the range is the entire tree, handle that separately. This way, we can
-    // assume later that we'll have at least one node left over after removal.
+    // assume later that we'll have at least one node left over after the operation.
     if range.start == I::ZERO && range.end == tree.size() {
         let new = match replacement {
             None => RleTree::new_empty(),
-            Some(r) => RleTree::new_from_opt(range.end, r),
+            Some((size, r)) => RleTree::new_from_opt(size, r),
         };
         let old = std::mem::replace(tree, new);
         return Removed::from_tree(old);
@@ -192,7 +192,7 @@ where
     };
 
     let mut removed_kind = None;
-    let new_root = run_removal(root, range.start, range.end, replacement, &mut removed_kind);
+    let new_root = run_replace(root, range.start, range.end, replacement, &mut removed_kind);
     tree.root = Some(new_root);
 
     Removed {
@@ -201,11 +201,11 @@ where
     }
 }
 
-fn run_removal<I, S, P>(
+fn run_replace<I, S, P>(
     tree: Root<I, S, P>,
     start: I,
     end: I,
-    replacement: Option<&mut Option<S>>,
+    replacement: Option<(I, &mut Option<S>)>,
     removed: &mut Option<RemovedKind<I, S, P>>,
 ) -> Root<I, S, P>
 where
@@ -213,44 +213,42 @@ where
     S: Slice<I>,
     P: RleTreeConfig<I, S> + SupportsUpdate<I, S>,
 {
-    let replacement = replacement.map(|slice| (end.sub_left(start), slice));
-
-    // First, find the node where the removal range is fully contained *within* its subtree.
+    // First, find the node where the replacement range is fully contained *within* its subtree.
     // In other words: we want to find the node whose subtree start/end bounds most narrowly
-    // contain fully the `start` end `end` of the removal range (acknowledging that this may not be
-    // satisfied if they're at the start/end of the tree itself).
+    // contain fully the `start` end `end` of the replacement range (acknowledging that this may
+    // not be satisfied if they're at the start/end of the tree itself).
     let mut tree_root = tree.handle.into_unique();
-    let mut removal_root = tree_root.borrow_mut();
-    let mut removal_root_offset = I::ZERO;
+    let mut replacement_root = tree_root.borrow_mut();
+    let mut replacement_root_offset = I::ZERO;
 
     let (search_start, search_end) = loop {
         let search_start =
-            super::search_step(removal_root.borrow(), start.sub_left(removal_root_offset));
+            super::search_step(replacement_root.borrow(), start.sub_left(replacement_root_offset));
         let search_end =
-            super::search_step(removal_root.borrow(), end.sub_left(removal_root_offset));
+            super::search_step(replacement_root.borrow(), end.sub_left(replacement_root_offset));
 
         match (search_start, search_end) {
-            // Both ends of the removal are contained by the left-hand child. Recurse into that.
+            // Both ends of the replacement are contained by the left-hand child. Recurse into that.
             (SearchResult::Lhs { .. }, SearchResult::Lhs { .. }) => {
-                removal_root = match removal_root.into_lhs() {
+                replacement_root = match replacement_root.into_lhs() {
                     Ok(n) => n,
                     Err(_) => crate::panic_internal_error_or_bad_index::<I>(
                         "`SearchResult::Lhs` implies the left-hand child should exist",
                     ),
                 };
             }
-            // Both ends of the removal are contained by right-hand child. Recurse into that.
+            // Both ends of the replacement are contained by right-hand child. Recurse into that.
             (SearchResult::Rhs { .. }, SearchResult::Rhs { .. }) => {
-                let upper_subtree_size = removal_root.subtree_size();
-                removal_root = match removal_root.into_rhs() {
+                let upper_subtree_size = replacement_root.subtree_size();
+                replacement_root = match replacement_root.into_rhs() {
                     Ok(n) => n,
                     Err(_) => crate::panic_internal_error_or_bad_index::<I>(
                         "`SearchResult::Rhs` implies the left-hand child should exist",
                     ),
                 };
-                let lower_subtree_size = removal_root.subtree_size();
-                removal_root_offset =
-                    removal_root_offset.add_right(upper_subtree_size.sub_right(lower_subtree_size));
+                let lower_subtree_size = replacement_root.subtree_size();
+                replacement_root_offset = replacement_root_offset
+                    .add_right(upper_subtree_size.sub_right(lower_subtree_size));
             }
             // Otherwise, no child of this node could fully contain both the start and end
             // boundary, so we've found our immediate target.
@@ -258,8 +256,8 @@ where
         }
     };
 
-    // Temporarily remove the node from its parent, and then run the removal on that owned subtree.
-    if let Some((mut parent, side)) = removal_root.into_parent() {
+    // Temporarily remove the node from its parent, and then run the replacement on it.
+    if let Some((mut parent, side)) = replacement_root.into_parent() {
         let mut child = match side {
             Side::Lhs => parent
                 .take_lhs()
@@ -273,7 +271,7 @@ where
 
         let mut up_state;
         (child, up_state) =
-            run_removal_within_subtree(child, search_start, search_end, replacement, removed);
+            run_replace_within_subtree(child, search_start, search_end, replacement, removed);
 
         // Put the child back into its parent
         let mut node = match side {
@@ -287,7 +285,7 @@ where
         }
     } else {
         (tree_root, _) =
-            run_removal_within_subtree(tree_root, search_start, search_end, replacement, removed);
+            run_replace_within_subtree(tree_root, search_start, search_end, replacement, removed);
     }
 
     // perform a final fix on the root, if needed:
@@ -296,8 +294,8 @@ where
     Root { handle: tree_root.erase() }
 }
 
-/// Performs a removal whose bounds are just barely contained by the subtree rooted at the node
-fn run_removal_within_subtree<I, S, P>(
+/// Performs a replacement whose bounds are just barely contained by the subtree rooted at the node
+fn run_replace_within_subtree<I, S, P>(
     mut root: node::HandleUniqueOwned<I, S, P>,
     start: SearchResult<I>,
     mut end: SearchResult<I>,
@@ -310,23 +308,24 @@ where
     P: RleTreeConfig<I, S> + SupportsUpdate<I, S>,
 {
     let root_side = match (&start, &end) {
-        // Special case: Both ends of the removal are contained by this root node!
+        // Special case: Both ends of the replacement are contained by this root node!
         // We should handle that separately.
         (
             SearchResult::Value { range, offset_in_range: start_offset },
             SearchResult::Value { offset_in_range: end_offset, .. },
         ) => {
-            if let Some((_, repl_value)) = replacement {
-                return run_replacement_within_node(
+            if let Some((repl_size, repl_value)) = replacement {
+                return run_replace_within_node(
                     root,
                     range.clone(),
                     *start_offset,
                     *end_offset,
                     repl_value,
+                    repl_size,
                     removed,
                 );
             } else {
-                return run_removal_within_node(
+                return run_remove_within_node(
                     root,
                     range.clone(),
                     *start_offset,
@@ -341,11 +340,11 @@ where
         // 1. LHS edge is inside the root node
         (SearchResult::Value { .. }, SearchResult::RhsEdge | SearchResult::Rhs { .. }) => Side::Lhs,
         // 2. LHS edge is exactly at the end of the root node's value
-        (SearchResult::RhsEdge, SearchResult::Rhs { .. }) => Side::Lhs,
+        (SearchResult::RhsEdge, SearchResult::RhsEdge | SearchResult::Rhs { .. }) => Side::Lhs,
         // 3. RHS edge is inside the root node
         (SearchResult::Lhs { .. } | SearchResult::LhsEdge, SearchResult::Value { .. }) => Side::Rhs,
         // 4. RHS edge is exactly at the start of the root node's value
-        (SearchResult::Lhs { .. }, SearchResult::LhsEdge) => Side::Rhs,
+        (SearchResult::Lhs { .. } | SearchResult::LhsEdge, SearchResult::LhsEdge) => Side::Rhs,
         // 5. If neither side touches the root node, we can just arbitrarily pick a side to get the
         //    root node for further processing.
         (
@@ -354,7 +353,7 @@ where
         ) => Side::Lhs,
         // And if none of the above cases match, then we have a bad set of `SearchResult`s
         combo => crate::panic_internal_error_or_bad_index::<I>(&format!(
-            "got invalid `SearchResult`s while generating removal: {combo:?}"
+            "got invalid `SearchResult`s while generating replacement: {combo:?}"
         )),
     };
 
@@ -392,10 +391,15 @@ where
 
     let final_tree = match replacement {
         Some(pair) => join_trees_with_middle(lhs_split.lhs, pair, rhs_split.rhs),
-        None => join_trees(lhs_split.lhs, rhs_split.rhs, true).into_unique(),
+        None => match join_trees(lhs_split.lhs, rhs_split.rhs, true) {
+            Some(r) => r.into_unique(),
+            None => crate::panic_internal_error_or_bad_index::<I>(
+                "got no nodes to join together for final tree",
+            ),
+        },
     };
     let final_removed = join_trees(lhs_split.rhs, rhs_split.lhs, false);
-    *removed = Some(RemovedKind::Tree(final_removed));
+    *removed = Some(final_removed.map(RemovedKind::Tree).unwrap_or(RemovedKind::Empty));
 
     let up_state = UpwardUpdateState { old_size: root_size };
 
@@ -403,13 +407,14 @@ where
 }
 
 /// Performs a replacement whose bounds are contained by the values of a single node
-/// (special case of `run_removal_within_subtree`)
-fn run_replacement_within_node<I, S, P>(
+/// (special case of `run_replace_within_subtree`)
+fn run_replace_within_node<I, S, P>(
     mut node: node::HandleUniqueOwned<I, S, P>,
     value_range: Range<I>,
     start_offset: I,
     end_offset: I,
     replacement: &mut Option<S>,
+    replacement_size: I,
     removed: &mut Option<RemovedKind<I, S, P>>,
 ) -> (node::HandleUniqueOwned<I, S, P>, UpwardUpdateState<I>)
 where
@@ -421,8 +426,16 @@ where
 
     let value_size = end_offset.sub_left(start_offset);
     let range_size = value_range.end.sub_left(value_range.start);
-    let rhs_size = range_size.sub_left(end_offset);
-    let subtree_size = node_mut.subtree_size();
+    let value_rhs_size = range_size.sub_left(end_offset);
+
+    let old_subtree_size = node_mut.subtree_size();
+    let lhs_size = value_range.start;
+    let rhs_size = old_subtree_size.sub_left(value_range.end);
+    let new_subtree_size = lhs_size //  <- node's LHS
+        .add_right(start_offset) //     <- replacement's LHS within the value
+        .add_right(replacement_size) // <- replacement
+        .add_right(value_rhs_size) //   <- replacement's RHS within the value
+        .add_right(rhs_size); //        <- node's RHS
 
     let lhs = node_mut.value_mut();
     let mut removed_value = None;
@@ -437,18 +450,20 @@ where
             // Joined with LHS. Try with RHS now.
             S::try_join_into_lhs(lhs, &mut rhs);
             match rhs {
-                // Joined with both RHS & LHS - we're actually all done, because the node is still
-                // the same size and we didn't generate anything new.
-                None => drop(node_mut),
+                // Joined with both RHS & LHS - only thing we have to do is set the new size
+                None => {
+                    node_mut.set_subtree_size(new_subtree_size);
+                    drop(node_mut);
+                }
                 // Joined with LHS but not RHS. We'll need to re-insert RHS.
                 Some(_) => {
                     super::run_insert(
                         node_mut,
-                        Some(subtree_size),
+                        Some(new_subtree_size),
                         true,
                         DownwardInsertState {
                             target: value_range.end,
-                            fst_value: InsertionValue { slice: &mut rhs, size: rhs_size },
+                            fst_value: InsertionValue { slice: &mut rhs, size: value_rhs_size },
                             snd_value: None,
                             allow_joining: false,
                             already_split_once: true,
@@ -465,13 +480,13 @@ where
                 None => {
                     super::run_insert(
                         node_mut,
-                        Some(subtree_size),
+                        Some(new_subtree_size),
                         true,
                         DownwardInsertState {
                             target: value_range.end,
                             fst_value: InsertionValue {
                                 slice: replacement,
-                                size: value_size.add_right(rhs_size),
+                                size: replacement_size.add_right(value_rhs_size),
                             },
                             snd_value: None,
                             allow_joining: false,
@@ -483,12 +498,18 @@ where
                 Some(_) => {
                     super::run_insert(
                         node_mut,
-                        Some(subtree_size),
+                        Some(new_subtree_size),
                         true,
                         DownwardInsertState {
-                            target: value_range.end,
-                            fst_value: InsertionValue { slice: replacement, size: value_size },
-                            snd_value: Some(InsertionValue { slice: &mut rhs, size: rhs_size }),
+                            target: new_subtree_size.sub_right(rhs_size),
+                            fst_value: InsertionValue {
+                                slice: replacement,
+                                size: replacement_size,
+                            },
+                            snd_value: Some(InsertionValue {
+                                slice: &mut rhs,
+                                size: value_rhs_size,
+                            }),
                             allow_joining: false,
                             already_split_once: true,
                         },
@@ -498,7 +519,7 @@ where
         }
     }
 
-    let up_state = UpwardUpdateState { old_size: subtree_size };
+    let up_state = UpwardUpdateState { old_size: old_subtree_size };
     *removed = Some(RemovedKind::Slice {
         size: value_size,
         slice: removed_value.expect("`removed_value` should be `Some(_)`"),
@@ -507,8 +528,8 @@ where
 }
 
 /// Performs a removal whose bounds are contained by the values of a single node
-/// (special case of `run_removal_within_subtree`)
-fn run_removal_within_node<I, S, P>(
+/// (special case of `run_replace_within_subtree`)
+fn run_remove_within_node<I, S, P>(
     mut node: node::HandleUniqueOwned<I, S, P>,
     value_range: Range<I>,
     start_offset: I,
@@ -952,7 +973,9 @@ where
         if mid_slice.is_none() {
             // If we successfully joined with LHS, we can fall through to `join_trees` to finish
             // merging the two sides.
-            return join_trees(lhs, rhs, true).into_unique();
+            return join_trees(lhs, rhs, true)
+                .expect("should not get `None` because `lhs = Some(_)`")
+                .into_unique();
         }
     }
 
@@ -986,7 +1009,9 @@ where
             //
             // note: unlike with LHS, we don't need try_join_slices = true, because we already
             // tried joining with RHS.
-            return join_trees(lhs, rhs, false).into_unique();
+            return join_trees(lhs, rhs, false)
+                .expect("should not get `None` because `rhs = Some(_)`")
+                .into_unique();
         };
     }
 
@@ -1050,7 +1075,7 @@ fn join_trees<I, S, P>(
     lhs: Option<node::HandleOwned<I, S, P>>,
     rhs: Option<node::HandleOwned<I, S, P>>,
     try_join_slices: bool,
-) -> node::HandleOwned<I, S, P>
+) -> Option<node::HandleOwned<I, S, P>>
 where
     I: Index,
     S: Slice<I>,
@@ -1058,10 +1083,7 @@ where
 {
     let (mut lhs, rhs) = match (lhs, rhs) {
         (Some(lhs), Some(rhs)) => (lhs, rhs),
-        (Some(n), None) | (None, Some(n)) => return n,
-        (None, None) => crate::panic_internal_error_or_bad_index::<I>(
-            "got no nodes to join together for final tree or removal nodes",
-        ),
+        (n, None) | (None, n) => return n,
     };
 
     let (mut middle_node, maybe_rhs) = remove_transitive_leftmost_child(rhs.into_unique());
@@ -1122,7 +1144,7 @@ where
         middle_node.borrow_mut().insert_rhs(rhs);
     }
 
-    fix::fix_unique_owned(middle_node, FixMode::Unbounded).erase()
+    Some(fix::fix_unique_owned(middle_node, FixMode::Unbounded).erase())
 }
 
 fn find_transitive_leftmost_child<I, S, P>(

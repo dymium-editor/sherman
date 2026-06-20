@@ -116,5 +116,62 @@ fn test_10_remove_within_root() {
     tree.insert(idx, TrackedSlice(Constant('T')), size);
     let (idx, size) = t.prepare_insert(0, 39);
     tree.insert(idx, TrackedSlice(Constant('A')), size);
-    _ = tree.replace(t.i(47)..t.i(70), TrackedSlice(Constant('A')));
+    let (range, size) = t.prepare_replace(47..70, 23);
+    _ = tree.replace(range, TrackedSlice(Constant('A')), size);
+}
+
+#[test]
+fn test_11_replace_underflow() {
+    let t: IndexInfo<u8> = IndexInfo::new();
+    let mut tree: RleTree<TrackedIndex<u8>, TrackedSlice<Constant<char>>> = RleTree::new_empty();
+    #[allow(clippy::reversed_empty_ranges)]
+    let (range, size) = t.prepare_replace(107..0, 0); // <- must be careful to avoid underflow
+    assert!(
+        std::panic::catch_unwind(move || tree.replace(
+            range.start..,
+            TrackedSlice(Constant('A')),
+            size
+        ))
+        .is_err()
+    );
+}
+
+#[test]
+fn test_12_replace_overflow() {
+    let t: IndexInfo<u8> = IndexInfo::new();
+    let mut tree: RleTree<TrackedIndex<u8>, TrackedSlice<Constant<char>>> = RleTree::new_empty();
+    let (idx, size) = t.prepare_insert(160, 205); // <- must be careful to avoid overflow
+    assert!(
+        std::panic::catch_unwind(move || tree.insert(idx, TrackedSlice(Constant('X')), size))
+            .is_err()
+    );
+}
+
+#[test]
+fn test_13_removal_epoch() {
+    // Minimized lightly from the original fuzz test.
+    let t: IndexInfo<u8> = IndexInfo::new();
+    let mut tree: RleTree<TrackedIndex<u8>, TrackedSlice<Constant<char>>> = RleTree::new_empty();
+    let (idx, size) = t.prepare_insert(0, 45);
+    tree.insert(idx, TrackedSlice(Constant('J')), size);
+    let (idx, size) = t.prepare_insert(43, 43);
+    tree.insert(idx, TrackedSlice(Constant('R')), size);
+    let (idx, size) = t.prepare_insert(43, 43);
+    tree.insert(idx, TrackedSlice(Constant('R')), size);
+    let (range, size) = t.prepare_replace(35..116, 43);
+    _ = tree.replace(range.start..range.end, TrackedSlice(Constant('T')), size);
+    let (range, size) = t.prepare_replace(35..43, 43);
+    _ = tree.replace(range.start..range.end, TrackedSlice(Constant('R')), size);
+    let (idx, size) = t.prepare_insert(35, 43);
+    tree.insert(idx, TrackedSlice(Constant('H')), size);
+    let (range, size) = t.prepare_replace(35..35, 16);
+    _ = tree.replace(range.start..range.end, TrackedSlice(Constant('T')), size);
+    let (start, end) = t.prepare_remove(35, 43);
+    _ = tree.remove(start..end);
+    let (start, end) = t.prepare_remove(35, 43);
+    _ = tree.remove(start..end);
+    let (range, size) = t.prepare_replace(43..43, 43);
+    // The error surfaced by fuzzing originally had issues on this replacement, where translating
+    // the tracked indexes requires rewinding an index 43 back past the 35..43 removal.
+    _ = tree.replace(range.start..range.end, TrackedSlice(Constant('R')), size);
 }

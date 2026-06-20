@@ -7,7 +7,7 @@ use crate::RleTree; // only added for docs
 use crate::param::{self, RleTreeConfig, SupportsUpdate};
 use crate::{Index, Slice};
 
-use super::remove::{Removed, RemovedKind};
+use super::replace::{Removed, RemovedKind};
 use super::{Side, node};
 
 /// A destructive iterator over a range of values in an [`RleTree`], returned by [`RleTree::drain`]

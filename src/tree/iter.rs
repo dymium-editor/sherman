@@ -10,7 +10,7 @@ use crate::{Index, RleTree, Slice};
 
 use super::drain::Drain;
 use super::entry::SliceEntry;
-use super::remove::Removed;
+use super::replace::Removed;
 use super::{SearchBound as EndBound, Side, node};
 
 /// Borrowing iterator over a range of values in an [`RleTree`], returned by [`RleTree::iter`]

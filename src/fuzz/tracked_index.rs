@@ -1,19 +1,22 @@
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::fmt::{self, Debug};
+use std::ops::Range;
 use std::panic::{RefUnwindSafe, UnwindSafe};
 
 use crate::{DirectionalAdd, DirectionalSub, Index, Slice};
 
 /// Datastore for [`TrackedIndex`]
+#[derive(Debug)]
 pub struct IndexInfo<I> {
     epochs: RefCell<Vec<Operation<I>>>,
 }
 
 #[derive(Copy, Clone, Debug)]
-enum Operation<I> {
-    Insert { pos: I, size: I },
-    Remove { start: I, end: I },
+struct Operation<I> {
+    start: I,
+    end: I,
+    size: I,
 }
 
 /// [`Index`] implementor that checks its usage is correct; see [`IndexInfo`] for more.
@@ -55,6 +58,15 @@ impl<'t, I: Index> TrackedIndex<'t, I> {
             IndexKind::Range(r) => r.size,
         }
     }
+
+    // Helper function: Normalize zero-length IndexRange values into IndexKind::Zero, because
+    // otherwise forward/rewind behavior is nondeterministic.
+    fn normalize(self) -> Self {
+        match self.kind {
+            IndexKind::Range(r) if r.size == I::ZERO => TrackedIndex::ZERO,
+            _ => self,
+        }
+    }
 }
 
 impl<I: Index> Default for IndexInfo<I> {
@@ -72,9 +84,10 @@ impl<I: Index> IndexInfo<I> {
     /// Creates a [`TrackedIndex`] representing the index `idx`, offset from zero
     pub fn i(&self, idx: I) -> TrackedIndex<'_, I> {
         let epoch = self.epochs.borrow().len();
-        TrackedIndex {
+        let idx = TrackedIndex {
             kind: IndexKind::Range(IndexRange { info: self, epoch, base: I::ZERO, size: idx }),
-        }
+        };
+        idx.normalize()
     }
 
     /// Creates a [`TrackedIndex`] representing the index `idx` *before the most recent change*
@@ -88,9 +101,10 @@ impl<I: Index> IndexInfo<I> {
             .unwrap_or_else(|| {
                 panic!("cannot represent `TrackedIndex` before previous operation if there are no operations")
             });
-        TrackedIndex {
+        let idx = TrackedIndex {
             kind: IndexKind::Range(IndexRange { info: self, epoch, base: I::ZERO, size: idx }),
-        }
+        };
+        idx.normalize()
     }
 
     /// Creates a pair of [`TrackedIndex`]es representing the position and length of an insertion
@@ -98,19 +112,8 @@ impl<I: Index> IndexInfo<I> {
     /// Note that future calls to [`self.i()`](Self::i) will be tracked as if their positions were
     /// first evaluated after the insertion.
     pub fn prepare_insert(&self, pos: I, size: I) -> (TrackedIndex<'_, I>, TrackedIndex<'_, I>) {
-        let mut epochs = self.epochs.borrow_mut();
-
-        let epoch = epochs.len();
-        epochs.push(Operation::Insert { pos, size });
-
-        let tracked_pos = TrackedIndex {
-            kind: IndexKind::Range(IndexRange { info: self, epoch, base: I::ZERO, size: pos }),
-        };
-        let tracked_len = TrackedIndex {
-            kind: IndexKind::Range(IndexRange { info: self, epoch: epoch + 1, base: pos, size }),
-        };
-
-        (tracked_pos, tracked_len)
+        let (range, size) = self.prepare_replace(pos..pos, size);
+        (range.start, size)
     }
 
     /// Creates a pair of [`TrackedIndex`]es representing the start and end of a range removal
@@ -118,25 +121,55 @@ impl<I: Index> IndexInfo<I> {
     /// Note that future calls to [`self.i()`](Self::i) will be tracked as if their positions were
     /// first evaluated after the removal.
     pub fn prepare_remove(&self, start: I, end: I) -> (TrackedIndex<'_, I>, TrackedIndex<'_, I>) {
+        let (range, _) = self.prepare_replace(start..end, I::ZERO);
+        (range.start, range.end)
+    }
+
+    /// Creates a range of [`TrackedIndex`]es representing the start and end of a range
+    /// replacement, with another [`TrackedIndex`] representing the replacement size
+    ///
+    /// Note that future calls to [`self.i()`](Self::i) will be tracked as if their positions were
+    /// first evaluated after the removal.
+    pub fn prepare_replace(
+        &self,
+        range: Range<I>,
+        size: I,
+    ) -> (Range<TrackedIndex<'_, I>>, TrackedIndex<'_, I>) {
         let mut epochs = self.epochs.borrow_mut();
 
         let epoch = epochs.len();
 
-        // Special case: Don't actually add an epoch if the removal is zero-sized, because it's ok
-        // to keep ranges across that removal in the special case where we know that it MUST be
-        // that nothing changed.
-        if start != end {
-            epochs.push(Operation::Remove { start, end });
+        // Special case: Don't add an epoch if the replacement is the same size.
+        if range.start > range.end || range.end.sub_left(range.start) != size {
+            epochs.push(Operation { start: range.start, end: range.end, size });
         }
 
         let tracked_start = TrackedIndex {
-            kind: IndexKind::Range(IndexRange { info: self, epoch, base: I::ZERO, size: start }),
+            kind: IndexKind::Range(IndexRange {
+                info: self,
+                epoch,
+                base: I::ZERO,
+                size: range.start,
+            }),
         };
         let tracked_end = TrackedIndex {
-            kind: IndexKind::Range(IndexRange { info: self, epoch, base: I::ZERO, size: end }),
+            kind: IndexKind::Range(IndexRange {
+                info: self,
+                epoch,
+                base: I::ZERO,
+                size: range.end,
+            }),
+        };
+        let tracked_size = TrackedIndex {
+            kind: IndexKind::Range(IndexRange {
+                info: self,
+                epoch: epochs.len(), // epoch + (did we add an op) ? 1 : 0
+                base: range.start,
+                size,
+            }),
         };
 
-        (tracked_start, tracked_end)
+        (tracked_start.normalize()..tracked_end.normalize(), tracked_size.normalize())
     }
 }
 
@@ -199,6 +232,11 @@ impl<'t, I: Index> IndexRange<'t, I> {
         }
 
         let epochs = x.info.epochs.borrow();
+        // Optimistically forward the values as far as we can - otherwise, we won't end up properly
+        // processing things like removals, where all of the input values are the old epoch but
+        // joining across the removal should result in the new epoch.
+        let x = x.forward(epochs.len());
+        let y = y.forward(epochs.len());
 
         let result = match x.epoch.cmp(&y.epoch) {
             Ordering::Equal => Ok((x, y)),
@@ -214,32 +252,15 @@ impl<'t, I: Index> IndexRange<'t, I> {
     fn forward(mut self, goal_epoch: usize) -> Self {
         let epochs = self.info.epochs.borrow();
 
-        'done: for &op in &epochs[self.epoch..goal_epoch] {
-            match op {
-                Operation::Insert { pos, size } => {
-                    if pos <= self.base {
-                        // `pos` is before this index, so we should shift to adjust
-                        self.base = self.base.sub_left(pos).add_left(size).add_left(pos);
-                    } else if pos >= self.base && pos >= self.base.add_right(self.size) {
-                        // `pos` is beyond the bounds of this index, so we can ignore it.
-                    } else {
-                        // `pos` is in the middle of the range covered by this value, so it
-                        // actually cannot be compared!
-                        break 'done;
-                    }
-                }
-                Operation::Remove { start, end } => {
-                    if end <= self.base {
-                        // operation is before this index, so we should shift to adjust
-                        self.base = self.base.sub_left(end).add_left(start);
-                    } else if start >= self.base && start >= self.base.add_right(self.size) {
-                        // operation is beyond the bounds of this index, so we can ignore it.
-                    } else {
-                        // operation overlaps with the range covered by this value, so it cannot
-                        // actually be compared!
-                        break 'done;
-                    }
-                }
+        'done: for op in &epochs[self.epoch..goal_epoch] {
+            if op.end <= self.base {
+                // Operation is before this index, so we should shift to adjust
+                self.base = self.base.sub_left(op.end).add_left(op.size).add_left(op.start);
+            } else if op.start >= self.base.add_right(self.size) {
+                // `op.start` is beyond the bounds of this index, so we can ignore it
+            } else {
+                // `op` overlaps with `self`, so it cannot be compared!
+                break 'done;
             }
 
             self.epoch += 1;
@@ -251,29 +272,16 @@ impl<'t, I: Index> IndexRange<'t, I> {
     fn rewind(mut self, goal_epoch: usize) -> Self {
         let epochs = self.info.epochs.borrow();
 
-        'done: for &op in epochs[goal_epoch..self.epoch].iter().rev() {
-            match op {
-                Operation::Insert { pos, size } => {
-                    let insert_end = pos.add_right(size);
-                    if pos >= self.base && pos >= self.base.add_right(self.size) {
-                        // operation is beyond the bounds of this index, so we can ignore it
-                    } else if insert_end <= self.base {
-                        // operation is before this index, so we should shift to undo it
-                        self.base = self.base.sub_left(insert_end).add_left(pos);
-                    } else {
-                        break 'done;
-                    }
-                }
-                Operation::Remove { start, end } => {
-                    if start >= self.base && start >= self.base.add_right(self.size) {
-                        // operation is beyond the bounds of this index, so we can ignore it
-                    } else if start <= self.base {
-                        // operation is before this index, so we should shift to undo it
-                        self.base = self.base.sub_left(start).add_left(end);
-                    } else {
-                        break 'done;
-                    }
-                }
+        'done: for op in epochs[goal_epoch..self.epoch].iter().rev() {
+            let op_end = op.start.add_right(op.size);
+            if op_end <= self.base {
+                // Operation is before this index, so we should shift to adjust
+                self.base = self.base.sub_left(op_end).add_left(op.end);
+            } else if op.start >= self.base.add_right(self.size) {
+                // `op.start` is beyond the bounds of this index, so we can ignore it
+            } else {
+                // `op` overlaps with `self`, so it cannot be compared!
+                break 'done;
             }
 
             self.epoch -= 1;
@@ -297,28 +305,12 @@ impl<'t, I: Index> DirectionalAdd for TrackedIndex<'t, I> {
             (IndexKind::Range(lhs), IndexKind::Range(rhs)) => (lhs, rhs),
         };
 
-        let (mut lhs, mut rhs) = IndexRange::align("add_right", lhs, rhs);
+        let (lhs, rhs) = IndexRange::align("add_right", lhs, rhs);
 
-        loop {
-            if lhs.base.add_right(lhs.size) != rhs.base {
-                // if the end of `lhs` isn't aligned with the start of `rhs`, it's *possible* that it's
-                // since become aligned due to removing the space between them.
-                let epoch = lhs.epoch; // `align` ensures they're the same
-                if epoch < lhs.info.epochs.borrow().len() {
-                    let next_lhs = lhs.forward(epoch + 1);
-                    let next_rhs = rhs.forward(epoch + 1);
-                    if next_lhs.epoch == epoch + 1 && next_rhs.epoch == epoch + 1 {
-                        (lhs, rhs) = (next_lhs, next_rhs);
-                        continue;
-                    }
-                }
-
-                panic!(
-                    "invalid operation: attempted to add_right({self:?}, {right:?}), but translated add_right({lhs:?}, {rhs:?}) isn't adjacent"
-                )
-            }
-
-            break;
+        if lhs.base.add_right(lhs.size) != rhs.base {
+            panic!(
+                "invalid operation: attempted to add_right({self:?}, {right:?}), but translated add_right({lhs:?}, {rhs:?}) isn't adjacent"
+            )
         }
 
         TrackedIndex {
@@ -355,14 +347,16 @@ impl<'t, I: Index> DirectionalSub for TrackedIndex<'t, I> {
             )
         }
 
-        TrackedIndex {
+        let idx = TrackedIndex {
             kind: IndexKind::Range(IndexRange {
                 info: this.info,
                 epoch: this.epoch,
                 base: lhs.base.add_right(lhs.size),
                 size: this.size.sub_left(lhs.size),
             }),
-        }
+        };
+
+        idx.normalize()
     }
 
     fn sub_right(self, right: Self) -> Self {
@@ -387,14 +381,16 @@ impl<'t, I: Index> DirectionalSub for TrackedIndex<'t, I> {
             )
         }
 
-        TrackedIndex {
+        let idx = TrackedIndex {
             kind: IndexKind::Range(IndexRange {
                 info: this.info,
                 epoch: this.epoch,
                 base: this.base,
                 size: this.size.sub_right(rhs.size),
             }),
-        }
+        };
+
+        idx.normalize()
     }
 }
 

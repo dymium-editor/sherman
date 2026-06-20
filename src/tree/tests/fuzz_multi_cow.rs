@@ -52,7 +52,7 @@ fn test_04_basic_update_nonunique() {
     tree_0.insert(0, Constant('A'), 87);
     tree_0.insert(17, Constant('U'), 146);
     let mut tree_1 = tree_0.shallow_clone();
-    _ = tree_1.replace(..162, Constant('E'));
+    _ = tree_1.replace(..162, Constant('E'), 162);
 }
 
 #[test]

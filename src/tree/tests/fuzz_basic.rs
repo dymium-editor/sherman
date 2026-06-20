@@ -318,10 +318,50 @@ fn test_24_simple_unbounded_rebalance() {
 fn test_25_simple_replace_start_single_node() {
     let mut tree: RleTree<u8, Constant<char>> = RleTree::new_empty();
     tree.insert(0, Constant('V'), 247);
-    _ = tree.replace(..9, Constant('A'));
+    _ = tree.replace(..9, Constant('A'), 9);
     {
         let entry = tree.get(0);
         assert_eq!(entry.range(), 0..9);
         assert_eq!(entry.slice(), &Constant('A'));
     }
+}
+
+#[test]
+fn test_26_replace_empty_tree() {
+    let mut tree: RleTree<u8, Constant<char>> = RleTree::new_empty();
+    _ = tree.replace(.., Constant('V'), 10);
+    {
+        let entry = tree.get(0);
+        assert_eq!(entry.range(), 0..10);
+        assert_eq!(entry.slice(), &Constant('V'));
+    }
+}
+
+#[test]
+fn test_27_replace_as_insert() {
+    let mut tree: RleTree<u8, Constant<char>> = RleTree::new_empty();
+    _ = tree.replace(.., Constant('N'), 37);
+    _ = tree.replace(..0, Constant('A'), 207);
+}
+
+#[test]
+fn test_28_replace_as_split_insert() {
+    let mut tree: RleTree<u8, Constant<char>> = RleTree::new_empty();
+    tree.insert(0, Constant('W'), 212);
+    _ = tree.replace(9..9, Constant('J'), 1);
+    {
+        let entry = tree.get(0);
+        assert_eq!(entry.range(), 0..9);
+        assert_eq!(entry.slice(), &Constant('W'));
+    }
+}
+
+#[test]
+fn test_29_replace_zero_sized() {
+    // This was actually generated from fuzzing `multi_cow`, but it's been placed here because it
+    // doesn't use any of the cow functionality.
+    let mut tree: RleTree<u8, Constant<char>> = RleTree::new_empty();
+    tree.insert(0, Constant('V'), 51);
+    // Calling `into_tree` panics if the removed value has zero length but is not Empty:
+    _ = tree.replace(7..7, Constant('H'), 1).into_tree();
 }

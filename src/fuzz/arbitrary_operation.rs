@@ -174,14 +174,15 @@ pub enum BasicOperation<I, S> {
         /// Is this insertion expected to panic?
         panics: bool,
     },
-    /// `tree.replace((start, end), slice)`
+    /// `tree.replace((start, end), slice, size)`
     ///
     /// We intentionally don't do anything with the returned values.
     Replace {
         start: Bound<I>,
         end: Bound<I>,
         slice: S,
-        /// Is this removal expected to panic?
+        size: I,
+        /// Is this replace expected to panic?
         panics: bool,
     },
     /// `_ = tree.remove((start, end))`
@@ -459,10 +460,11 @@ impl<I, S> BasicOperation<I, S> {
                 };
 
                 let slice = S::arbitrary(u)?;
+                let size = I::arbitrary(u)?;
 
                 let slice_cloned = slice.clone();
                 let result = expect_might_panic(move || {
-                    _ = fake.replace((start.into_std(), end.into_std()), slice_cloned);
+                    _ = fake.replace((start.into_std(), end.into_std()), slice_cloned, size);
                     fake
                 });
 
@@ -471,7 +473,7 @@ impl<I, S> BasicOperation<I, S> {
                     Err(_) => (true, None),
                 };
 
-                Ok((BasicOperation::Replace { start, end, slice, panics }, new_state))
+                Ok((BasicOperation::Replace { start, end, slice, size, panics }, new_state))
             }
             // BasicOperation::Remove
             5 => {
@@ -613,17 +615,19 @@ impl<I, S> BasicOperation<I, S> {
                     None
                 }
             },
-            BasicOperation::Replace { start, end, slice, panics } => match panics {
+            BasicOperation::Replace { start, end, slice, size, panics } => match panics {
                 false => {
-                    _ = tree.replace((start.into_std(), end.into_std()), slice.clone());
+                    _ = tree.replace((start.into_std(), end.into_std()), slice.clone(), *size);
                     Some((tree, None))
                 }
                 true => {
                     let slice_clone = slice.clone();
                     assert!(
-                        expect_might_panic(
-                            move || tree.replace((start.into_std(), end.into_std()), slice_clone,)
-                        )
+                        expect_might_panic(move || tree.replace(
+                            (start.into_std(), end.into_std()),
+                            slice_clone,
+                            *size
+                        ))
                         .is_err()
                     );
                     None
@@ -795,16 +799,18 @@ impl<I, S> BasicOperation<I, S> {
                     size = size.display_rust_expr(),
                 )),
             },
-            BasicOperation::Replace { start, end, slice, panics } => match panics {
+            BasicOperation::Replace { start, end, slice, size, panics } => match panics {
                 false => f.write_fmt(format_args!(
-                    "    _ = {tree}.replace({range}, {slice});\n",
+                    "    _ = {tree}.replace({range}, {slice}, {size});\n",
                     range = format_bounds(start, end),
                     slice = slice.display_rust_expr(),
+                    size = size.display_rust_expr(),
                 )),
                 true => f.write_fmt(format_args!(
-                    "    assert!(std::panic::catch_unwind(move || {tree}.replace({range}, {slice})).is_err());\n",
+                    "    assert!(std::panic::catch_unwind(move || {tree}.replace({range}, {slice}, {size})).is_err());\n",
                     range = format_bounds(start, end),
                     slice = slice.display_rust_expr(),
+                    size = size.display_rust_expr(),
                 )),
             },
             BasicOperation::Remove { start, end, panics } => match panics {
@@ -939,11 +945,13 @@ where
                 let (index, size) = info.prepare_insert(index, size);
                 BasicOperation::Insert { index, slice: TrackedSlice(slice), size, panics }
             }
-            BasicOperation::Replace { start, end, slice, panics } => {
+            BasicOperation::Replace { start, end, slice, size, panics } => {
                 let start = map_bound(start);
                 let end = map_bound(end);
+                let (_, size) =
+                    info.prepare_replace(start.value().value()..end.value().value(), size);
                 let slice = TrackedSlice(slice);
-                BasicOperation::Replace { start, end, slice, panics }
+                BasicOperation::Replace { start, end, slice, size, panics }
             }
             BasicOperation::Remove { start, end, panics } => {
                 let range_start = start.value();
@@ -1023,12 +1031,22 @@ where
                     panics,
                 }
             }
-            BasicOperation::Replace { start, end, slice, panics } => BasicOperation::Replace {
-                start: start.map(|_| CheckedIndex::Named("range.start")),
-                end: end.map(|_| CheckedIndex::Named("range.end")),
-                slice: CheckedSlice(slice),
-                panics,
-            },
+            BasicOperation::Replace { start, end, slice, size, panics } => {
+                f.write_fmt(format_args!(
+                    "    let (range, size) = t.prepare_replace({start}..{end}, {size});\n",
+                    start = start.value().display_rust_expr(),
+                    end = end.value().display_rust_expr(),
+                    size = size.display_rust_expr(),
+                ))?;
+
+                BasicOperation::Replace {
+                    start: start.map(|_| CheckedIndex::Named("range.start")),
+                    end: end.map(|_| CheckedIndex::Named("range.end")),
+                    slice: CheckedSlice(slice),
+                    size: CheckedIndex::Named("size"),
+                    panics,
+                }
+            }
             BasicOperation::Remove { start, end, panics } => {
                 let (start, start_var, start_idx) = match start {
                     Bound::Unbounded(idx) => (Bound::Unbounded(CheckedIndex::Named("_")), "_", idx),

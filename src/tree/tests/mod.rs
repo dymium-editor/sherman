@@ -24,6 +24,8 @@ mod fuzz_basic_range;
 #[cfg(test)]
 mod fuzz_checked;
 #[cfg(test)]
+mod fuzz_checked_range;
+#[cfg(test)]
 mod fuzz_multi_cow;
 #[cfg(test)]
 mod fuzz_stable_ref;

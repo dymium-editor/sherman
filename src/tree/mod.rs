@@ -17,7 +17,7 @@ mod fix;
 mod iter;
 pub(crate) mod node;
 pub(crate) mod rc;
-mod remove;
+mod replace;
 
 pub(crate) mod tests;
 
@@ -28,7 +28,7 @@ use fix::FixMode;
 pub use iter::{IntoIter, Iter};
 use node::Side;
 use rc::Redirect as _;
-pub use remove::Removed;
+pub use replace::Removed;
 
 /// Generalized run-length encoded balanced binary search tree
 ///
@@ -482,6 +482,8 @@ where
     /// * The range's end bound is greater than the [`size`](Self::size) of the tree
     /// * The range's start bound is greater than its end bound
     ///
+    /// This method additionally panics if the replacement size is less than or equal to zero.
+    ///
     /// # Example usage
     ///
     /// ```
@@ -499,8 +501,8 @@ where
     ///
     /// assert_eq!(tree.size(), 10);
     ///
-    /// // Replacing leaves the size of the tree unchanged.
-    /// let removed = tree.replace(3..7, Constant("baz"));
+    /// // Replacing with the same size leaves the size of the tree unchanged:
+    /// let removed = tree.replace(3..7, Constant("baz"), 4);
     /// assert_eq!(tree.size(), 10);
     ///
     /// // ... and the values are as described:
@@ -519,14 +521,18 @@ where
     /// );
     /// ```
     #[inline(always)]
-    pub fn replace<R>(&mut self, range: R, value: S) -> Removed<I, S, P>
+    pub fn replace<R>(&mut self, range: R, value: S, size: I) -> Removed<I, S, P>
     where
         P: SupportsUpdate<I, S>,
         R: std::ops::RangeBounds<I>,
     {
+        if size <= I::ZERO {
+            panic!("cannot replace range with non-positive size {size:?}");
+        }
+
         let mut value = Some(value);
-        let range = remove::check_bounds(self, "replace", range.start_bound(), range.end_bound());
-        remove::remove(self, range, Some(&mut value))
+        let range = replace::check_bounds(self, "replace", range.start_bound(), range.end_bound());
+        replace::replace(self, range, Some((size, &mut value)))
     }
 
     /// Removes a range of values from the tree, returning a [`Removed`] object representing them.
@@ -604,8 +610,8 @@ where
         P: SupportsUpdate<I, S>,
         R: std::ops::RangeBounds<I>,
     {
-        let range = remove::check_bounds(self, "remove", range.start_bound(), range.end_bound());
-        remove::remove(self, range, None)
+        let range = replace::check_bounds(self, "remove", range.start_bound(), range.end_bound());
+        replace::replace(self, range, None)
     }
 
     /// Removes a range of values from the tree, returning an iterator over the values
@@ -636,8 +642,8 @@ where
         P: SupportsUpdate<I, S>,
         R: std::ops::RangeBounds<I>,
     {
-        let range = remove::check_bounds(self, "drain", range.start_bound(), range.end_bound());
-        let removed = remove::remove(self, range, None);
+        let range = replace::check_bounds(self, "drain", range.start_bound(), range.end_bound());
+        let removed = replace::replace(self, range, None);
         Drain::new(removed)
     }
 }
